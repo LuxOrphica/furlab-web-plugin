@@ -1,0 +1,1968 @@
+"use strict";
+
+const {
+  pointsToMultiPolygon,
+  intersectMulti,
+  multiPolygonArea,
+  unionMulti,
+  diffMulti
+} = require("../services/polygon_ops");
+const {
+  buildPieceWorkingContour,
+  applyReserveToPlacements
+} = require("../services/piece_working_area");
+const { createModeRegistry } = require("../modes/registry");
+const { parsePreviewWrapperRequest } = require("../modes/wrapper");
+
+function polygonBBox(points) {
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const p of points || []) {
+    const x = Number(p && p.x);
+    const y = Number(p && p.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  }
+  if (!Number.isFinite(minX)) return null;
+  return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
+}
+
+function polygonArea(points) {
+  if (!Array.isArray(points) || points.length < 3) return 0;
+  let sum = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    const ax = Number(a && a.x);
+    const ay = Number(a && a.y);
+    const bx = Number(b && b.x);
+    const by = Number(b && b.y);
+    if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(bx) || !Number.isFinite(by)) continue;
+    sum += ax * by - bx * ay;
+  }
+  return Math.abs(sum) * 0.5;
+}
+
+function cleanClosedPolygon(points, options) {
+  const cfg = options && typeof options === "object" ? options : {};
+  const minEdgeMm = Math.max(0.1, Number(cfg.minEdgeMm || 6));
+  const spikeEdgeMm = Math.max(minEdgeMm, Number(cfg.spikeEdgeMm || 14));
+  const spikeAngleDeg = Math.max(5, Math.min(90, Number(cfg.spikeAngleDeg || 32)));
+  const collinearEpsMm = Math.max(0.05, Number(cfg.collinearEpsMm || 1.2));
+  const maxIters = Math.max(1, Math.min(12, Number(cfg.maxIters || 6)));
+
+  let pts = (Array.isArray(points) ? points : [])
+    .map((p) => ({ x: Number(p && p.x), y: Number(p && p.y) }))
+    .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+  if (pts.length < 3) return pts;
+
+  // Drop consecutive duplicates and duplicate closing point.
+  const dedup = [];
+  for (const p of pts) {
+    const prev = dedup[dedup.length - 1];
+    if (!prev || Math.hypot(prev.x - p.x, prev.y - p.y) > 1e-6) dedup.push(p);
+  }
+  pts = dedup;
+  if (pts.length >= 2) {
+    const a = pts[0];
+    const b = pts[pts.length - 1];
+    if (Math.hypot(a.x - b.x, a.y - b.y) <= 1e-6) pts.pop();
+  }
+  if (pts.length < 3) return pts;
+
+  function pointLineDistance(p, a, b) {
+    const vx = b.x - a.x;
+    const vy = b.y - a.y;
+    const wx = p.x - a.x;
+    const wy = p.y - a.y;
+    const len2 = vx * vx + vy * vy;
+    if (len2 <= 1e-12) return Math.hypot(wx, wy);
+    const t = Math.max(0, Math.min(1, (wx * vx + wy * vy) / len2));
+    const px = a.x + t * vx;
+    const py = a.y + t * vy;
+    return Math.hypot(p.x - px, p.y - py);
+  }
+
+  for (let iter = 0; iter < maxIters; iter++) {
+    let changed = false;
+    if (pts.length < 4) break;
+    for (let i = 0; i < pts.length; i++) {
+      const n = pts.length;
+      const prev = pts[(i - 1 + n) % n];
+      const cur = pts[i];
+      const next = pts[(i + 1) % n];
+      const lenPrev = Math.hypot(cur.x - prev.x, cur.y - prev.y);
+      const lenNext = Math.hypot(next.x - cur.x, next.y - cur.y);
+      if (lenPrev <= 1e-9 || lenNext <= 1e-9) {
+        pts.splice(i, 1);
+        changed = true;
+        break;
+      }
+      // Remove very short edges first.
+      if (lenPrev < minEdgeMm || lenNext < minEdgeMm) {
+        pts.splice(i, 1);
+        changed = true;
+        break;
+      }
+      const ux = prev.x - cur.x;
+      const uy = prev.y - cur.y;
+      const vx = next.x - cur.x;
+      const vy = next.y - cur.y;
+      const du = Math.hypot(ux, uy);
+      const dv = Math.hypot(vx, vy);
+      const cosA = Math.max(-1, Math.min(1, (ux * vx + uy * vy) / Math.max(1e-9, du * dv)));
+      const angleDeg = Math.acos(cosA) * 180 / Math.PI;
+      // Short sharp corner -> likely spike tip.
+      if (angleDeg < spikeAngleDeg && (lenPrev < spikeEdgeMm || lenNext < spikeEdgeMm)) {
+        pts.splice(i, 1);
+        changed = true;
+        break;
+      }
+      // Nearly collinear small wobble.
+      const dLine = pointLineDistance(cur, prev, next);
+      if (angleDeg > 168 && dLine < collinearEpsMm) {
+        pts.splice(i, 1);
+        changed = true;
+        break;
+      }
+    }
+    if (!changed) break;
+  }
+  return pts.length >= 3 ? pts : (Array.isArray(points) ? points : []);
+}
+
+function pointInPolygon(point, polygon) {
+  let inside = false;
+  const x = Number(point && point.x);
+  const y = Number(point && point.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = Number(polygon[i] && polygon[i].x);
+    const yi = Number(polygon[i] && polygon[i].y);
+    const xj = Number(polygon[j] && polygon[j].x);
+    const yj = Number(polygon[j] && polygon[j].y);
+    if (!Number.isFinite(xi) || !Number.isFinite(yi) || !Number.isFinite(xj) || !Number.isFinite(yj)) continue;
+    const cross = yi > y !== yj > y;
+    if (!cross) continue;
+    const atX = ((xj - xi) * (y - yi)) / ((yj - yi) || 1e-9) + xi;
+    if (x < atX) inside = !inside;
+  }
+  return inside;
+}
+
+function segmentsIntersect(a, b, c, d) {
+  function orient(p, q, r) {
+    return (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+  }
+  function onSeg(p, q, r) {
+    return (
+      Math.min(p.x, r.x) - 1e-9 <= q.x && q.x <= Math.max(p.x, r.x) + 1e-9 &&
+      Math.min(p.y, r.y) - 1e-9 <= q.y && q.y <= Math.max(p.y, r.y) + 1e-9
+    );
+  }
+  const o1 = orient(a, b, c);
+  const o2 = orient(a, b, d);
+  const o3 = orient(c, d, a);
+  const o4 = orient(c, d, b);
+  if (Math.abs(o1) <= 1e-9 && onSeg(a, c, b)) return true;
+  if (Math.abs(o2) <= 1e-9 && onSeg(a, d, b)) return true;
+  if (Math.abs(o3) <= 1e-9 && onSeg(c, a, d)) return true;
+  if (Math.abs(o4) <= 1e-9 && onSeg(c, b, d)) return true;
+  return (o1 > 0) !== (o2 > 0) && (o3 > 0) !== (o4 > 0);
+}
+
+function polygonsIntersect(polyA, polyB, bbA, bbB) {
+  if (!bbA || !bbB) return false;
+  if (
+    bbA.maxX < bbB.minX || bbB.maxX < bbA.minX ||
+    bbA.maxY < bbB.minY || bbB.maxY < bbA.minY
+  ) return false;
+  for (let i = 0; i < polyA.length; i++) {
+    const a1 = polyA[i];
+    const a2 = polyA[(i + 1) % polyA.length];
+    for (let j = 0; j < polyB.length; j++) {
+      const b1 = polyB[j];
+      const b2 = polyB[(j + 1) % polyB.length];
+      if (segmentsIntersect(a1, a2, b1, b2)) return true;
+    }
+  }
+  if (pointInPolygon(polyA[0], polyB)) return true;
+  if (pointInPolygon(polyB[0], polyA)) return true;
+  return false;
+}
+
+function countPlacementIntersections(placements) {
+  const polys = (Array.isArray(placements) ? placements : [])
+    .filter((p) => p && String(p.status || "") === "matched")
+    .map((p) => {
+      const raw = Array.isArray(p.alignedContour) ? p.alignedContour : [];
+      const poly = raw
+        .map((q) => ({ x: Number(q && q.x), y: Number(q && q.y) }))
+        .filter((q) => Number.isFinite(q.x) && Number.isFinite(q.y));
+      if (poly.length < 3) return null;
+      const bb = polygonBBox(poly);
+      if (!bb) return null;
+      return { poly, bb };
+    })
+    .filter(Boolean);
+  let count = 0;
+  for (let i = 0; i < polys.length; i++) {
+    for (let j = i + 1; j < polys.length; j++) {
+      if (polygonsIntersect(polys[i].poly, polys[j].poly, polys[i].bb, polys[j].bb)) count += 1;
+    }
+  }
+  return count;
+}
+
+function ringAreaAbs(ring) {
+  if (!Array.isArray(ring) || ring.length < 4) return 0;
+  let sum = 0;
+  for (let i = 0; i + 1 < ring.length; i++) {
+    const a = ring[i];
+    const b = ring[i + 1];
+    const ax = Number(a && a[0]);
+    const ay = Number(a && a[1]);
+    const bx = Number(b && b[0]);
+    const by = Number(b && b[1]);
+    if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(bx) || !Number.isFinite(by)) continue;
+    sum += ax * by - bx * ay;
+  }
+  return Math.abs(sum) * 0.5;
+}
+
+function multiToOuterPolygons(mp, opts) {
+  const cfg = opts && typeof opts === "object" ? opts : {};
+  const minAreaMm2 = Math.max(0.01, Number(cfg.minAreaMm2 || 1));
+  const maxPolygons = Math.max(20, Math.min(1200, Number(cfg.maxPolygons || 500)));
+  const out = [];
+  for (const poly of Array.isArray(mp) ? mp : []) {
+    if (!Array.isArray(poly) || poly.length === 0) continue;
+    const outer = Array.isArray(poly[0]) ? poly[0] : null;
+    if (!Array.isArray(outer) || outer.length < 4) continue;
+    const areaMm2 = ringAreaAbs(outer);
+    if (!Number.isFinite(areaMm2) || areaMm2 < minAreaMm2) continue;
+    const pts = [];
+    for (let i = 0; i < outer.length - 1; i++) {
+      const x = Number(outer[i] && outer[i][0]);
+      const y = Number(outer[i] && outer[i][1]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      pts.push({ x, y });
+    }
+    if (pts.length < 3) continue;
+    out.push({
+      id: out.length + 1,
+      areaMm2: Math.round(areaMm2 * 1000) / 1000,
+      points: pts
+    });
+    if (out.length >= maxPolygons) break;
+  }
+  return out;
+}
+
+function buildPieceIntersectionsLayer(placements, options) {
+  const cfg = options && typeof options === "object" ? options : {};
+  const maxPairChecks = Math.max(200, Math.min(20000, Number(cfg.maxPairChecks || 6000)));
+  const maxPolygons = Math.max(20, Math.min(1200, Number(cfg.maxPolygons || 500)));
+  const minAreaMm2 = Math.max(0.01, Number(cfg.minAreaMm2 || 1));
+
+  const prepared = (Array.isArray(placements) ? placements : [])
+    .filter((p) => p && String(p.status || "") === "matched")
+    .map((p) => {
+      const id = Number(p.fragmentId || 0);
+      const raw = Array.isArray(p.alignedContour) ? p.alignedContour : [];
+      const points = raw
+        .map((q) => ({ x: Number(q && q.x), y: Number(q && q.y) }))
+        .filter((q) => Number.isFinite(q.x) && Number.isFinite(q.y));
+      if (points.length < 3) return null;
+      const bbox = polygonBBox(points);
+      if (!bbox) return null;
+      const mp = pointsToMultiPolygon(points);
+      if (!Array.isArray(mp) || mp.length === 0) return null;
+      return { id, points, bbox, mp };
+    })
+    .filter(Boolean);
+
+  const polygons = [];
+  const seen = new Set();
+  let pairChecks = 0;
+  let pairCount = 0;
+  let totalAreaMm2 = 0;
+  let visibleUnion = [];
+
+  for (let i = 0; i < prepared.length; i++) {
+    const a = prepared[i];
+    for (let j = i + 1; j < prepared.length; j++) {
+      if (pairChecks >= maxPairChecks || polygons.length >= maxPolygons) break;
+      pairChecks += 1;
+      const b = prepared[j];
+      if (
+        a.bbox.maxX < b.bbox.minX || b.bbox.maxX < a.bbox.minX ||
+        a.bbox.maxY < b.bbox.minY || b.bbox.maxY < a.bbox.minY
+      ) {
+        continue;
+      }
+      const inter = intersectMulti(a.mp, b.mp);
+      if (!Array.isArray(inter) || inter.length === 0) continue;
+      pairCount += 1;
+      visibleUnion = visibleUnion.length ? unionMulti(visibleUnion, inter) : inter;
+
+      for (const poly of inter) {
+        if (!Array.isArray(poly) || poly.length === 0) continue;
+        const outer = Array.isArray(poly[0]) ? poly[0] : null;
+        if (!Array.isArray(outer) || outer.length < 4) continue;
+        const areaMm2 = multiPolygonArea([poly]);
+        if (!Number.isFinite(areaMm2) || areaMm2 < minAreaMm2) continue;
+
+        const pts = [];
+        for (let k = 0; k < outer.length - 1; k++) {
+          const x = Number(outer[k] && outer[k][0]);
+          const y = Number(outer[k] && outer[k][1]);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          pts.push({ x, y });
+        }
+        if (pts.length < 3) continue;
+        const bb = polygonBBox(pts);
+        if (!bb) continue;
+        const key = [
+          Math.round(bb.minX),
+          Math.round(bb.minY),
+          Math.round(bb.maxX),
+          Math.round(bb.maxY),
+          Math.round(areaMm2)
+        ].join("|");
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        polygons.push({
+          id: polygons.length + 1,
+          pairFragmentIds: [a.id, b.id],
+          areaMm2: Math.round(areaMm2 * 1000) / 1000,
+          points: pts
+        });
+        totalAreaMm2 += areaMm2;
+        if (polygons.length >= maxPolygons) break;
+      }
+    }
+    if (pairChecks >= maxPairChecks || polygons.length >= maxPolygons) break;
+  }
+
+  return {
+    pairChecks,
+    pairCount,
+    totalAreaMm2: Math.round(totalAreaMm2 * 1000) / 1000,
+    polygons,
+    visibleAreaPolygons: multiToOuterPolygons(visibleUnion, { minAreaMm2, maxPolygons }),
+    visibleAreaAreaMm2: Math.round(multiPolygonArea(visibleUnion) * 1000) / 1000
+  };
+}
+
+function buildVisibleMosaicModel(placements, zonePoints, options) {
+  const cfg = options && typeof options === "object" ? options : {};
+  const layerPolicyRaw = String(cfg.layerPolicy || "priority_on_top").toLowerCase();
+  const layerPolicy = layerPolicyRaw === "first_on_top" ? "first_on_top" : "priority_on_top";
+  const minAreaMm2 = Math.max(0.01, Number(cfg.minAreaMm2 || 1));
+  const maxFragments = Math.max(50, Math.min(4000, Number(cfg.maxFragments || 2000)));
+  const maxPolygons = Math.max(20, Math.min(1200, Number(cfg.maxPolygons || 500)));
+  const contourCleanCfg = {
+    minEdgeMm: Math.max(2, Number(cfg.minEdgeMm || 6)),
+    spikeEdgeMm: Math.max(4, Number(cfg.spikeEdgeMm || 14)),
+    spikeAngleDeg: Math.max(10, Number(cfg.spikeAngleDeg || 32)),
+    collinearEpsMm: Math.max(0.2, Number(cfg.collinearEpsMm || 1.2))
+  };
+  const includeDebug = !!(cfg && cfg.includeDebug);
+  const zoneMp = pointsToMultiPolygon(Array.isArray(zonePoints) ? zonePoints : []);
+  if (!Array.isArray(zoneMp) || zoneMp.length === 0) {
+    return {
+      fragments: [],
+      visibleContours: [],
+      visibleAreaPolygons: [],
+      usefulAreaMm2: 0,
+      selectedPiecesAreaMm2: 0,
+      selectedInZoneAreaMm2: 0,
+      overlapAreaMm2: 0,
+      utilizationPct: 0
+    };
+  }
+
+  const matched = (Array.isArray(placements) ? placements : [])
+    .map((p, placementIndex) => ({ placementIndex, p }))
+    .filter((x) => x && x.p && String(x.p.status || "") === "matched")
+    .map((x) => {
+      const p = x.p;
+      let pieceMp = [];
+      let inZoneMp = [];
+
+      // Always clip by current aligned contour first.
+      // Cached inZoneContours can become stale after manual drag/rotate.
+      const raw = Array.isArray(p.alignedContour) ? p.alignedContour : [];
+      const points = raw
+        .map((q) => ({ x: Number(q && q.x), y: Number(q && q.y) }))
+        .filter((q) => Number.isFinite(q.x) && Number.isFinite(q.y));
+      if (points.length >= 3) {
+        pieceMp = pointsToMultiPolygon(points);
+        if (Array.isArray(pieceMp) && pieceMp.length) {
+          inZoneMp = intersectMulti(pieceMp, zoneMp);
+          // Robust fallback for manual mode: boolean kernel may fail on noisy contours
+          // and return empty intersection even when piece is visually inside zone.
+          if (!Array.isArray(inZoneMp) || !inZoneMp.length) {
+            const insideCount = points.reduce((acc, q) => acc + (pointInPolygon(q, zonePoints) ? 1 : 0), 0);
+            const center = (() => {
+              let sx = 0;
+              let sy = 0;
+              let n = 0;
+              for (const q of points) {
+                const x = Number(q && q.x);
+                const y = Number(q && q.y);
+                if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+                sx += x;
+                sy += y;
+                n++;
+              }
+              return n > 0 ? { x: sx / n, y: sy / n } : null;
+            })();
+            const centerInside = center ? pointInPolygon(center, zonePoints) : false;
+            // Use full piece as in-zone only when geometry strongly indicates piece is inside.
+            if ((insideCount >= Math.max(3, Math.floor(points.length * 0.6))) || centerInside) {
+              inZoneMp = pieceMp;
+            }
+          }
+        }
+      }
+
+      // Fallback for legacy placements without alignedContour.
+      if (!Array.isArray(inZoneMp) || !inZoneMp.length) {
+        const fromPlacement = Array.isArray(p.inZoneContours) ? p.inZoneContours : [];
+        inZoneMp = Array.isArray(fromPlacement) ? fromPlacement : [];
+      }
+      if (!Array.isArray(inZoneMp) || inZoneMp.length === 0) return null;
+      const inZoneAreaMm2 = Math.max(0, multiPolygonArea(inZoneMp));
+      if (inZoneAreaMm2 <= 1e-9) return null;
+      const fullPieceAreaMm2 = Math.max(
+        0,
+        Number.isFinite(Number(p.scrapAreaMm2))
+          ? Number(p.scrapAreaMm2)
+          : (pieceMp.length ? multiPolygonArea(pieceMp) : inZoneAreaMm2)
+      );
+      return {
+        placementIndex: x.placementIndex,
+        p,
+        inZoneMp,
+        inZoneAreaMm2,
+        fullPieceAreaMm2
+      };
+    })
+    .filter(Boolean);
+
+  const topOrder = matched
+    .map((item) => {
+      const area = Math.max(0, Number(item.fullPieceAreaMm2 || item.inZoneAreaMm2 || 0));
+      return {
+        ...item,
+        _sortArea: area
+      };
+    })
+    .sort((a, b) => {
+      if (layerPolicy === "first_on_top") {
+        if (a.placementIndex !== b.placementIndex) return a.placementIndex - b.placementIndex;
+        return b._sortArea - a._sortArea;
+      }
+      if (b._sortArea !== a._sortArea) return b._sortArea - a._sortArea;
+      return a.placementIndex - b.placementIndex;
+    });
+
+  let coveredAboveMp = [];
+  let inZoneUnionMp = [];
+  let selectedInZoneAreaMm2 = 0;
+  let selectedPiecesAreaMm2 = 0;
+  let visibleAreaMm2Total = 0;
+  const byPlacementIndex = new Map();
+  const debugPlacements = [];
+
+  // Visible part of each piece is (pieceInZone - union(of all pieces above it)).
+  for (let i = 0; i < topOrder.length; i++) {
+    const item = topOrder[i];
+    const visibleMp = coveredAboveMp.length
+      ? diffMulti(item.inZoneMp, coveredAboveMp)
+      : item.inZoneMp;
+    const visibleAreaMm2 = Math.max(0, multiPolygonArea(visibleMp));
+    const overlapAreaMm2 = Math.max(0, item.inZoneAreaMm2 - visibleAreaMm2);
+    coveredAboveMp = coveredAboveMp.length
+      ? unionMulti(coveredAboveMp, item.inZoneMp)
+      : item.inZoneMp;
+    inZoneUnionMp = inZoneUnionMp.length
+      ? unionMulti(inZoneUnionMp, item.inZoneMp)
+      : item.inZoneMp;
+    selectedInZoneAreaMm2 += item.inZoneAreaMm2;
+    selectedPiecesAreaMm2 += item.fullPieceAreaMm2;
+    visibleAreaMm2Total += visibleAreaMm2;
+    byPlacementIndex.set(item.placementIndex, {
+      inZoneMp: item.inZoneMp,
+      visibleMp,
+      inZoneAreaMm2: item.inZoneAreaMm2,
+      visibleAreaMm2,
+      overlapAreaMm2,
+      zOrder: i,
+      fullPieceAreaMm2: item.fullPieceAreaMm2
+    });
+  }
+
+  const fragments = [];
+  const visibleContours = [];
+  let nextFragId = 1;
+
+  for (const item of matched) {
+    const rec = byPlacementIndex.get(item.placementIndex) || {
+      inZoneMp: [],
+      visibleMp: [],
+      inZoneAreaMm2: 0,
+      visibleAreaMm2: 0,
+      overlapAreaMm2: 0,
+      zOrder: item.placementIndex
+    };
+    const ownerFragmentId = Number(item.p && item.p.fragmentId);
+    const ownerPlacementId = Number.isFinite(ownerFragmentId) ? ownerFragmentId : null;
+    const scrapPieceId = String(item.p && item.p.scrapPieceId || "");
+    const inventoryTag = String(item.p && item.p.inventoryTag || "");
+    visibleContours.push({
+      placementIndex: item.placementIndex,
+      ownerPlacementId,
+      scrapPieceId,
+      inventoryTag,
+      zOrder: rec.zOrder,
+      inZoneContours: rec.inZoneMp,
+      visibleContours: rec.visibleMp,
+      inZoneAreaMm2: Math.round(rec.inZoneAreaMm2 * 1000) / 1000,
+      visibleAreaMm2: Math.round(rec.visibleAreaMm2 * 1000) / 1000,
+      gainAreaMm2: Math.round(rec.visibleAreaMm2 * 1000) / 1000,
+      overlapInZoneAreaMm2: Math.round(rec.overlapAreaMm2 * 1000) / 1000
+    });
+    if (includeDebug) {
+      const aligned = Array.isArray(item && item.p && item.p.alignedContour) ? item.p.alignedContour : [];
+      const alignedBBox = polygonBBox(aligned);
+      debugPlacements.push({
+        placementIndex: item.placementIndex,
+        pieceId: String(item && item.p && item.p.scrapPieceId || ""),
+        inventoryTag: String(item && item.p && item.p.inventoryTag || ""),
+        rotationDeg: Number(item && item.p && item.p.alignRotationDeg || 0),
+        offsetX: Number(item && item.p && item.p.alignOffsetX || 0),
+        offsetY: Number(item && item.p && item.p.alignOffsetY || 0),
+        areaPfull: Math.round(Math.max(0, Number(rec.fullPieceAreaMm2 || 0)) * 1000) / 1000,
+        areaPfullZ: Math.round(Math.max(0, Number(rec.inZoneAreaMm2 || 0)) * 1000) / 1000,
+        gain: Math.round(Math.max(0, Number(rec.visibleAreaMm2 || 0)) * 1000) / 1000,
+        overlap: Math.round(Math.max(0, Number(rec.overlapAreaMm2 || 0)) * 1000) / 1000,
+        outside: Math.round(Math.max(0, Number((rec.fullPieceAreaMm2 || 0) - (rec.inZoneAreaMm2 || 0))) * 1000) / 1000,
+        bboxAligned: alignedBBox ? {
+          minX: Number(alignedBBox.minX || 0),
+          minY: Number(alignedBBox.minY || 0),
+          maxX: Number(alignedBBox.maxX || 0),
+          maxY: Number(alignedBBox.maxY || 0),
+          width: Number(alignedBBox.width || 0),
+          height: Number(alignedBBox.height || 0)
+        } : null
+      });
+    }
+
+    for (const poly of Array.isArray(rec.visibleMp) ? rec.visibleMp : []) {
+      if (!Array.isArray(poly) || poly.length === 0) continue;
+      const outer = Array.isArray(poly[0]) ? poly[0] : null;
+      if (!Array.isArray(outer) || outer.length < 4) continue;
+      const areaMm2 = multiPolygonArea([poly]);
+      if (!Number.isFinite(areaMm2) || areaMm2 < minAreaMm2) continue;
+      const pts = [];
+      for (let i = 0; i < outer.length - 1; i++) {
+        const x = Number(outer[i] && outer[i][0]);
+        const y = Number(outer[i] && outer[i][1]);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        pts.push({ x, y });
+      }
+      const cleanPts = cleanClosedPolygon(pts, contourCleanCfg);
+      if (!Array.isArray(cleanPts) || cleanPts.length < 3) continue;
+      const cleanAreaMm2 = polygonArea(cleanPts);
+      if (!Number.isFinite(cleanAreaMm2) || cleanAreaMm2 < minAreaMm2) continue;
+      fragments.push({
+        id: nextFragId++,
+        points: cleanPts,
+        areaMm2: Math.round(cleanAreaMm2 * 1000) / 1000,
+        ownerPlacementId,
+        ownerPlacementIndex: item.placementIndex,
+        scrapPieceId,
+        inventoryTag,
+        zOrder: rec.zOrder
+      });
+      if (fragments.length >= maxFragments) break;
+    }
+    if (fragments.length >= maxFragments) break;
+  }
+
+  const usefulAreaMm2 = Math.max(0, visibleAreaMm2Total);
+  const inZoneUnionAreaMm2 = Math.max(0, multiPolygonArea(inZoneUnionMp));
+  const overlapAreaMm2 = Math.max(0, selectedInZoneAreaMm2 - inZoneUnionAreaMm2);
+  const utilizationPct = selectedPiecesAreaMm2 > 1e-9
+    ? Math.max(0, Math.min(100, (usefulAreaMm2 / selectedPiecesAreaMm2) * 100))
+    : 0;
+
+  return {
+    fragments,
+    visibleContours,
+    visibleAreaPolygons: multiToOuterPolygons(inZoneUnionMp, { minAreaMm2, maxPolygons }),
+    layerPolicy,
+    usefulAreaMm2: Math.round(usefulAreaMm2 * 1000) / 1000,
+    selectedPiecesAreaMm2: Math.round(selectedPiecesAreaMm2 * 1000) / 1000,
+    selectedInZoneAreaMm2: Math.round(selectedInZoneAreaMm2 * 1000) / 1000,
+    overlapAreaMm2: Math.round(overlapAreaMm2 * 1000) / 1000,
+    utilizationPct: Math.round(utilizationPct * 1000) / 1000,
+    debugPlacements
+  };
+}
+
+function normalizeContour(points) {
+  return (Array.isArray(points) ? points : [])
+    .map((p) => ({ x: Number(p && p.x), y: Number(p && p.y) }))
+    .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+}
+
+function largestOuterRingPointsLocal(mp) {
+  let best = [];
+  let bestArea = 0;
+  for (const poly of Array.isArray(mp) ? mp : []) {
+    const outer = Array.isArray(poly) && Array.isArray(poly[0]) ? poly[0] : null;
+    if (!Array.isArray(outer) || outer.length < 4) continue;
+    const area = ringAreaAbs(outer);
+    if (!Number.isFinite(area) || area <= bestArea) continue;
+    const pts = [];
+    for (let i = 0; i < outer.length - 1; i++) {
+      const x = Number(outer[i] && outer[i][0]);
+      const y = Number(outer[i] && outer[i][1]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      pts.push({ x, y });
+    }
+    if (pts.length < 3) continue;
+    bestArea = area;
+    best = pts;
+  }
+  return best;
+}
+
+function enrichPlacementContoursForZone(placements, zonePoints) {
+  const list = Array.isArray(placements) ? placements : [];
+  const zonePts = normalizeContour(zonePoints);
+  if (zonePts.length < 3 || list.length === 0) return list;
+  let zoneMp = [];
+  try {
+    zoneMp = pointsToMultiPolygon(zonePts);
+  } catch (_) {
+    return list;
+  }
+
+  return list.map((pl) => {
+    const p = pl && typeof pl === "object" ? pl : {};
+    const out = { ...p };
+
+    const hasInZoneContours = Array.isArray(out.inZoneContours) && out.inZoneContours.length > 0;
+    const hasInZoneContour = Array.isArray(out.inZoneContour) && out.inZoneContour.length >= 3;
+    if (!hasInZoneContours || !hasInZoneContour) {
+      const aligned = normalizeContour(out.alignedContour);
+      if (aligned.length >= 3) {
+        try {
+          const inZoneMp = intersectMulti(pointsToMultiPolygon(aligned), zoneMp);
+          if (!hasInZoneContours) out.inZoneContours = inZoneMp;
+          if (!hasInZoneContour) {
+            const outer = largestOuterRingPointsLocal(inZoneMp);
+            out.inZoneContour = outer.length >= 3 ? outer : [];
+          }
+        } catch (_) {}
+      }
+    }
+
+    const hasCoreContours = Array.isArray(out.inZoneCoreContours) && out.inZoneCoreContours.length > 0;
+    const hasCoreContour = Array.isArray(out.inZoneCoreContour) && out.inZoneCoreContour.length >= 3;
+    if (!hasCoreContours || !hasCoreContour) {
+      const coreAligned = normalizeContour(out.alignedCoreContour);
+      if (coreAligned.length >= 3) {
+        try {
+          const coreInZoneMp = intersectMulti(pointsToMultiPolygon(coreAligned), zoneMp);
+          if (!hasCoreContours) out.inZoneCoreContours = coreInZoneMp;
+          if (!hasCoreContour) {
+            const outerCore = largestOuterRingPointsLocal(coreInZoneMp);
+            out.inZoneCoreContour = outerCore.length >= 3 ? outerCore : [];
+          }
+          if (!Number.isFinite(Number(out.inZoneCoreAreaMm2)) || Number(out.inZoneCoreAreaMm2) <= 0) {
+            out.inZoneCoreAreaMm2 = Math.max(0, multiPolygonArea(coreInZoneMp));
+          }
+        } catch (_) {}
+      } else {
+        if (!hasCoreContours) out.inZoneCoreContours = [];
+        if (!hasCoreContour) out.inZoneCoreContour = [];
+      }
+    }
+
+    return out;
+  });
+}
+
+function buildSplitReturnPreviewArtifacts(placements, visibleContours, options) {
+  const list = Array.isArray(placements) ? placements : [];
+  const visibleList = Array.isArray(visibleContours) ? visibleContours : [];
+  const cfg = options && typeof options === "object" ? options : {};
+  const minLeftoverAreaMm2 = Math.max(0, Number(cfg.minLeftoverAreaMm2 || 0));
+  const minLeftoverSpanMm = Math.max(0, Number(cfg.minLeftoverSpanMm || 0));
+  const visibleByPlacement = new Map();
+  for (const vc of visibleList) {
+    const idx = Number(vc && vc.placementIndex);
+    if (!Number.isFinite(idx)) continue;
+    visibleByPlacement.set(idx, vc);
+  }
+  const splitEvents = [];
+  const placementsOut = list.map((p, idx) => {
+    const vc = visibleByPlacement.get(idx) || null;
+    const usedVisibleContours = Array.isArray(vc && vc.visibleContours) ? vc.visibleContours : [];
+    const usedVisibleContour = largestOuterRingPointsLocal(usedVisibleContours);
+    const usedVisibleAreaMm2 = Math.max(0, Number(vc && vc.visibleAreaMm2 || 0));
+    const parentKeyRaw = String((p && p.scrapPieceId) || (p && p.inventoryTag) || `placement_${idx + 1}`);
+    const parentCandidateKey = parentKeyRaw.trim() || `placement_${idx + 1}`;
+    const fullAreaMm2 = Math.max(0, Number(p && p.scrapAreaMm2 || 0));
+    const leftoverAreaMm2 = Math.max(0, fullAreaMm2 - usedVisibleAreaMm2);
+    const spanGateOk = minLeftoverSpanMm <= 0;
+    const acceptLeftover = leftoverAreaMm2 >= minLeftoverAreaMm2 && spanGateOk;
+    const derivedCandidateKeys = acceptLeftover ? [`${parentCandidateKey}#g1#s1`] : [];
+    splitEvents.push({
+      parentCandidateKey,
+      usedWorldContours: usedVisibleContours,
+      usedWorldContour: usedVisibleContour,
+      usedAreaMm2: Math.round(usedVisibleAreaMm2 * 1000) / 1000,
+      leftoverAreaMm2: Math.round(leftoverAreaMm2 * 1000) / 1000,
+      leftoverContoursLocal: [],
+      derivedCandidateKeys
+    });
+    return {
+      ...(p || {}),
+      usedVisibleContours,
+      usedVisibleContour,
+      usedVisibleAreaMm2: Math.round(usedVisibleAreaMm2 * 1000) / 1000
+    };
+  });
+  return { placements: placementsOut, splitEvents };
+}
+
+async function handleLayoutRoutes(req, res, reqUrl, deps) {
+  const {
+    jsonReply,
+    readBodyJson,
+    normalizePolygonInput,
+    polygonArea,
+    safeNum,
+    generateRegularFragments,
+    generateVoronoiFragments,
+    applyNormalizeRules,
+    assignCandidatesToFragments,
+    assignInventoryDirect,
+    rankCandidatesForFragment,
+    createGridSpec,
+    emitLayoutProgress
+  } = deps;
+  const modeRegistry = createModeRegistry({
+    assignInventoryDirect,
+    generateRegularFragments,
+    generateVoronoiFragments,
+    applyNormalizeRules,
+    assignCandidatesToFragments,
+    normalizePolygonInput,
+    polygonArea
+  });
+
+  if (req.method === "POST" && reqUrl.pathname === "/api/layout/modes/preview") {
+    const body = await readBodyJson(req);
+    const parsed = parsePreviewWrapperRequest(body);
+    if (!parsed.ok) return jsonReply(res, 400, { ok: false, error: parsed.error });
+    const wrapReq = parsed.value;
+    let mode = null;
+    try {
+      mode = modeRegistry.require(wrapReq.layoutType);
+    } catch (e) {
+      return jsonReply(res, 400, { ok: false, error: "layout_type_unsupported" });
+    }
+    if (typeof mode.validatePreview === "function") {
+      const v = mode.validatePreview(wrapReq);
+      if (!v || v.ok !== true) {
+        return jsonReply(res, 400, { ok: false, error: String(v && v.error || "invalid_preview_request") });
+      }
+    }
+    if (typeof mode.previewWrapper !== "function") {
+      return jsonReply(res, 501, {
+        ok: false,
+        error: "preview_not_implemented",
+        layoutType: wrapReq.layoutType
+      });
+    }
+    const wrapped = await mode.previewWrapper(wrapReq);
+    return jsonReply(res, 200, wrapped);
+  }
+
+  if (req.method === "POST" && reqUrl.pathname === "/api/layout/modes/apply") {
+    const body = await readBodyJson(req);
+    const layoutType = String(body && body.layoutType || "").trim();
+    if (!layoutType) return jsonReply(res, 400, { ok: false, error: "layout_type_required" });
+    let mode = null;
+    try {
+      mode = modeRegistry.require(layoutType);
+    } catch (e) {
+      return jsonReply(res, 400, { ok: false, error: "layout_type_unsupported" });
+    }
+    if (typeof mode.applyWrapper !== "function") {
+      return jsonReply(res, 501, {
+        ok: false,
+        layoutType,
+        error: "apply_not_implemented",
+        message: "Mode apply adapter is not connected."
+      });
+    }
+    const out = await mode.applyWrapper(body && typeof body === "object" ? body : {});
+    return jsonReply(res, 200, out);
+  }
+
+  if (req.method === "POST" && reqUrl.pathname === "/api/layout/fill/preview") {
+    const body = await readBodyJson(req);
+    const progressToken = String(reqUrl.searchParams.get("progressToken") || body.progressToken || "").trim();
+    const pushProgress = (payload) => {
+      if (!progressToken || typeof emitLayoutProgress !== "function") return;
+      try { emitLayoutProgress(progressToken, payload); } catch (_) {}
+    };
+    pushProgress({ type: "phase", phase: "server_prepare", percent: 69, title: "Сервер / подготовка данных" });
+    const zone = body.zone || {};
+    const zonePoints = normalizePolygonInput(zone.points);
+    if (zonePoints.length < 3) return jsonReply(res, 400, { ok: false, error: "zone_points_required" });
+    const areaMm2 = polygonArea(zonePoints);
+    if (areaMm2 <= 0) return jsonReply(res, 400, { ok: false, error: "invalid_zone_polygon" });
+    const zBBox = polygonBBox(zonePoints);
+    if (!zBBox) return jsonReply(res, 400, { ok: false, error: "zone_bbox_invalid" });
+    pushProgress({ type: "phase", phase: "server_zone_geometry", percent: 72, title: "Сервер / геометрия зоны" });
+
+    const fillType = String(body.fillType || "voronoi").toLowerCase();
+    if (fillType !== "voronoi" && fillType !== "regular") {
+      return jsonReply(res, 400, { ok: false, error: "unsupported_fill_type" });
+    }
+    const axis = String(body.axis || "y").toLowerCase() === "x" ? "x" : "y";
+    const placementStrategy = String(body.placementStrategy || "bestFit");
+    if (!["greedy", "bestFit", "manualAssist"].includes(placementStrategy)) {
+      return jsonReply(res, 400, { ok: false, error: "unsupported_placement_strategy" });
+    }
+    const directInventoryPlanned = body.directInventory === true;
+    const seamReserveAliasZone = safeNum(zone && zone.seamAllowanceReserveMm);
+    const seamReserveAliasBody = safeNum(body.seamAllowanceReserveMm);
+    const pieceSeamReserveRaw = safeNum(body.pieceSeamReserveMm);
+    const options = {
+      axis,
+      minAreaMm2: safeNum(body.minAreaMm2) === null ? 0 : Number(body.minAreaMm2),
+      maxCandidates: safeNum(body.maxCandidates) === null ? 300 : Number(body.maxCandidates),
+      minFragmentWidthMm: safeNum(body.minFragmentWidthMm) === null ? (directInventoryPlanned ? 100 : 0) : Number(body.minFragmentWidthMm),
+      minFragmentLengthMm: safeNum(body.minFragmentLengthMm) === null ? (directInventoryPlanned ? 100 : 0) : Number(body.minFragmentLengthMm),
+      density: safeNum(body.density) === null ? 5 : Number(body.density),
+      variability: safeNum(body.variability) === null ? 5 : Number(body.variability),
+      anisotropy: safeNum(body.anisotropy) === null ? 5 : Number(body.anisotropy),
+      rows: safeNum(body.rows) === null ? 5 : Number(body.rows),
+      cols: safeNum(body.cols) === null ? 5 : Number(body.cols),
+      gapX: safeNum(body.gapX) === null ? 0 : Number(body.gapX),
+      gapY: safeNum(body.gapY) === null ? 0 : Number(body.gapY),
+      cornerRadius: safeNum(body.cornerRadius) === null ? 0 : Number(body.cornerRadius),
+      maxPieces: safeNum(body.maxPieces) === null ? 120 : Number(body.maxPieces),
+      maxPieceOverlap: safeNum(body.maxPieceOverlap) === null ? 0.9 : Number(body.maxPieceOverlap),
+      minInsideRatio: safeNum(body.minInsideRatio),
+      minGainAreaMm2: safeNum(body.minGainAreaMm2) === null ? 60 : Number(body.minGainAreaMm2),
+      enforceMinGainByArea: body.enforceMinGainByArea !== false,
+      overlapPenalty: safeNum(body.overlapPenalty) === null ? 0.25 : Number(body.overlapPenalty),
+      outsidePenalty: safeNum(body.outsidePenalty) === null ? 0.05 : Number(body.outsidePenalty),
+      seamAllowanceReserveMm: safeNum(body.seamAllowanceReserveMm),
+      pieceSeamReserveMm: pieceSeamReserveRaw !== null
+        ? Number(pieceSeamReserveRaw)
+        : (seamReserveAliasBody !== null
+            ? Number(seamReserveAliasBody)
+            : (seamReserveAliasZone !== null ? Number(seamReserveAliasZone) : 0)),
+      seamEpsRatio: safeNum(body.seamEpsRatio),
+      seamEpsMm2: safeNum(body.seamEpsMm2),
+      coverageTarget: safeNum(body.coverageTarget),
+      strictCoverage: body.strictCoverage !== false,
+      strictCoverageHard: body.strictCoverageHard === true,
+      coverageEps: safeNum(body.coverageEps),
+      objectiveMode: String(body.objectiveMode || "default"),
+      objectiveMinEfficiency: safeNum(body.objectiveMinEfficiency),
+      objectivePiecePenalty: safeNum(body.objectivePiecePenalty) === null ? 0.18 : Number(body.objectivePiecePenalty),
+      objectiveFragmentPenalty: safeNum(body.objectiveFragmentPenalty) === null ? 0.28 : Number(body.objectiveFragmentPenalty),
+      minEfficiencyBase: safeNum(body.minEfficiencyBase) === null ? 0.20 : Number(body.minEfficiencyBase),
+      phaseAEndCoverage: safeNum(body.phaseAEndCoverage) === null ? 0.42 : Number(body.phaseAEndCoverage),
+      phaseAInsideMin: safeNum(body.phaseAInsideMin) === null ? 0.995 : Number(body.phaseAInsideMin),
+      phaseAMaxOverlap: safeNum(body.phaseAMaxOverlap) === null ? 0.008 : Number(body.phaseAMaxOverlap),
+      phaseBEfficiencyMin: safeNum(body.phaseBEfficiencyMin) === null ? 0.62 : Number(body.phaseBEfficiencyMin),
+      phaseAMinPieces: safeNum(body.phaseAMinPieces) === null ? 2 : Number(body.phaseAMinPieces),
+      phaseAMinGainMm2: safeNum(body.phaseAMinGainMm2) === null ? 12000 : Number(body.phaseAMinGainMm2),
+      phaseAMinGainShare: safeNum(body.phaseAMinGainShare) === null ? 0.08 : Number(body.phaseAMinGainShare),
+      minGainVisibleMm2: safeNum(body.minVisibleFragmentAreaMm2) === null
+        ? (safeNum(body.minGainVisibleMm2) === null ? 8000 : Number(body.minGainVisibleMm2))
+        : Number(body.minVisibleFragmentAreaMm2),
+      minSpanMm: safeNum(body.minVisibleFragmentSpanMm) === null
+        ? (safeNum(body.minSpanMm) === null ? 80 : Number(body.minSpanMm))
+        : Number(body.minVisibleFragmentSpanMm),
+      minVisibleFragmentAreaMm2: safeNum(body.minVisibleFragmentAreaMm2),
+      minVisibleFragmentSpanMm: safeNum(body.minVisibleFragmentSpanMm),
+      maxSolveMs: safeNum(body.maxSolveMs),
+      hardMaxSolveMs: safeNum(body.hardMaxSolveMs),
+      maxPointsPerCandidate: safeNum(body.maxPointsPerCandidate),
+      coverageFirst: body.coverageFirst === undefined ? true : body.coverageFirst === true,
+      enforceTimeBudget: body.enforceTimeBudget !== false,
+      maxRepairAttempts: safeNum(body.maxRepairAttempts),
+      repairWindow: safeNum(body.repairWindow),
+      tailCoverageStart: safeNum(body.tailCoverageStart) === null ? 0.93 : Number(body.tailCoverageStart),
+      tailResidualRatio: safeNum(body.tailResidualRatio) === null ? 0.03 : Number(body.tailResidualRatio),
+      tailResidualLooseRatio: safeNum(body.tailResidualLooseRatio) === null ? 0.015 : Number(body.tailResidualLooseRatio),
+      tailMinEfficiency: safeNum(body.tailMinEfficiency) === null ? 0.30 : Number(body.tailMinEfficiency),
+      tailMinEfficiencyLoose: safeNum(body.tailMinEfficiencyLoose) === null ? 0.18 : Number(body.tailMinEfficiencyLoose),
+      pocketModeStartRatio: safeNum(body.pocketModeStartRatio) === null ? 0.08 : Number(body.pocketModeStartRatio),
+      pocketAreaK: safeNum(body.pocketAreaK) === null ? 2.4 : Number(body.pocketAreaK),
+      tailOversizeAlpha: safeNum(body.tailOversizeAlpha) === null ? 2.4 : Number(body.tailOversizeAlpha),
+      tailStallTrigger: safeNum(body.tailStallTrigger) === null ? 3 : Number(body.tailStallTrigger),
+      tailPenaltyBoost: safeNum(body.tailPenaltyBoost) === null ? 2.2 : Number(body.tailPenaltyBoost),
+      tailMaxPlacements: safeNum(body.tailMaxPlacements) === null ? 14 : Number(body.tailMaxPlacements),
+      tailCapResidualRatio: safeNum(body.tailCapResidualRatio) === null ? 0.03 : Number(body.tailCapResidualRatio),
+      tailMinGainShare: safeNum(body.tailMinGainShare) === null ? 0.22 : Number(body.tailMinGainShare),
+      tailMinGainCapMm2: safeNum(body.tailMinGainCapMm2) === null ? 280 : Number(body.tailMinGainCapMm2),
+      pocketCoverageThresholdA: safeNum(body.pocketCoverageThresholdA),
+      pocketCoverageBonusA: safeNum(body.pocketCoverageBonusA),
+      gridAnchorEnable: body.gridAnchorEnable !== false,
+      gridAnchorStepFactor: safeNum(body.gridAnchorStepFactor),
+      gridAnchorMax: safeNum(body.gridAnchorMax),
+      cleanLayoutMode: body.cleanLayoutMode !== false,
+      cleanOverlapRatioMaxAB: safeNum(body.cleanOverlapRatioMaxAB),
+      cleanOverlapRatioMaxC: safeNum(body.cleanOverlapRatioMaxC),
+      gridAcceptCoverageRatio: safeNum(body.gridAcceptCoverageRatio),
+      cleanPiecePenalty: safeNum(body.cleanPiecePenalty),
+      layerPolicy: String(body.layerPolicy || "priority_on_top"),
+      solverMode: String(body.solverMode || "phasedV1"),
+      rasterMm: safeNum(body.rasterMm),
+      seed: safeNum(body.seed) === null ? Date.now() : Number(body.seed)
+    };
+    options.onProgress = (evt) => {
+      if (!evt || typeof evt !== "object") return;
+      pushProgress({ type: "solver", ...evt });
+    };
+    const qualityMode = String(body.qualityMode || "strict").toLowerCase() === "draft" ? "draft" : "strict";
+    const rasterMm = qualityMode === "draft"
+      ? Math.max(5, Math.min(10, Number(body.rasterMm || 5)))
+      : Math.max(1, Math.min(5, Number(body.rasterMm || 2)));
+    options.qualityMode = qualityMode;
+    options.rasterMm = rasterMm;
+    const gridSpec = createGridSpec(zBBox, rasterMm, 2);
+    const filters = body.filters && typeof body.filters === "object" ? body.filters : {};
+    const constraints = body.constraints && typeof body.constraints === "object" ? body.constraints : {
+      napDirectionDeg: safeNum(body.napDirectionDeg),
+      napToleranceDeg: safeNum(body.napToleranceDeg) === null ? 15 : Number(body.napToleranceDeg),
+      napPolicy: String(body.napPolicy || "normal"),
+      napWeight: safeNum(body.napWeight) === null ? 1 : Number(body.napWeight),
+      allowFlip180: false,
+      minAlongMm: safeNum(body.minAlongMm),
+      maxAlongMm: safeNum(body.maxAlongMm),
+      minAcrossMm: safeNum(body.minAcrossMm),
+      maxAcrossMm: safeNum(body.maxAcrossMm),
+      minAreaMm2: safeNum(body.minAreaMm2),
+      maxAreaMm2: safeNum(body.maxAreaMm2),
+      minCoverageRatio: 0.75
+    };
+    const normalizeRules = body.normalizeRules && typeof body.normalizeRules === "object" ? body.normalizeRules : {
+      minFragmentWidthMm: safeNum(body.minFragmentWidthMm),
+      minFragmentLengthMm: safeNum(body.minFragmentLengthMm),
+      simplifyToleranceMm: safeNum(body.simplifyToleranceMm),
+      mergeSmallFragments: false,
+      seamAllowanceReserveMm: safeNum(body.seamAllowanceReserveMm)
+    };
+    const visibleMinAreaMm2 = Math.max(
+      1,
+      safeNum(body.minAreaMm2) === null ? 1 : Number(body.minAreaMm2)
+    );
+    const candidates = Array.isArray(body.candidates) ? body.candidates : [];
+    pushProgress({
+      type: "phase",
+      phase: "server_candidate_filter",
+      percent: 76,
+      title: "Сервер / фильтрация кандидатов",
+      candidatesInput: candidates.length
+    });
+    const looksLikeInventoryFlow =
+      (constraints && constraints.requireScrapContour === true) ||
+      (Array.isArray(candidates) && candidates.some((c) => c && (c.scrapContour || c.inventoryTag)));
+    const directInventory = body.directInventory === true || looksLikeInventoryFlow;
+    const requestedModeId = String(body.modeId || "").trim();
+    const splitReturnEnabled = requestedModeId === "inventory_split_return" || body.splitReturnEnabled === true;
+    const assignOnly = body.assignOnly === true;
+    const directSoftProfile = directInventory;
+    if (directInventory) {
+      // Soft default profile for direct inventory solver:
+      // keep explicit user values untouched, relax only implicit defaults.
+      if (safeNum(body.minFragmentWidthMm) === null) options.minFragmentWidthMm = 0;
+      if (safeNum(body.minFragmentLengthMm) === null) options.minFragmentLengthMm = 0;
+      if (safeNum(body.outsidePenalty) === null) options.outsidePenalty = 0.03;
+      if (safeNum(body.minEfficiencyBase) === null) options.minEfficiencyBase = 0.12;
+      if (safeNum(body.phaseAEndCoverage) === null) options.phaseAEndCoverage = 0.22;
+      if (safeNum(body.phaseAInsideMin) === null) options.phaseAInsideMin = 0.90;
+      if (safeNum(body.phaseAMaxOverlap) === null) options.phaseAMaxOverlap = 0.08;
+      if (safeNum(body.phaseBEfficiencyMin) === null) options.phaseBEfficiencyMin = 0.42;
+      if (safeNum(body.phaseAMinPieces) === null) options.phaseAMinPieces = 1;
+      if (safeNum(body.phaseAMinGainMm2) === null) options.phaseAMinGainMm2 = 4000;
+      if (safeNum(body.phaseAMinGainShare) === null) options.phaseAMinGainShare = 0.03;
+      if (safeNum(body.minGainVisibleMm2) === null) options.minGainVisibleMm2 = Math.max(1000, Math.min(5000, areaMm2 * 0.0015));
+      if (safeNum(body.minSpanMm) === null) options.minSpanMm = 60;
+      if (safeNum(body.maxSolveMs) === null) options.maxSolveMs = 240000;
+      if (safeNum(body.hardMaxSolveMs) === null) options.hardMaxSolveMs = 480000;
+      if (safeNum(body.maxRepairAttempts) === null) options.maxRepairAttempts = 4;
+      if (safeNum(body.repairWindow) === null) options.repairWindow = 30;
+      if (!body.solverMode) options.solverMode = splitReturnEnabled ? "phasedV1" : "gridcoverv1";
+      // Guardrail: UI may send stale strict/legacy defaults; prefer robust direct profile
+      // unless caller explicitly disables it via directSoftProfile=false.
+      if (directSoftProfile) {
+        // Contract rule: Scenario A is acceptable only with full zone coverage.
+        options.strictCoverage = true;
+        options.strictCoverageHard = true;
+        options.coverageTarget = 0.99999;
+        options.coverageEps = 0.0005;
+        options.solverMode = splitReturnEnabled
+          ? String(body.solverMode || "phasedV1")
+          : "gridcoverv1";
+        options.cleanLayoutMode = splitReturnEnabled ? false : true;
+        options.maxPieces = Math.max(220, Number(options.maxPieces || 0));
+        options.maxSolveMs = Math.max(240000, Number(options.maxSolveMs || 0));
+        options.hardMaxSolveMs = Math.max(480000, Number(options.hardMaxSolveMs || 0));
+        if (safeNum(body.cleanOverlapRatioMaxAB) === null) options.cleanOverlapRatioMaxAB = 0.32;
+        if (safeNum(body.cleanOverlapRatioMaxC) === null) options.cleanOverlapRatioMaxC = 0.45;
+        if (safeNum(body.gridAcceptCoverageRatio) === null) options.gridAcceptCoverageRatio = 0.978;
+        if (safeNum(body.cleanPiecePenalty) === null) options.cleanPiecePenalty = 0.3;
+        if (body.enableLegacyFallback === undefined) options.enableLegacyFallback = false;
+      }
+      options.directSoftProfileApplied = !!directSoftProfile;
+      if (splitReturnEnabled) options.layerPolicy = "first_on_top";
+      if (splitReturnEnabled) {
+        // Split&Return needs softer gates so derived leftovers can re-enter search.
+        if (safeNum(body.minEfficiencyBase) === null) options.minEfficiencyBase = 0.03;
+        if (safeNum(body.phaseBEfficiencyMin) === null) options.phaseBEfficiencyMin = 0.15;
+        if (safeNum(body.tailMinEfficiency) === null) options.tailMinEfficiency = 0.08;
+        if (safeNum(body.tailMinEfficiencyLoose) === null) options.tailMinEfficiencyLoose = 0.02;
+        if (safeNum(body.phaseAMinGainMm2) === null) options.phaseAMinGainMm2 = 500;
+        if (safeNum(body.minGainAreaMm2) === null) options.minGainAreaMm2 = 1;
+        if (safeNum(body.minGainVisibleMm2) === null) options.minGainVisibleMm2 = 40;
+        if (safeNum(body.minSpanMm) === null) options.minSpanMm = 10;
+        if (safeNum(body.maxPieceOverlap) === null) options.maxPieceOverlap = 0.995;
+        if (safeNum(body.cleanPiecePenalty) === null) options.cleanPiecePenalty = 0;
+        if (body.coverageFirst === undefined) options.coverageFirst = true;
+      }
+    }
+
+    if (assignOnly) {
+      pushProgress({ type: "phase", phase: "server_assign_prepare", percent: 80, title: "Сервер / подготовка подбора по фрагментам" });
+      const inFrags = Array.isArray(body.fragments) ? body.fragments : [];
+      const fragments = inFrags
+        .map((f, i) => {
+          const pts = normalizePolygonInput(f && f.points);
+          if (pts.length < 3) return null;
+          return {
+            id: Number.isFinite(Number(f && f.id)) ? Number(f.id) : (i + 1),
+            points: pts,
+            areaMm2: polygonArea(pts)
+          };
+        })
+        .filter(Boolean);
+      if (!fragments.length) return jsonReply(res, 400, { ok: false, error: "fragments_required_for_assign_only" });
+      pushProgress({
+        type: "solver",
+        phase: "intarsia_assign_start",
+        percent: 83,
+        iter: 0,
+        fragmentsTotal: fragments.length,
+        candidatesInput: Array.isArray(candidates) ? candidates.length : 0,
+        title: "Интарсия / подбор по фрагментам"
+      });
+      const tAssign0 = Date.now();
+      const effectivePlacementStrategy = (fillType === "regular")
+        ? "intarsiaSmart"
+        : placementStrategy;
+      const assignConstraints = { ...(constraints || {}) };
+      // Ensure seam reserve reaches fragment matcher in assign-only intarsia runs.
+      assignConstraints.pieceSeamReserveMm = Number.isFinite(Number(options && options.pieceSeamReserveMm))
+        ? Number(options.pieceSeamReserveMm)
+        : 0;
+      assignConstraints.seamAllowanceReserveMm = Number.isFinite(Number(options && options.seamAllowanceReserveMm))
+        ? Number(options.seamAllowanceReserveMm)
+        : assignConstraints.pieceSeamReserveMm;
+      if (fillType === "regular") {
+        assignConstraints.__assignOnly = true;
+        const explainTopKRaw = Number(body && body.explainTopK);
+        const explainTopK = Number.isFinite(explainTopKRaw)
+          ? Math.max(1, Math.min(5, Math.floor(explainTopKRaw)))
+          : 3;
+        assignConstraints.__debugTopK = explainTopK;
+        const minFitRaw = safeNum(assignConstraints.minFitScore);
+        assignConstraints.minFitScore = minFitRaw === null ? 0 : Math.max(0, Math.min(8, Number(minFitRaw)));
+        const minCovRaw = safeNum(assignConstraints.minCoverageRatio);
+        assignConstraints.minCoverageRatio = minCovRaw === null ? 0.1 : Math.max(0.05, Math.min(0.35, Number(minCovRaw)));
+        assignConstraints.minAlongMm = null;
+        assignConstraints.minAcrossMm = null;
+        assignConstraints.minAreaMm2 = null;
+        assignConstraints.regularCompatibility = true;
+        // Keep nap constraints active in regular assign-only mode.
+        // If caller did not provide them, fall back to sane defaults.
+        const napDir = safeNum(assignConstraints.napDirectionDeg);
+        const napTol = safeNum(assignConstraints.napToleranceDeg);
+        // Canonical default nap direction is vertical down (90 deg).
+        assignConstraints.napDirectionDeg = napDir === null ? 90 : Number(napDir);
+        assignConstraints.napToleranceDeg = napTol === null ? 15 : Number(napTol);
+        // Keep pool broad in regular assign-only; strict nap check remains in fit/placement.
+        assignConstraints.prefilterNapToleranceDeg = 180;
+      }
+      const intarsiaMode = modeRegistry.require("intarsia");
+      let assign = intarsiaMode.assign({
+        fragments,
+        candidates,
+        placementStrategy: effectivePlacementStrategy,
+        axis,
+        filters,
+        constraints: assignConstraints
+      });
+      let finalPlacementStrategy = effectivePlacementStrategy;
+      let matchedCount = Array.isArray(assign && assign.placements)
+        ? assign.placements.filter((x) => String(x && x.status || "") === "matched").length
+        : 0;
+      if (matchedCount === 0 && effectivePlacementStrategy === "intarsiaSmart") {
+        pushProgress({
+          type: "solver",
+          phase: "intarsia_assign_fallback_bestfit",
+          percent: 86,
+          iter: 1,
+          title: "Интарсия / fallback bestFit"
+        });
+        const fallbackBest = intarsiaMode.assign({
+          fragments,
+          candidates,
+          placementStrategy: "bestFit",
+          axis,
+          filters,
+          constraints: assignConstraints
+        });
+        const fallbackBestMatched = Array.isArray(fallbackBest && fallbackBest.placements)
+          ? fallbackBest.placements.filter((x) => String(x && x.status || "") === "matched").length
+          : 0;
+        if (fallbackBestMatched > matchedCount) {
+          assign = fallbackBest;
+          finalPlacementStrategy = "bestFit";
+          matchedCount = fallbackBestMatched;
+        }
+      }
+      if (matchedCount === 0 && finalPlacementStrategy !== "greedy") {
+        pushProgress({
+          type: "solver",
+          phase: "intarsia_assign_fallback_greedy",
+          percent: 89,
+          iter: 2,
+          title: "Интарсия / fallback greedy"
+        });
+        const fallbackGreedy = intarsiaMode.assign({
+          fragments,
+          candidates,
+          placementStrategy: "greedy",
+          axis,
+          filters,
+          constraints: assignConstraints
+        });
+        const fallbackGreedyMatched = Array.isArray(fallbackGreedy && fallbackGreedy.placements)
+          ? fallbackGreedy.placements.filter((x) => String(x && x.status || "") === "matched").length
+          : 0;
+        if (fallbackGreedyMatched > matchedCount) {
+          assign = fallbackGreedy;
+          finalPlacementStrategy = "greedy";
+          matchedCount = fallbackGreedyMatched;
+        }
+      }
+      let usedRelaxedNapFallback = false;
+      if (matchedCount === 0 && fillType === "regular") {
+        const relaxedFilters = { ...(filters || {}), napToleranceDeg: 180 };
+        const relaxedAssign = intarsiaMode.assign({
+          fragments,
+          candidates,
+          placementStrategy: finalPlacementStrategy,
+          axis,
+          filters: relaxedFilters,
+          constraints: assignConstraints
+        });
+        const relaxedMatched = Array.isArray(relaxedAssign && relaxedAssign.placements)
+          ? relaxedAssign.placements.filter((x) => String(x && x.status || "") === "matched").length
+          : 0;
+        if (relaxedMatched > matchedCount) {
+          assign = relaxedAssign;
+          matchedCount = relaxedMatched;
+          usedRelaxedNapFallback = true;
+        }
+      }
+      const tAssignMs = Date.now() - tAssign0;
+      let placements = Array.isArray(assign && assign.placements) ? assign.placements : [];
+      // Ensure piece working area (Pcore) is always materialized in assign-only flow.
+      // Important: keep alignedContour as full piece geometry; store reserve result in alignedCoreContour.
+      const pieceSeamReserveAssignMm = Math.max(
+        0,
+        Number(safeNum(options && options.pieceSeamReserveMm) ?? safeNum(options && options.seamAllowanceReserveMm) ?? 0) || 0
+      );
+      if (placements.length) {
+        placements = placements.map((pl) => {
+          const p = pl && typeof pl === "object" ? { ...pl } : {};
+          const full = Array.isArray(p.alignedContour) ? p.alignedContour : [];
+          if (pieceSeamReserveAssignMm > 0 && full.length >= 3) {
+            const wrk = buildPieceWorkingContour(full, pieceSeamReserveAssignMm);
+            if (wrk && wrk.applied && Array.isArray(wrk.contour) && wrk.contour.length >= 3) {
+              p.alignedCoreContour = wrk.contour;
+              p.seamStatus = "ok";
+              p.seamReserveMm = pieceSeamReserveAssignMm;
+              return p;
+            }
+            p.alignedCoreContour = full;
+            p.seamStatus = String(wrk && wrk.status || "failed");
+            p.seamReserveMm = pieceSeamReserveAssignMm;
+            return p;
+          }
+          if (!Array.isArray(p.alignedCoreContour) || p.alignedCoreContour.length < 3) {
+            p.alignedCoreContour = full;
+          }
+          if (!Number.isFinite(Number(p.seamReserveMm))) p.seamReserveMm = pieceSeamReserveAssignMm;
+          if (!p.seamStatus) p.seamStatus = pieceSeamReserveAssignMm > 0 ? "failed" : "disabled";
+          return p;
+        });
+      }
+      placements = enrichPlacementContoursForZone(placements, zonePoints);
+      const visible = buildVisibleMosaicModel(placements, zonePoints, {
+        layerPolicy: options.layerPolicy,
+        minAreaMm2: visibleMinAreaMm2,
+        maxPolygons: 500,
+        minEdgeMm: Math.max(2, rasterMm * 2),
+        spikeEdgeMm: Math.max(6, rasterMm * 5),
+        spikeAngleDeg: 32,
+        collinearEpsMm: Math.max(0.8, rasterMm * 0.7)
+      });
+      const unmatched = placements.filter((p) => p.status !== "matched").length;
+      const intersections = countPlacementIntersections(placements);
+      const pieceIntersections = buildPieceIntersectionsLayer(placements);
+      const uncoveredRatio = areaMm2 > 0 ? Math.max(0, areaMm2 - Number(visible.usefulAreaMm2 || 0)) / areaMm2 : 0;
+      const usefulAreaMm2 = Number(visible.usefulAreaMm2 || 0);
+      const selectedInZoneAreaMm2 = Number(visible.selectedInZoneAreaMm2 || 0);
+      const selectedPiecesAreaMm2 = Number(visible.selectedPiecesAreaMm2 || selectedInZoneAreaMm2);
+      const overlapAreaMm2 = Number(visible.overlapAreaMm2 || Math.max(0, selectedInZoneAreaMm2 - usefulAreaMm2));
+      const coveragePercent = areaMm2 > 0 ? (usefulAreaMm2 / areaMm2) * 100 : 0;
+      const residualAreaMm2 = Math.max(0, areaMm2 - usefulAreaMm2);
+      const utilizationPct = selectedPiecesAreaMm2 > 0 ? (usefulAreaMm2 / selectedPiecesAreaMm2) * 100 : 0;
+      const wastePct = Math.max(0, 100 - utilizationPct);
+      const candidateAreaBudgetMm2 = (Array.isArray(candidates) ? candidates : []).reduce((acc, c) => {
+        const v = Number(c && c.areaMm2);
+        return acc + (Number.isFinite(v) && v > 0 ? v : 0);
+      }, 0);
+      const stats = {
+        fragmentsTotal: fragments.length,
+        placementsMatched: placements.filter((x) => x.status === "matched").length,
+        violations: unmatched > 0 ? 1 : 0,
+        intersections,
+        uncovered: uncoveredRatio > 0.015 ? 1 : 0
+      };
+      const warnings = [];
+      if (stats.violations > 0) warnings.push("insufficient_candidates_for_fragments");
+      if (stats.uncovered > 0) warnings.push("zone_not_fully_covered");
+      if (finalPlacementStrategy !== effectivePlacementStrategy) {
+        warnings.push(`assign_fallback_${finalPlacementStrategy}`);
+      }
+      if (usedRelaxedNapFallback) warnings.push("assign_fallback_relaxed_nap");
+      const splitPreview = { placements, splitEvents: [] };
+      const matchedPct = fragments.length > 0
+        ? Math.round((stats.placementsMatched / fragments.length) * 10000) / 100
+        : 0;
+      const coveragePct = areaMm2 > 0
+        ? Math.round((Number(usefulAreaMm2 || 0) / areaMm2) * 10000) / 100
+        : 0;
+      const kpi = {
+        fragmentsTotal: fragments.length,
+        placementsMatched: stats.placementsMatched,
+        placementsUnmatched: Math.max(0, fragments.length - stats.placementsMatched),
+        matchedPct,
+        coveragePct,
+        uncoveredRatio: Math.round(uncoveredRatio * 100000) / 100000,
+        strategyRequested: placementStrategy,
+        strategyUsed: finalPlacementStrategy
+      };
+      const compatibilityBreakdown = assign && assign.compatibilityBreakdown && typeof assign.compatibilityBreakdown === "object"
+        ? assign.compatibilityBreakdown
+        : null;
+      const placementBreakdown = assign && assign.placementBreakdown && typeof assign.placementBreakdown === "object"
+        ? { ...assign.placementBreakdown }
+        : {};
+      for (const p of Array.isArray(placements) ? placements : []) {
+        const status = String((p && p.status) || "unknown");
+        const reason = String((p && p.reason) || (status === "matched" ? "matched" : "unknown"));
+        const key = `${status}:${reason}`;
+        placementBreakdown[key] = Number(placementBreakdown[key] || 0) + 1;
+      }
+      pushProgress({
+        type: "solver",
+        phase: "intarsia_assign_done",
+        percent: 94,
+        iter: 3,
+        title: "Интарсия / подбор завершен",
+        matched: stats.placementsMatched,
+        fragmentsTotal: stats.fragmentsTotal,
+        uncovered: stats.uncovered
+      });
+      return jsonReply(res, 200, {
+        ok: true,
+        fillType,
+        axis,
+        placementStrategy: finalPlacementStrategy,
+        assignOnly: true,
+        zone: { areaMm2 },
+        paramsSnapshot: { fillType, axis, placementStrategy, options, qualityMode, rasterMm, filters, constraints, normalizeRules, assignOnly: true },
+        zOrderModel: String(visible.layerPolicy || options.layerPolicy || "priority_on_top"),
+        seedUsed: options.seed,
+        gridSpec,
+        stats,
+        kpi,
+        warnings,
+        coveragePercent: Math.round(coveragePercent * 100) / 100,
+        residualAreaMm2: Math.round(residualAreaMm2 * 1000) / 1000,
+        usedAreaMm2: Math.round(usefulAreaMm2 * 1000) / 1000,
+        selectedInZoneAreaMm2: Math.round(selectedInZoneAreaMm2 * 1000) / 1000,
+        selectedPiecesAreaMm2: Math.round(selectedPiecesAreaMm2 * 1000) / 1000,
+        overlapAreaMm2: Math.round(overlapAreaMm2 * 1000) / 1000,
+        utilizationPct: Math.round(utilizationPct * 100) / 100,
+        wastePct: Math.round(wastePct * 100) / 100,
+        candidateAreaBudgetMm2: Math.round(candidateAreaBudgetMm2 * 1000) / 1000,
+        scrapUsage: {
+          usefulAreaMm2: Math.round(usefulAreaMm2 * 1000) / 1000,
+          usedScrapAreaMm2: Math.round(selectedInZoneAreaMm2 * 1000) / 1000,
+          scrapUtilizationPercent: Math.round(utilizationPct * 100) / 100,
+          scrapWastePercent: Math.round(wastePct * 100) / 100,
+          outsideAreaMm2: Math.max(0, Math.round((selectedPiecesAreaMm2 - selectedInZoneAreaMm2) * 1000) / 1000),
+          outsideShareOfSelectedPct: selectedPiecesAreaMm2 > 0
+            ? Math.round(((selectedPiecesAreaMm2 - selectedInZoneAreaMm2) / selectedPiecesAreaMm2) * 10000) / 100
+            : 0
+        },
+        diagnostics: (compatibilityBreakdown || Object.keys(placementBreakdown).length)
+          ? {
+              compatibilityBreakdown,
+              placementBreakdown
+            }
+          : null,
+        timingMs: { matching: tAssignMs },
+        usedInventoryTags: assign.usedInventoryTags,
+        compatibleCandidates: assign.compatibleCandidates,
+        previewLayers: {
+          pieceIntersections: pieceIntersections.polygons,
+          pieceIntersectionPairs: pieceIntersections.pairCount,
+          pieceIntersectionAreaMm2: pieceIntersections.totalAreaMm2,
+          visibleArea: visible.visibleAreaPolygons,
+          visibleAreaAreaMm2: visible.usefulAreaMm2
+        },
+        visibleContours: visible.visibleContours,
+        visibleMetrics: {
+          usefulAreaMm2: visible.usefulAreaMm2,
+          selectedPiecesAreaMm2: visible.selectedPiecesAreaMm2,
+          selectedInZoneAreaMm2: visible.selectedInZoneAreaMm2,
+          utilizationPct: visible.utilizationPct,
+          overlapAreaMm2: visible.overlapAreaMm2
+        },
+        droppedByNormalize: 0,
+        fragments: visible.fragments,
+        placements: splitPreview.placements,
+        splitEvents: splitPreview.splitEvents
+      });
+    }
+
+    if (directInventory) {
+      const tDirect0 = Date.now();
+      pushProgress({ type: "phase", phase: "server_place", percent: 81, title: "Сервер / размещение кусков" });
+      const directMode = modeRegistry.require(splitReturnEnabled ? "inventory_split_return" : "inventory_direct");
+      const direct = await directMode.preview({ zonePoints, candidates, axis, filters, constraints, options });
+      direct.placements = enrichPlacementContoursForZone(direct.placements, zonePoints);
+      const solveOrder = Array.isArray(direct && direct.solveOrder) ? direct.solveOrder : [];
+      const tDirectMs = Date.now() - tDirect0;
+      const uncoveredRatio = Number.isFinite(Number(direct.coveredRatio))
+        ? Math.max(0, 1 - Number(direct.coveredRatio))
+        : 1;
+      const directStrict = !!(direct && direct.strictCoverage === true);
+      const directFullCoverageOk = !!(direct && direct.fullCoverageOk === true);
+      const directViolation = directStrict && !directFullCoverageOk;
+      const resultStatus = directViolation ? "failed" : "ok";
+      const failedReason = directViolation
+        ? String((direct && direct.failedReason) || "zone_not_fully_covered")
+        : null;
+      const visible = buildVisibleMosaicModel(direct.placements, zonePoints, {
+        layerPolicy: options.layerPolicy,
+        minAreaMm2: visibleMinAreaMm2,
+        maxPolygons: 500,
+        minEdgeMm: Math.max(2, rasterMm * 2),
+        spikeEdgeMm: Math.max(6, rasterMm * 5),
+        spikeAngleDeg: 32,
+        collinearEpsMm: Math.max(0.8, rasterMm * 0.7)
+      });
+      const splitPreview = splitReturnEnabled
+        ? (
+          Array.isArray(direct && direct.splitEvents)
+            ? { placements: direct.placements, splitEvents: direct.splitEvents }
+            : buildSplitReturnPreviewArtifacts(direct.placements, visible.visibleContours, {
+              minLeftoverAreaMm2: safeNum(body.minLeftoverAreaMm2),
+              minLeftoverSpanMm: safeNum(body.minLeftoverSpanMm)
+            })
+        )
+        : { placements: direct.placements, splitEvents: [] };
+      const intersectionsByContour = countPlacementIntersections(direct.placements);
+      pushProgress({
+        type: "phase",
+        phase: "server_coverage",
+        percent: 90,
+        title: "Сервер / проверка покрытия",
+        pieces: Array.isArray(direct.placements) ? direct.placements.length : 0,
+        coverage: Number(direct.coveragePercent || 0),
+        residualAreaMm2: Number(direct.residualAreaMm2 || 0)
+      });
+      const overlapAreaMm2 = Number(visible.overlapAreaMm2 || 0);
+      const pieceIntersections = buildPieceIntersectionsLayer(direct.placements);
+      const intersections = Math.max(
+        intersectionsByContour,
+        overlapAreaMm2 > 1e-6 ? 1 : 0,
+        pieceIntersections.pairCount
+      );
+      const stats = {
+        fragmentsTotal: visible.fragments.length,
+        placementsMatched: direct.placements.filter((x) => String(x && x.status || "") === "matched").length,
+        violations: directViolation ? 1 : 0,
+        intersections,
+        uncovered: uncoveredRatio > 0.015 ? 1 : 0
+      };
+      const warnings = [];
+      if (direct.placements.length === 0) warnings.push("no_direct_inventory_matches");
+      if (direct.rejectedByOversize > 0) warnings.push("inventory_tail_oversize_rejected");
+      if (direct.tailLastChanceUsed) warnings.push("inventory_tail_last_chance_used");
+      if (direct.seamCheck && direct.seamCheck.seamFullOk === false) warnings.push("inventory_seam_check_failed");
+      if (direct.rejectedNoFit > 0) warnings.push("inventory_no_progress");
+      if (direct.tailPieceCapHit) warnings.push("inventory_tail_piece_cap");
+      if (direct.timeBudgetExceeded) warnings.push("inventory_time_budget_exceeded");
+      if (directViolation) warnings.push("full_coverage_required");
+      if (stats.uncovered > 0) warnings.push("zone_not_fully_covered");
+      const visibleUtilizationPct = Number(visible.utilizationPct || 0);
+      const visibleWastePct = Math.max(0, 100 - visibleUtilizationPct);
+      pushProgress({
+        type: "phase",
+        phase: "server_diag",
+        percent: 94,
+        title: "Сервер / сбор диагностики",
+        pieces: Array.isArray(direct.placements) ? direct.placements.length : 0,
+        coverage: Number(direct.coveragePercent || 0),
+        utilization: visibleUtilizationPct,
+        tail: visibleWastePct
+      });
+      pushProgress({ type: "done", percent: 99, title: "Сервер / ответ готов" });
+      return jsonReply(res, 200, {
+        ok: true,
+        resultStatus,
+        failedReason,
+        fillType,
+        axis,
+        placementStrategy,
+        layoutType: splitReturnEnabled ? "inventory_split_return" : "inventory_direct",
+        splitReturnEnabled,
+        directInventory: true,
+        zone: { areaMm2 },
+        paramsSnapshot: { fillType, axis, placementStrategy, options, qualityMode, rasterMm, filters, constraints, normalizeRules, directInventory: true },
+        zOrderModel: String(visible.layerPolicy || options.layerPolicy || "priority_on_top"),
+        renderOrderPolicy: String(visible.layerPolicy || options.layerPolicy || "priority_on_top"),
+        stackOrderPolicy: String(options.stackOrderPolicy || options.layerPolicy || visible.layerPolicy || "priority_on_top"),
+        seedUsed: options.seed,
+        gridSpec,
+        stats,
+        warnings,
+        timingMs: { matching: tDirectMs },
+        usedInventoryTags: direct.usedInventoryTags,
+        compatibleCandidates: direct.compatibleCandidates,
+        coveragePercent: Number(direct.coveragePercent || 0),
+        coveredRatio: Number(direct.coveredRatio || 0),
+        residualAreaMm2: Number(direct.residualAreaMm2 || 0),
+        strictCoverage: directStrict,
+        coverageEps: Number(direct.coverageEps || 0),
+        fullCoverageOk: directFullCoverageOk,
+        tailLastChanceUsed: !!direct.tailLastChanceUsed,
+        seamCheck: direct.seamCheck || null,
+        solveOrder,
+        diagnostics: direct.diagnostics || null,
+        scrapUsage: direct.scrapUsage || null,
+        overlapAreaMm2: Number(visible.overlapAreaMm2 || 0),
+        usedAreaMm2: Number(visible.usefulAreaMm2 || 0),
+        selectedPiecesAreaMm2: Number(visible.selectedPiecesAreaMm2 || 0),
+        selectedInZoneAreaMm2: Number(visible.selectedInZoneAreaMm2 || 0),
+        utilizationPct: visibleUtilizationPct,
+        wastePct: visibleWastePct,
+        candidateAreaBudgetMm2: Number(direct.candidateAreaBudgetMm2 || 0),
+        algorithmTrace: direct.algorithmTrace || null,
+        previewLayers: {
+          pieceIntersections: pieceIntersections.polygons,
+          pieceIntersectionPairs: pieceIntersections.pairCount,
+          pieceIntersectionAreaMm2: pieceIntersections.totalAreaMm2,
+          visibleArea: visible.visibleAreaPolygons,
+          visibleAreaAreaMm2: visible.usefulAreaMm2
+        },
+        visibleContours: visible.visibleContours,
+        visibleMetrics: {
+          usefulAreaMm2: visible.usefulAreaMm2,
+          selectedPiecesAreaMm2: visible.selectedPiecesAreaMm2,
+          selectedInZoneAreaMm2: visible.selectedInZoneAreaMm2,
+          utilizationPct: visible.utilizationPct,
+          overlapAreaMm2: visible.overlapAreaMm2
+        },
+        droppedByNormalize: 0,
+        fragments: visible.fragments,
+        placements: splitPreview.placements,
+        splitEvents: splitPreview.splitEvents
+      });
+    }
+
+    const intarsiaMode = modeRegistry.require("intarsia");
+    const built = intarsiaMode.buildFragments({
+      fillType,
+      zonePoints,
+      options,
+      normalizeRules,
+      axis,
+      polygonArea
+    });
+    const normalized = built.normalized;
+    const fragments = built.fragments;
+    const tAssign0 = Date.now();
+    const assign = intarsiaMode.assign({
+      fragments,
+      candidates,
+      placementStrategy,
+      axis,
+      filters,
+      constraints
+    });
+    const tAssignMs = Date.now() - tAssign0;
+    const placements = assign.placements;
+    const pieceSeamReserveMm = Math.max(
+      0,
+      Number(safeNum(options && options.pieceSeamReserveMm) ?? safeNum(options && options.seamAllowanceReserveMm) ?? 0) || 0
+    );
+    const seamAdjusted = applyReserveToPlacements(placements, pieceSeamReserveMm);
+
+    const visible = buildVisibleMosaicModel(placements, zonePoints, {
+      layerPolicy: options.layerPolicy,
+      minAreaMm2: visibleMinAreaMm2,
+      maxPolygons: 500,
+      minEdgeMm: Math.max(2, rasterMm * 2),
+      spikeEdgeMm: Math.max(6, rasterMm * 5),
+      spikeAngleDeg: 32,
+      collinearEpsMm: Math.max(0.8, rasterMm * 0.7)
+    });
+    const visibleForMetrics = buildVisibleMosaicModel(seamAdjusted.placements, zonePoints, {
+      layerPolicy: options.layerPolicy,
+      minAreaMm2: visibleMinAreaMm2,
+      maxPolygons: 500,
+      minEdgeMm: Math.max(2, rasterMm * 2),
+      spikeEdgeMm: Math.max(6, rasterMm * 5),
+      spikeAngleDeg: 32,
+      collinearEpsMm: Math.max(0.8, rasterMm * 0.7)
+    });
+    const unmatched = placements.filter((p) => p.status !== "matched").length;
+    const intersections = countPlacementIntersections(placements);
+    const pieceIntersections = buildPieceIntersectionsLayer(placements);
+
+    const uncoveredRatio = areaMm2 > 0 ? Math.max(0, areaMm2 - Number(visibleForMetrics.usefulAreaMm2 || 0)) / areaMm2 : 0;
+    const stats = {
+      fragmentsTotal: visible.fragments.length,
+      placementsMatched: placements.filter((x) => x.status === "matched").length,
+      violations: unmatched > 0 || normalized.droppedBySize > 0 ? 1 : 0,
+      intersections,
+      uncovered: uncoveredRatio > 0.015 ? 1 : 0
+    };
+    const warnings = [];
+    if (stats.violations > 0) warnings.push("insufficient_candidates_for_fragments");
+    if (stats.uncovered > 0) warnings.push("zone_not_fully_covered");
+    if (normalized.droppedBySize > 0) warnings.push("normalize_dropped_small_fragments");
+    if (tAssignMs > 8000) warnings.push("matching_slow");
+    if (seamAdjusted.failed > 0) warnings.push("seam_working_area_failed_for_some_placements");
+
+    return jsonReply(res, 200, {
+      ok: true,
+      fillType,
+      axis,
+      placementStrategy,
+      zone: { areaMm2 },
+      paramsSnapshot: { fillType, axis, placementStrategy, options, qualityMode, rasterMm, filters, constraints, normalizeRules },
+      zOrderModel: String(visible.layerPolicy || options.layerPolicy || "priority_on_top"),
+      seedUsed: options.seed,
+      gridSpec,
+      stats,
+      warnings,
+      timingMs: {
+        matching: tAssignMs
+      },
+      usedInventoryTags: assign.usedInventoryTags,
+      compatibleCandidates: assign.compatibleCandidates,
+      previewLayers: {
+        pieceIntersections: pieceIntersections.polygons,
+        pieceIntersectionPairs: pieceIntersections.pairCount,
+        pieceIntersectionAreaMm2: pieceIntersections.totalAreaMm2,
+        visibleArea: visible.visibleAreaPolygons,
+        visibleAreaAreaMm2: visibleForMetrics.usefulAreaMm2
+      },
+      visibleContours: visible.visibleContours,
+      visibleMetrics: {
+        usefulAreaMm2: visibleForMetrics.usefulAreaMm2,
+        selectedPiecesAreaMm2: visibleForMetrics.selectedPiecesAreaMm2,
+        selectedInZoneAreaMm2: visibleForMetrics.selectedInZoneAreaMm2,
+        utilizationPct: visibleForMetrics.utilizationPct,
+        overlapAreaMm2: visibleForMetrics.overlapAreaMm2
+      },
+      seamCheck: {
+        reserveMm: pieceSeamReserveMm,
+        changedPlacements: seamAdjusted.changed,
+        failedPlacements: seamAdjusted.failed,
+        mode: pieceSeamReserveMm > 0 ? "piece_working_area" : "disabled"
+      },
+      droppedByNormalize: normalized.droppedBySize,
+      fragments: visible.fragments,
+      placements
+    });
+  }
+
+  if (req.method === "POST" && reqUrl.pathname === "/api/layout/fragment/candidates") {
+    const body = await readBodyJson(req);
+    const fragment = body.fragment || {};
+    const fragPoints = normalizePolygonInput(fragment.points);
+    if (fragPoints.length < 3) return jsonReply(res, 400, { ok: false, error: "fragment_points_required" });
+    const axis = String(body.axis || "y").toLowerCase() === "x" ? "x" : "y";
+    const filters = body.filters && typeof body.filters === "object" ? body.filters : {};
+    const constraints = body.constraints && typeof body.constraints === "object" ? body.constraints : {};
+    const candidates = Array.isArray(body.candidates) ? body.candidates : [];
+    const excludeInventoryTags = Array.isArray(body.excludeInventoryTags) ? body.excludeInventoryTags : [];
+    const limit = Math.max(1, Math.min(50, Number(body.limit || 5)));
+    const ranked = rankCandidatesForFragment(
+      { id: Number(fragment.id || 0), points: fragPoints, areaMm2: polygonArea(fragPoints) },
+      candidates,
+      axis,
+      filters,
+      constraints,
+      limit,
+      excludeInventoryTags
+    );
+    return jsonReply(res, 200, {
+      ok: true,
+      totalInput: candidates.length,
+      totalRanked: ranked.length,
+      items: ranked
+    });
+  }
+
+  if (req.method === "POST" && reqUrl.pathname === "/api/layout/manual/evaluate") {
+    try {
+      const body = await readBodyJson(req);
+      const zone = body.zone || {};
+      const zonePoints = normalizePolygonInput(zone.points);
+      if (zonePoints.length < 3) return jsonReply(res, 400, { ok: false, error: "zone_points_required" });
+      const piecePoints = normalizePolygonInput(body.piecePoints);
+      if (piecePoints.length < 3) return jsonReply(res, 400, { ok: false, error: "piece_points_required" });
+      const minVisibleAreaMm2 = Math.max(0, Number(body.minVisibleAreaMm2 || 0));
+      const minSpanMm = Math.max(0, Number(body.minSpanMm || 0));
+      const fullPieceAreaMm2 = Math.max(0, polygonArea(piecePoints));
+      const seamReserveAliasZone = safeNum(zone && zone.seamAllowanceReserveMm);
+      const seamReserveAliasBody = safeNum(body.seamAllowanceReserveMm);
+      const seamReserveBody = safeNum(body.pieceSeamReserveMm);
+      const pieceSeamReserveMm = seamReserveBody !== null
+        ? Number(seamReserveBody)
+        : (seamReserveAliasBody !== null ? Number(seamReserveAliasBody) : (seamReserveAliasZone !== null ? Number(seamReserveAliasZone) : 0));
+      const working = buildPieceWorkingContour(piecePoints, pieceSeamReserveMm);
+      const corePiecePoints = (Number(pieceSeamReserveMm) > 1e-9)
+        ? ((working && working.applied && Array.isArray(working.contour) && working.contour.length >= 3) ? working.contour : [])
+        : (Array.isArray(piecePoints) && piecePoints.length >= 3 ? piecePoints : []);
+      const pieceAreaMm2 = Math.max(0, polygonArea(piecePoints));
+      const corePieceAreaMm2 = corePiecePoints.length >= 3 ? Math.max(0, polygonArea(corePiecePoints)) : 0;
+
+      let zoneMulti = [];
+      let pieceMulti = [];
+      let inZoneMp = [];
+      let corePieceMulti = [];
+      let inZoneCoreMp = [];
+      let coveredMp = [];
+      let gainMp = [];
+      let gainCoreMp = [];
+      try {
+        zoneMulti = pointsToMultiPolygon(zonePoints);
+        pieceMulti = pointsToMultiPolygon(piecePoints);
+        inZoneMp = intersectMulti(pieceMulti, zoneMulti);
+        if (corePiecePoints.length >= 3) {
+          corePieceMulti = pointsToMultiPolygon(corePiecePoints);
+          inZoneCoreMp = intersectMulti(corePieceMulti, zoneMulti);
+        } else {
+          inZoneCoreMp = [];
+        }
+      } catch (err) {
+        console.warn("[manual/evaluate] base geometry op failed:", err && err.message ? err.message : err);
+        return jsonReply(res, 200, {
+          ok: true,
+          metrics: {
+            pieceAreaMm2,
+            fullPieceAreaMm2,
+            workingPieceAreaMm2: corePieceAreaMm2,
+            seamReserveMm: Math.max(0, Number(pieceSeamReserveMm || 0)),
+            seamStatus: String(working.status || "unknown"),
+            gainAreaMm2: 0,
+            overlapInsideMm2: 0,
+            outsideWasteMm2: pieceAreaMm2,
+            utilization: 0,
+            inZoneAreaMm2: 0,
+            visibleSpanMm: 0,
+            status: "geom_error",
+            statusReason: "base_geometry_op_failed"
+          },
+          contours: { inZone: [], inZoneCore: [], coreWorld: [], gainVisible: [], gainCore: [] }
+        });
+      }
+
+      const inZoneAreaMm2 = Math.max(0, multiPolygonArea(inZoneMp));
+      const inZoneCoreAreaMm2 = Math.max(0, multiPolygonArea(inZoneCoreMp));
+      const coveredContours = Array.isArray(body.coveredContours) ? body.coveredContours : [];
+      for (const c of coveredContours) {
+        const pts = normalizePolygonInput(c);
+        if (pts.length < 3) continue;
+        try {
+          const mp = intersectMulti(pointsToMultiPolygon(pts), zoneMulti);
+          if (!Array.isArray(mp) || !mp.length) continue;
+          coveredMp = coveredMp.length ? unionMulti(coveredMp, mp) : mp;
+        } catch (_) {
+          // Skip invalid contour; do not fail full evaluate.
+        }
+      }
+      try {
+        gainMp = coveredMp.length ? diffMulti(inZoneMp, coveredMp) : inZoneMp;
+        gainCoreMp = coveredMp.length ? diffMulti(inZoneCoreMp, coveredMp) : inZoneCoreMp;
+      } catch (err) {
+        console.warn("[manual/evaluate] diff op failed:", err && err.message ? err.message : err);
+        gainMp = inZoneMp;
+        gainCoreMp = inZoneCoreMp;
+      }
+      const gainAreaMm2 = Math.max(0, multiPolygonArea(gainMp));
+      const overlapInsideMm2 = Math.max(0, inZoneAreaMm2 - gainAreaMm2);
+      const outsideWasteMm2 = Math.max(0, pieceAreaMm2 - inZoneAreaMm2);
+      const utilization = pieceAreaMm2 > 1e-9 ? (gainAreaMm2 / pieceAreaMm2) : 0;
+      const visibleRing = largestOuterRingPointsLocal(gainMp);
+      const vb = polygonBBox(visibleRing);
+      const visibleSpanMm = vb ? Math.max(Number(vb.width || 0), Number(vb.height || 0)) : 0;
+      const isTiny = (minVisibleAreaMm2 > 0 && gainAreaMm2 + 1e-9 < minVisibleAreaMm2) || (minSpanMm > 0 && visibleSpanMm + 1e-9 < minSpanMm);
+      return jsonReply(res, 200, {
+        ok: true,
+        metrics: {
+          pieceAreaMm2,
+          fullPieceAreaMm2,
+          workingPieceAreaMm2: corePieceAreaMm2,
+          seamReserveMm: Math.max(0, Number(pieceSeamReserveMm || 0)),
+          seamStatus: String(working.status || "unknown"),
+          gainAreaMm2,
+          gainCoreAreaMm2: Math.max(0, multiPolygonArea(gainCoreMp)),
+          overlapInsideMm2,
+          outsideWasteMm2,
+          utilization,
+          inZoneAreaMm2,
+          inZoneCoreAreaMm2,
+          visibleSpanMm,
+          status: isTiny ? "tiny_fragment" : "ok",
+          statusReason: isTiny ? "below_manual_threshold" : ""
+        },
+        contours: {
+          inZone: inZoneMp,
+          inZoneCore: inZoneCoreMp,
+          coreWorld: corePieceMulti,
+          gainVisible: gainMp,
+          gainCore: gainCoreMp
+        }
+      });
+    } catch (err) {
+      console.warn("[manual/evaluate] unexpected error:", err && err.message ? err.message : err);
+      return jsonReply(res, 200, {
+        ok: true,
+        metrics: {
+          pieceAreaMm2: 0,
+          fullPieceAreaMm2: 0,
+          workingPieceAreaMm2: 0,
+          seamReserveMm: 0,
+          seamStatus: "geom_error",
+          gainAreaMm2: 0,
+          overlapInsideMm2: 0,
+          outsideWasteMm2: 0,
+          utilization: 0,
+          inZoneAreaMm2: 0,
+          visibleSpanMm: 0,
+          status: "geom_error",
+          statusReason: "unexpected_evaluate_error"
+        },
+        contours: { inZone: [], inZoneCore: [], coreWorld: [], gainVisible: [], gainCore: [] }
+      });
+    }
+  }
+
+  if (req.method === "POST" && reqUrl.pathname === "/api/layout/manual/recompute") {
+    const body = await readBodyJson(req);
+    const zone = body.zone || {};
+    const selectedZoneId = Number(body.selectedZoneId || 0);
+    const zonePoints = normalizePolygonInput(zone.points);
+    if (zonePoints.length < 3) return jsonReply(res, 400, { ok: false, error: "zone_points_required" });
+    const placements = Array.isArray(body.placements) ? body.placements : [];
+    const layerPolicy = String(body.layerPolicy || "first_on_top");
+    const minAreaMm2 = Math.max(1, Number(body.minAreaMm2 || 1));
+    const rasterMm = Math.max(1, Number(body.rasterMm || 2));
+    const debugManual = body.debugManual === true;
+    const visible = buildVisibleMosaicModel(placements, zonePoints, {
+      layerPolicy,
+      minAreaMm2,
+      maxPolygons: 500,
+      minEdgeMm: Math.max(2, rasterMm * 2),
+      spikeEdgeMm: Math.max(6, rasterMm * 5),
+      spikeAngleDeg: 32,
+      collinearEpsMm: Math.max(0.8, rasterMm * 0.7),
+      includeDebug: debugManual
+    });
+    const payload = {
+      ok: true,
+      layerPolicy: visible.layerPolicy,
+      selectedZoneId,
+      recomputeZoneId: Number(zone && zone.id || 0),
+      usedZoneFallback: false,
+      fragments: visible.fragments,
+      visibleContours: visible.visibleContours,
+      visibleMetrics: {
+        usefulAreaMm2: visible.usefulAreaMm2,
+        selectedPiecesAreaMm2: visible.selectedPiecesAreaMm2,
+        selectedInZoneAreaMm2: visible.selectedInZoneAreaMm2,
+        utilizationPct: visible.utilizationPct,
+        overlapAreaMm2: visible.overlapAreaMm2
+      }
+    };
+    const impossibleZero = !!(
+      Array.isArray(placements) &&
+      placements.length > 0 &&
+      Number(visible.usefulAreaMm2 || 0) <= 1e-9 &&
+      Number(visible.selectedPiecesAreaMm2 || 0) <= 1e-9
+    );
+    if (impossibleZero) {
+      payload.warning = "manual_recompute_selected_zone_mismatch";
+    }
+    if (debugManual) {
+      const zoneBBox = polygonBBox(zonePoints);
+      payload.debug = {
+        zone: {
+          id: Number(zone && zone.id || 0),
+          area: Math.round(Math.max(0, polygonArea(zonePoints)) * 1000) / 1000,
+          bbox: zoneBBox ? {
+            minX: Number(zoneBBox.minX || 0),
+            minY: Number(zoneBBox.minY || 0),
+            maxX: Number(zoneBBox.maxX || 0),
+            maxY: Number(zoneBBox.maxY || 0),
+            width: Number(zoneBBox.width || 0),
+            height: Number(zoneBBox.height || 0)
+          } : null
+        },
+        placementsReceived: Array.isArray(placements) ? placements.length : 0,
+        placementsMatched: Array.isArray(placements) ? placements.filter((p) => String(p && p.status || "") === "matched").length : 0,
+        placements: Array.isArray(visible.debugPlacements) ? visible.debugPlacements : [],
+        selectedZoneId,
+        recomputeZoneId: Number(zone && zone.id || 0),
+        usedZoneFallback: false,
+        warning: impossibleZero ? "manual_recompute_selected_zone_mismatch" : ""
+      };
+      console.info("[manual/recompute][debug]", JSON.stringify(payload.debug));
+    }
+    return jsonReply(res, 200, payload);
+  }
+
+  if (req.method === "POST" && reqUrl.pathname === "/api/layout/manual/suggest") {
+    const body = await readBodyJson(req);
+    const zone = body.zone || {};
+    const zonePoints = normalizePolygonInput(zone.points);
+    if (zonePoints.length < 3) return jsonReply(res, 400, { ok: false, error: "zone_points_required" });
+    const candidates = Array.isArray(body.candidates) ? body.candidates : [];
+    const suggestCount = Math.max(1, Math.min(10, Number(body.suggestCount || 5)));
+    const axis = String(body.axis || "y").toLowerCase() === "x" ? "x" : "y";
+    const filters = body.filters && typeof body.filters === "object" ? body.filters : {};
+    const constraints = body.constraints && typeof body.constraints === "object" ? body.constraints : { requireScrapContour: true };
+    const options = body.options && typeof body.options === "object" ? body.options : {};
+    const excludes = new Set((Array.isArray(body.excludeInventoryTags) ? body.excludeInventoryTags : []).map((x) => String(x || "").trim()).filter(Boolean));
+
+    let solveZonePoints = zonePoints.slice();
+    const coveredContours = Array.isArray(body.coveredContours) ? body.coveredContours : [];
+    if (coveredContours.length) {
+      const zoneMp = pointsToMultiPolygon(zonePoints);
+      let coveredMp = [];
+      for (const c of coveredContours) {
+        const pts = normalizePolygonInput(c);
+        if (pts.length < 3) continue;
+        const mp = intersectMulti(pointsToMultiPolygon(pts), zoneMp);
+        if (!Array.isArray(mp) || !mp.length) continue;
+        coveredMp = coveredMp.length ? unionMulti(coveredMp, mp) : mp;
+      }
+      if (coveredMp.length) {
+        const residualMp = diffMulti(zoneMp, coveredMp);
+        const largest = largestOuterRingPointsLocal(residualMp);
+        if (largest.length >= 3) solveZonePoints = largest;
+      }
+    }
+
+    const suggestions = [];
+    const directMode = modeRegistry.require("inventory_direct");
+    let poolLeft = candidates.slice();
+    for (let i = 0; i < suggestCount; i++) {
+      poolLeft = poolLeft.filter((c) => !excludes.has(String(c && (c.inventoryTag || c.id) || "").trim()));
+      if (!poolLeft.length) break;
+      const { run, placement: p } = await directMode.suggestSingle({
+        zonePoints: solveZonePoints,
+        candidates: poolLeft,
+        axis,
+        filters,
+        constraints,
+        options: {
+          ...options,
+          strictCoverage: false,
+          strictCoverageHard: false,
+          coverageTarget: 0.2,
+          maxPieces: 1,
+          minPieces: 1,
+          maxSolveMs: Math.max(6000, Math.min(30000, Number(options.maxSolveMs || 12000))),
+          hardMaxSolveMs: Math.max(12000, Math.min(60000, Number(options.hardMaxSolveMs || 24000)))
+        }
+      });
+      if (!p) break;
+      suggestions.push({
+        placement: p,
+        fragment: Array.isArray(run.fragments) ? (run.fragments[0] || null) : null,
+        metrics: {
+          gainAreaMm2: Number(p.gainAreaMm2 || 0),
+          overlapAreaMm2: Number(p.overlapAreaMm2 || 0),
+          outsideAreaMm2: Number(p.outsideAreaMm2 || 0),
+          utilizationLocal: Number(p.utilizationLocal || 0),
+          fitScore: Number(p.fitScore || 0)
+        }
+      });
+      const takenTag = String(p.inventoryTag || "").trim();
+      if (takenTag) excludes.add(takenTag);
+      if (takenTag) {
+        poolLeft = poolLeft.filter((c) => String(c && (c.inventoryTag || c.id) || "").trim() !== takenTag);
+      }
+    }
+    return jsonReply(res, 200, {
+      ok: true,
+      suggestions
+    });
+  }
+
+  return false;
+}
+
+module.exports = {
+  handleLayoutRoutes
+};

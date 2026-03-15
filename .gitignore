@@ -1,0 +1,23 @@
+# Runtime/temp artifacts
+tmp/
+tmp_selftest/
+_tmp/
+node_modules/
+dist/
+build/
+coverage/
+*.log
+.env
+.env.*
+
+# Local backups and ad-hoc snapshots
+*.bak
+*.backup
+*.orig
+*.tmp
+*.swp
+*.swo
+
+# Never keep backups in served frontend folder
+public/js/*.bak
+public/js/*backup*

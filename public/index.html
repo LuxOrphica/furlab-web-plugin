@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FurLab DXF Import + Konva Editor</title>
+    <link rel="stylesheet" href="/css/app.css" />
+
+</head>
+<body>
+  <div id="workspacePanel" class="panel">
+    <div class="row">
+      <label>Tool
+        <select id="toolSelect">
+          <option value="select">Select zone</option>
+          <option value="pan">Pan</option>
+          <option value="draw-zone">Draw zone</option>
+          <option value="edit-vertex">Edit vertex</option>
+        </select>
+      </label>
+      <details class="toolbar-actions">
+        <summary>Actions</summary>
+        <div class="toolbar-actions-menu">
+          <button id="finishZoneBtn">Finish zone</button>
+          <button id="cancelZoneBtn">Cancel draft</button>
+          <button id="undoBtn">Undo</button>
+          <button id="redoBtn">Redo</button>
+          <button id="closeSelectedGapBtn">Force close selected</button>
+        </div>
+      </details>
+      <button id="importTopBtn">Import</button>
+      <span class="kbd">Wheel: zoom</span>
+      <span class="kbd">Space+Drag / Right Mouse: pan</span>
+      <span class="kbd">Double click in draw mode: finish polygon</span>
+    </div>
+    <details id="zprjSettingsPanel" class="subpanel" open style="display:none;">
+      <summary><h3 style="display:inline;">ZPRJ options</h3></summary>
+      <div class="row" style="margin-top:8px;">
+        <label><input id="zprjCompactView" type="checkbox" checked /> ZPRJ compact view</label>
+        <label>Parts mode
+          <select id="partsMode">
+            <option value="main">Main parts</option>
+            <option value="all">All parts incl. small</option>
+          </select>
+        </label>
+        <label><input id="closedContoursOnly" type="checkbox" checked /> Closed contours only</label>
+        <label><input id="autoCloseContours" type="checkbox" checked /> Auto-close near ends</label>
+        <label><input id="smartCloseGaps" type="checkbox" /> Smart close gaps</label>
+        <label>Gap tol <input id="gapTolerance" type="number" min="2" max="200" step="1" value="40" style="width:64px;" /></label>
+        <label><input id="rejectNoisyContours" type="checkbox" checked /> Reject noisy contours</label>
+        <label><input id="patternNamesOnly" type="checkbox" checked /> Pattern names only</label>
+        <label>Min points <input id="minContourPoints" type="number" min="4" max="2000" step="1" value="40" style="width:72px;" /></label>
+        <label>Max contours <input id="maxContours" type="number" min="10" max="1000" step="10" value="120" style="width:72px;" /></label>
+      </div>
+    </details>
+    <div class="row"><span id="workspaceInfo" class="muted">No geometry loaded</span></div>
+    <div class="workspace-grid">
+      <div class="workspace-left">
+        <div class="workspace-overlay-tools">
+          <details id="displaySettingsPanel">
+            <summary><h3 style="display:inline;" data-i18n="display_settings_title" data-i18n-fallback="Display settings">Display settings</h3></summary>
+            <div class="row">
+              <div class="display-group">
+                <div class="display-group-title" data-i18n="display_group_base_layers" data-i18n-fallback="Base layers">Base layers</div>
+                <ul class="display-list">
+                  <li><label><input id="layerPattern" type="checkbox" checked /> <span data-i18n="display_label_pattern" data-i18n-fallback="Pattern contours">Pattern contours</span></label></li>
+                  <li><label><input id="majorContoursOnly" type="checkbox" checked /> <span data-i18n="display_label_major_contours" data-i18n-fallback="Hide minor contours">Hide minor contours</span></label></li>
+                  <li><label><input id="showDetailLabels" type="checkbox" /> <span data-i18n="display_label_detail_labels" data-i18n-fallback="Detail labels">Detail labels</span></label></li>
+                  <li><label><input id="layerZones" type="checkbox" checked /> <span data-i18n="display_label_zones" data-i18n-fallback="Zones">Zones</span></label></li>
+                  <li><label><input id="layerGuides" type="checkbox" checked /> <span data-i18n="display_label_grid" data-i18n-fallback="Grid">Grid</span></label></li>
+                </ul>
+                <input id="layerSelection" type="checkbox" checked style="display:none" />
+              </div>
+              <div class="display-group">
+                <div class="display-group-title" data-i18n="display_group_inventory" data-i18n-fallback="Inventory">Inventory</div>
+                <ul class="display-list">
+                  <li><label><input id="layerPfullZ" type="checkbox" checked /> <span data-i18n="display_label_piece_contours" data-i18n-fallback="Piece contours">Piece contours</span></label></li>
+                  <li style="display:none;"><label><input id="layerAssignedPieces" type="checkbox" checked /><span id="layerAssignedPiecesLabel" data-i18n="layer_pieces_label" data-i18n-fallback="Matched pieces">Matched pieces</span></label></li>
+                </ul>
+              </div>
+              <div class="display-group">
+                <div class="display-group-title" data-i18n="display_group_result" data-i18n-fallback="Layout result">Layout result</div>
+                <ul class="display-list">
+                  <li><label><input id="layerPieceBorders" type="checkbox" checked /><span id="layerPieceBordersLabel" data-i18n="display_label_fragments" data-i18n-fallback="Fragments">Fragments</span></label></li>
+                  <li><label><input id="layerVisibleCore" type="checkbox" /> <span data-i18n="display_label_seams" data-i18n-fallback="Seams">Seams</span></label></li>
+                  <li><label><input id="layerPcoreZ" type="checkbox" checked /> <span data-i18n="display_label_allowances" data-i18n-fallback="Piece allowance">Piece allowance</span></label></li>
+                </ul>
+              </div>
+              <div class="display-group">
+                <div class="display-group-title" data-i18n="display_group_check" data-i18n-fallback="Checks">Checks</div>
+                <ul class="display-list">
+                  <li><label><input id="layerUsedGain" type="checkbox" checked /> <span data-i18n="display_label_used_part" data-i18n-fallback="Used part">Used part</span></label></li>
+                  <li><label><input id="layerSplitLeftovers" type="checkbox" /> <span data-i18n="display_label_split_leftovers" data-i18n-fallback="Split leftovers">Split leftovers</span></label></li>
+                  <li><label><input id="layerVisibleArea" type="checkbox" /> <span data-i18n="display_label_visible_coverage" data-i18n-fallback="Visible coverage">Visible coverage</span></label></li>
+                  <li><label><input id="layerPieceIntersections" type="checkbox" /> <span data-i18n="display_label_intersections" data-i18n-fallback="Intersections">Intersections</span></label></li>
+                </ul>
+              </div>
+              <input id="highlightSelectedDetail" type="checkbox" checked style="display:none" />
+            </div>
+          </details>
+        </div>
+        <div id="workspace"></div>
+        <div id="manualTrayDock" class="manual-tray-dock"></div>
+      </div>
+      <aside class="right-panel">
+        <div class="right-top">
+          <div class="right-head">Сборка меха</div>
+          <div id="layoutModeSwitch" class="layout-switch">
+            <button data-panel="zones">Зоны</button>
+            <button data-panel="layouts">Выкладки</button>
+          </div>
+          <div id="rightTabsTitle" class="right-tabs">Детали / Зоны</div>
+          <div id="detailZoneTree" class="tree"></div>
+        </div>
+        <div id="rightPanelSplitter" class="right-splitter" title="Потяни для изменения высоты"></div>
+        <div class="right-bottom">
+          <div class="right-head">Редактор свойств</div>
+          <div id="propertyEditor" class="props"></div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <div id="inventoryStep1Backdrop" class="modal-backdrop">
+    <div id="inventoryStep1Modal" class="modal" style="width:340px; max-width:calc(100vw - 20px);">
+      <div id="inventoryStep1Head" class="modal-head draggable"><span id="inventoryStep1Title">Шаг 1. Заполнить остаток</span><button id="inventoryStep1CloseBtn">x</button></div>
+      <div class="modal-body">
+        <div id="inventoryScenarioRow" class="field-row" style="display:none;"><label>Сценарий</label><select id="inventoryScenario"><option value="A">A: Выкладка из инвентаря</option><option value="B">B: Подбор под фрагменты</option></select></div>
+        <div id="inventoryScenarioHint" style="display:none; margin:-2px 0 8px; font-size:12px; color:#555;"></div>
+        <input id="inventoryOptimizationMode" type="hidden" value="sew_quality_economy" />
+        <div id="inventoryOptimizationHint" style="display:none; margin:-2px 0 8px; font-size:12px; color:#555;"></div>
+        <div id="fillTypeRow" class="field-row"><label>Тип заполнения</label><select id="fillType"><option value="voronoi">Мозаика Вороного</option><option value="regular">Регулярный</option></select></div>
+        <div id="placementStrategyRow" class="field-row"><label>Стратегия размещения</label><select id="placementStrategy"><option value="bestFit">bestFit</option><option value="greedy">greedy</option><option value="manualAssist">manualAssist</option></select></div>
+        <div id="fillVoronoiFields">
+          <div class="field-row"><label>Плотность заполнения (0-100)</label><input id="fillDensity" type="number" min="0" max="100" value="50" /></div>
+          <div class="field-row"><label>Вариативность (0-100)</label><input id="fillVariability" type="number" min="0" max="100" value="50" /></div>
+          <div class="field-row"><label>Анизотропия (вдоль ворса, 0-100)</label><input id="fillAnisotropy" type="number" min="0" max="100" value="50" /></div>
+        </div>
+        <div id="fillRegularFields" style="display:none;">
+          <div id="intarsiaStep1GridFields">
+            <div class="field-row"><label>Ряды</label><input id="fillRows" type="number" min="2" max="20" value="5" /></div>
+            <div class="field-row"><label>Колонки</label><input id="fillCols" type="number" min="2" max="20" value="5" /></div>
+            <div class="field-row"><label>Зазор X, мм</label><input id="fillGapX" type="number" min="0" max="1000" value="0" /></div>
+            <div class="field-row"><label>Зазор Y, мм</label><input id="fillGapY" type="number" min="0" max="1000" value="0" /></div>
+            <div class="field-row"><label>Скругление углов, мм</label><input id="fillCornerRadius" type="number" min="0" max="1000" value="0" /></div>
+          </div>
+        </div>
+        <div id="intarsiaStep2CandidateFields">
+          <div class="field-row"><label>Лимит кандидатов</label><input id="invLimit" type="number" min="10" max="2000" value="300" /></div>
+          <div class="field-row"><label>Допуск по ворсу, °</label><input id="invNapTol" type="number" min="0" max="180" value="15" /></div>
+          <div class="field-row"><label>Резерв припуска (из свойств выкладки), мм</label><input id="invAllowanceMm" type="number" min="0" max="200" step="0.5" value="12.0" readonly /></div>
+          <details id="inventoryAdvancedFields" style="margin-top:8px;">
+            <summary style="cursor:pointer;">Расширенные</summary>
+            <div style="margin-top:8px;">
+              <div class="field-row"><label>Мин. площадь, мм²</label><input id="invMinArea" type="number" min="0" max="100000" value="0" /></div>
+              <div class="field-row"><label>Мин. ширина фрагм., мм</label><input id="minFragmentWidthMm" type="number" min="0" max="10000" value="100" /></div>
+              <div class="field-row"><label>Мин. длина фрагм., мм</label><input id="minFragmentLengthMm" type="number" min="0" max="10000" value="100" /></div>
+            </div>
+          </details>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="inventoryStep1RunBtn">Подобрать</button>
+        <button id="inventoryStep1IntarsiaAssignBtn" style="display:none;">Шаг 2: Подобрать куски</button>
+        <button id="inventoryStep1CancelBtn">Закрыть</button>
+      </div>
+      <div id="inventoryStep1FlowHint" style="padding:0 16px 12px; font-size:12px; color:#555;"></div>
+    </div>
+  </div>
+
+  <div id="inventoryProgressBackdrop" class="modal-backdrop">
+    <div class="modal" style="width:340px;">
+      <div class="modal-body" style="padding:16px; text-align:center;">
+        <div id="inventoryProgressTitle" style="margin-bottom:10px;">Формирование пула кандидатов</div>
+        <div style="position:relative; width:300px; margin:0 auto;">
+          <div class="progress-wrap"><div id="inventoryProgressBar" class="progress-bar"></div></div>
+          <div id="inventoryProgressText" class="progress-text">0%</div>
+        </div>
+        <ul id="inventoryProgressSteps" class="progress-steps"></ul>
+        <div class="progress-kpi">
+          <div class="kpi-label">Кусков (подбор)</div><div id="inventoryProgressKpiPieces" class="kpi-value">-</div>
+          <div class="kpi-label">Покрытие, %</div><div id="inventoryProgressKpiCoverage" class="kpi-value">-</div>
+          <div class="kpi-label">Утилизация, %</div><div id="inventoryProgressKpiUtilization" class="kpi-value">-</div>
+          <div class="kpi-label">Хвостовой штраф, %</div><div id="inventoryProgressKpiTail" class="kpi-value">-</div>
+        </div>
+        <div id="inventoryProgressTimer" style="margin-top:8px; font-size:12px; color:#555;">00:00</div>
+        <pre id="inventoryProgressLive" style="margin-top:8px; max-height:120px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; text-align:left; font-size:11px; line-height:1.35; background:#f7f7f7; border:1px solid #ddd; padding:6px;">live: waiting...</pre>
+      </div>
+    </div>
+  </div>
+
+  <div id="inventoryStep2Backdrop" class="modal-backdrop">
+    <div id="inventoryStep2Modal" class="modal" style="width:360px; max-width:calc(100vw - 20px);">
+      <div id="inventoryStep2Head" class="modal-head draggable"><span>Шаг 2. Предпросмотр и доводка подбора</span><button id="inventoryStep2CloseBtn">x</button></div>
+      <div class="modal-body">
+        <div class="field-row"><label>Фрагментов добавлено</label><div id="invTotalFragments">0</div></div>
+        <div class="field-row"><label>Нарушения ограничений</label><div id="invViolations">0</div></div>
+        <div class="field-row"><label>Пересечения</label><div id="invIntersections">0</div></div>
+        <div class="field-row"><label>Непокрытые области</label><div id="invUncovered">0</div></div>
+        <div class="field-row"><label>Покрытие зоны, %</label><div id="invCoveragePercent">0</div></div>
+        <div class="field-row"><label>Остаток, мм²</label><div id="invResidualArea">0</div></div>
+        <div class="field-row"><label>Полезно использовано, мм²</label><div id="invUsefulArea">0</div></div>
+        <div class="field-row"><label>Выбрано кусков в зоне, мм²</label><div id="invUsedScrapArea">0</div></div>
+        <div class="field-row"><label>Использование кусков, %</label><div id="invScrapUtilization">0</div></div>
+        <div class="field-row"><label>Отходы кусков, %</label><div id="invScrapWaste">0</div></div>
+        <div class="field-row"><label>Перекрытия, мм²</label><div id="invOverlapArea">0</div></div>
+        <div class="field-row"><label>Бюджет площади, мм²</label><div id="invCandidateAreaBudget">0</div></div>
+        <div class="field-row"><label>Кандидатов в БД</label><div id="invDbCandidates">0</div></div>
+        <div class="field-row"><label>Совместимых</label><div id="invCompatibleCandidates">0</div></div>
+        <div class="field-row"><label>Стратегия подбора</label><div id="invStrategyUsed">-</div></div>
+        <div class="field-row"><label>Сопоставлено фрагм., %</label><div id="invMatchedPct">0.00</div></div>
+        <div class="field-row"><label>KPI покрытие, %</label><div id="invKpiCoveragePct">0.00</div></div>
+        <div class="field-row"><label>Tail старт (coverage)</label><div id="invTailCoverageStart">-</div></div>
+        <div class="field-row"><label>Tail alpha</label><div id="invTailOversizeAlpha">-</div></div>
+        <div class="field-row"><label>Отбрак. oversize</label><div id="invRejectedOversize">0</div></div>
+        <div class="field-row"><label>Отбрак. overlap</label><div id="invRejectedOverlap">0</div></div>
+        <div class="field-row"><label>Отбрак. lowGain</label><div id="invRejectedLowGain">0</div></div>
+        <div class="field-row"><label>Отбрак. outside</label><div id="invRejectedOutside">0</div></div>
+        <div style="margin:6px 0 8px;">
+          <button id="inventoryStep2ExportCaseBtn">Экспорт case</button>
+        </div>
+        <div id="inventoryManualPanel" class="inventory-manual-panel" style="display:none; margin:6px 0 2px 0; padding:2px 0;">
+          <div id="inventoryManualSummary" class="inventory-manual-summary">Нажмите «Оценить»</div>
+          <div class="row" style="margin:4px 0 0 0; gap:6px;">
+            <button id="inventoryManualRecomputeBtn">Оценить раскладку</button>
+          </div>
+          <div id="inventoryManualState" class="inventory-manual-state">Выбранный кусок: нет</div>
+          <div id="inventoryManualMetrics" class="inventory-manual-metrics">gain=- overlap=- outside=- util=-</div>
+        </div>
+        <div style="margin-top:8px; font-size:12px; color:#444;">Диагностика:</div>
+        <pre id="invDebugInfo" style="max-height:80px; margin:6px 0 0 0; font-size:12px;"></pre>
+        <div style="margin-top:8px; font-size:12px; color:#444;">Использованные inventoryTag:</div>
+        <pre id="invUsedTags" style="max-height:80px; margin:6px 0 0 0; font-size:12px;"></pre>
+        <div id="invSplitEventsBlock" style="margin-top:8px; display:none;">
+          <div style="font-size:12px; color:#444;">Split &amp; Return события:</div>
+          <pre id="invSplitEvents" style="max-height:120px; margin:6px 0 0 0; font-size:12px;"></pre>
+        </div>
+        <div id="invPlacementMatchBlock" style="margin-top:8px;">
+          <div style="font-size:12px; color:#444;">Соответствие фрагментов и кандидатов:</div>
+          <div style="max-height:160px; overflow:auto; border:1px solid #ccc; background:#fff;">
+          <table style="width:100%; border-collapse:collapse; margin:0;">
+            <thead>
+              <tr>
+                <th style="font-size:12px;">Фрагм.</th>
+                <th style="font-size:12px;">Площадь</th>
+                <th style="font-size:12px;">Кандидат</th>
+                <th style="font-size:12px;">Ворс</th>
+                <th style="font-size:12px;">Статус</th>
+              </tr>
+            </thead>
+            <tbody id="invPlacementRows"></tbody>
+          </table>
+          </div>
+        </div>
+        <div id="invPlacementExplainBlock" style="margin-top:8px;">
+          <div style="font-size:12px; color:#444;">Почему выбран этот кандидат (top-3):</div>
+          <div id="invPlacementExplainSummary" style="margin:6px 0 0 0; padding:6px; border:1px solid #ddd; background:#fafafa; font-size:12px; color:#333;">
+            Нет данных объяснимости
+          </div>
+          <div style="max-height:140px; overflow:auto; border:1px solid #ccc; background:#fff; margin-top:6px;">
+            <table style="width:100%; border-collapse:collapse; margin:0;">
+              <thead>
+                <tr>
+                  <th style="font-size:12px;">#</th>
+                  <th style="font-size:12px;">Кандидат</th>
+                  <th style="font-size:12px;">Score</th>
+                  <th style="font-size:12px;">Inside</th>
+                  <th style="font-size:12px;">Outside</th>
+                  <th style="font-size:12px;">Coverage</th>
+                </tr>
+              </thead>
+              <tbody id="invPlacementExplainRows">
+                <tr><td colspan="6" style="font-size:12px; color:#666; text-align:center;">Нет данных</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div id="invFragmentCoverageBlock" style="margin-top:8px;">
+          <div style="font-size:12px; color:#444;">Покрытие фрагментов (худшие):</div>
+          <div id="invFragmentCoverageSummary" style="margin:6px 0 0 0; padding:6px; border:1px solid #ddd; background:#fafafa; font-size:12px; color:#333;">
+            Нет данных
+          </div>
+          <div style="max-height:140px; overflow:auto; border:1px solid #ccc; background:#fff; margin-top:6px;">
+            <table style="width:100%; border-collapse:collapse; margin:0;">
+              <thead>
+                <tr>
+                  <th style="font-size:12px;">Фрагм.</th>
+                  <th style="font-size:12px;">Coverage</th>
+                  <th style="font-size:12px;">Inside</th>
+                  <th style="font-size:12px;">Outside</th>
+                  <th style="font-size:12px;">Кандидат</th>
+                </tr>
+              </thead>
+              <tbody id="invFragmentCoverageRows">
+                <tr><td colspan="5" style="font-size:12px; color:#666; text-align:center;">Нет данных</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="inventoryStep2BackBtn">Назад</button>
+        <button id="inventoryStep2ApplyBtn">Применить</button>
+        <button id="inventoryStep2CancelBtn">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="replaceCandidateBackdrop" class="modal-backdrop">
+    <div class="modal" style="width:520px;">
+      <div class="modal-head"><span>Заменить кандидат для фрагмента</span><button id="replaceCandidateCloseBtn">x</button></div>
+      <div class="modal-body">
+        <div id="replaceCandidateInfo" style="margin-bottom:8px; font-size:12px; color:#444;">Нет данных</div>
+        <div style="max-height:240px; overflow:auto; border:1px solid #ccc; background:#fff;">
+          <table style="width:100%; border-collapse:collapse; margin:0;">
+            <thead>
+              <tr>
+                <th style="font-size:12px;">Инв.номер</th>
+                <th style="font-size:12px;">Score</th>
+                <th style="font-size:12px;">Overlap</th>
+                <th style="font-size:12px;">Chamfer</th>
+                <th style="font-size:12px;">Выбор</th>
+              </tr>
+            </thead>
+            <tbody id="replaceCandidateRows"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="replaceCandidateApplyBtn">Применить</button>
+        <button id="replaceCandidateCancelBtn">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="layoutTypeBackdrop" class="modal-backdrop">
+    <div class="modal" style="width:760px; max-width:calc(100vw - 24px);">
+      <div class="modal-head"><span>Добавить выкладку</span><button id="layoutTypeCloseBtn">x</button></div>
+      <div class="modal-body">
+        <div style="margin-bottom:8px; font-size:12px; color:#555;">Выберите тип выкладки</div>
+        <div id="layoutTypeGrid" class="layout-type-grid"></div>
+      </div>
+      <div class="modal-actions">
+        <button id="layoutTypeAddBtn" disabled>Добавить</button>
+        <button id="layoutTypeCancelBtn">Отмена</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="importPanel" class="panel compact-panel">
+    <h2>Import</h2>
+    <div class="row">
+      <label>Mode
+        <select id="importMode">
+          <option value="dxf">DXF folder</option>
+          <option value="zprj">ZPRJ file</option>
+        </select>
+      </label>
+      <input id="importPath" type="text" value="F:\\FURLAB\\Examples" />
+      <label id="recursiveWrap"><input id="recursive" type="checkbox" /> recursive</label>
+      <button id="browseBtn">Browse...</button>
+      <button id="previewRunBtn">Preview DXF</button>
+    </div>
+    <div id="importActionsRow" class="row import-actions" style="display:none;">
+      <span id="selectionInfo" class="muted">selected: 0</span>
+    </div>
+    <div id="previewEmptyHint" class="row muted">Сначала выберите источник и нажмите Preview.</div>
+    <div id="previewTableWrap" class="preview-table-wrap" style="display:none;">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:36px;">Sel</th><th class="col-idx" style="width:60px;">Idx</th><th>Name</th>
+            <th style="width:96px;">Ready</th><th style="width:120px;">Size</th><th style="width:120px;">Entities</th><th>Error</th>
+          </tr>
+        </thead>
+        <tbody id="previewTableBody"></tbody>
+      </table>
+    </div>
+    <pre id="discoverOut" class="log-output"></pre>
+    <pre id="previewOut" class="log-output"></pre>
+  </div>
+
+  <div class="panel">
+    <details class="db-details">
+      <summary>Database</summary>
+      <div class="row"><button id="partsBtn">Refresh parts</button></div>
+      <pre id="partsOut"></pre>
+    </details>
+  </div>
+
+  <div class="app-caption">FurLab Web Plugin: DXF Import + Konva Editor</div>
+  <input id="importFileInput" type="file" accept=".dxf" multiple style="display:none" />
+
+  <script src="https://unpkg.com/konva@9/konva.min.js"></script>
+  <script src="/workers/polygon-clipping.umd.min.js"></script>
+  <script src="/js/core/styles.js"></script>
+  <script src="/js/core/i18n-ru.js"></script>
+  <script src="/js/core/i18n-hydrate.js"></script>
+  <script src="/js/core/text-normalizer.js"></script>
+  <script src="/js/core/progress-utils.js"></script>
+  <script src="/js/core/progress-view.js"></script>
+  <script src="/js/core/progress-controller.js"></script>
+  <script src="/js/core/state.js"></script>
+  <script src="/js/core/api.js"></script>
+  <script src="/js/core/layout-modes.js"></script>
+  <script src="/js/core/layout-type-picker.js"></script>
+  <script src="/js/core/import-preview-controller.js"></script>
+  <script src="/js/core/inventory-progress-ui.js"></script>
+  <script src="/js/core/inventory-modal-drag.js"></script>
+  <script src="/js/core/inventory-step-modal-bridge.js"></script>
+  <script src="/js/core/manual-tray-view.js"></script>
+  <script src="/js/core/manual-tray-interactions.js"></script>
+  <script src="/js/core/intarsia-preview.js"></script>
+  <script src="/js/core/detail-zone-tree-view.js"></script>
+  <script src="/js/core/property-editor-view.js"></script>
+  <script src="/js/core/layer-legend.js"></script>
+  <script src="/js/core/inventory-step2-ui.js"></script>
+  <script src="/js/core/placement-explain-view.js"></script>
+  <script src="/js/core/stage-interactions.js"></script>
+  <script src="/js/core/ui-bindings.js"></script>
+  <script src="/js/app.js"></script>
+
+</body>
+</html>
