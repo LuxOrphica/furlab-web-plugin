@@ -29,25 +29,53 @@
       ? opts.recomputeInventoryManualVisibility
       : null;
 
+    function toPointObj(q) {
+      if (Array.isArray(q) && q.length >= 2) {
+        const x = Number(q[0]);
+        const y = Number(q[1]);
+        if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+      }
+      const x = Number(q && q.x);
+      const y = Number(q && q.y);
+      if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+      return null;
+    }
+    function isPointLike(v) {
+      return !!toPointObj(v);
+    }
     function mapContour(points, fn) {
       if (!Array.isArray(points) || points.length < 3) return points;
       const out = points
-        .map((q) => ({ x: Number(q && q.x), y: Number(q && q.y) }))
-        .filter((q) => Number.isFinite(q.x) && Number.isFinite(q.y))
+        .map((q) => toPointObj(q))
+        .filter((q) => q && Number.isFinite(q.x) && Number.isFinite(q.y))
         .map(fn);
       return out.length >= 3 ? out : points;
     }
+    function mapPolygonOrContour(poly, fn) {
+      if (!Array.isArray(poly) || !poly.length) return poly;
+      if (Array.isArray(poly[0]) && (poly[0].length === 0 || isPointLike(poly[0][0]))) {
+        return poly.map((ring) => mapContour(ring, fn));
+      }
+      return mapContour(poly, fn);
+    }
     function mapContours(list, fn) {
       if (!Array.isArray(list)) return list;
-      return list.map((poly) => mapContour(poly, fn));
+      return list.map((poly) => mapPolygonOrContour(poly, fn));
     }
     function cloneContour(points) {
       if (!Array.isArray(points)) return points;
-      return points.map((q) => ({ x: Number(q && q.x), y: Number(q && q.y) }));
+      return points.map((q) => toPointObj(q)).filter(Boolean);
+    }
+    function clonePolygonOrContour(poly) {
+      if (!Array.isArray(poly) || !poly.length) return poly;
+      if (Array.isArray(poly[0]) && (poly[0].length === 0 || isPointLike(poly[0][0]))) {
+        return poly.map((ring) => cloneContour(ring));
+      }
+      return cloneContour(poly);
     }
     function cloneContours(list) {
       if (!Array.isArray(list)) return list;
-      return list.map((poly) => cloneContour(poly));
+      return list.map((poly) => clonePolygonOrContour(poly));
     }
     function snapshotPlacementGeometry(pl) {
       if (!pl || typeof pl !== "object") return null;

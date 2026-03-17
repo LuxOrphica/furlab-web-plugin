@@ -1,4 +1,4 @@
-(function registerFurLabDetailZoneTreeView(globalObj) {
+﻿(function registerFurLabDetailZoneTreeView(globalObj) {
   const root = globalObj || (typeof window !== "undefined" ? window : globalThis);
 
   function createDetailZoneTreeView(deps) {
@@ -6,6 +6,8 @@
     const state = deps && deps.state;
     const openLayoutTypePicker = deps && deps.openLayoutTypePicker;
     const applyLayoutMode = deps && deps.applyLayoutMode;
+    const getLayoutModeTitle = deps && deps.getLayoutModeTitle;
+    const getLayoutModeThumbSvg = deps && deps.getLayoutModeThumbSvg;
     const renderLayoutModeSwitch = deps && deps.renderLayoutModeSwitch;
     const renderPropertyEditor = deps && deps.renderPropertyEditor;
     const renderScene = deps && deps.renderScene;
@@ -14,16 +16,48 @@
     const fitPointsToView = deps && deps.fitPointsToView;
     const findPlacementForFragment = deps && deps.findPlacementForFragment;
 
+    function ensureTreeUiState() {
+      if (!state.treeUi || typeof state.treeUi !== "object") {
+        state.treeUi = {
+          detailsCollapsed: {},
+          zonesCollapsed: {}
+        };
+      }
+      if (!state.treeUi.detailsCollapsed || typeof state.treeUi.detailsCollapsed !== "object") {
+        state.treeUi.detailsCollapsed = {};
+      }
+      if (!state.treeUi.zonesCollapsed || typeof state.treeUi.zonesCollapsed !== "object") {
+        state.treeUi.zonesCollapsed = {};
+      }
+      return state.treeUi;
+    }
+
+    function makeToggleButton(collapsed, expandTitle, collapseTitle, onToggle) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "tree-toggle-btn";
+      btn.title = collapsed ? expandTitle : collapseTitle;
+      btn.textContent = collapsed ? "в–ё" : "в–ѕ";
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        onToggle();
+      });
+      return btn;
+    }
+
     function renderDetailZoneTree() {
       const treeRoot = byId("detailZoneTree");
       if (!treeRoot) return;
+      const treeUi = ensureTreeUiState();
       treeRoot.innerHTML = "";
+
       if (state.uiPanel === "layouts") {
         const addWrap = document.createElement("div");
         addWrap.className = "row";
         addWrap.style.marginBottom = "8px";
+
         const addBtn = document.createElement("button");
-        addBtn.textContent = "+ Добавить выкладку";
+        addBtn.textContent = "+ Р”РѕР±Р°РІРёС‚СЊ РІС‹РєР»Р°РґРєСѓ";
         addBtn.addEventListener("click", () => {
           openLayoutTypePicker();
         });
@@ -33,29 +67,18 @@
         if (!state.layouts.length) {
           const empty = document.createElement("div");
           empty.className = "tree-empty";
-          empty.textContent = "Пока нет выкладок. Нажмите '+ Добавить выкладку'.";
+          empty.textContent = "РџРѕРєР° РЅРµС‚ РІС‹РєР»Р°РґРѕРє. РќР°Р¶РјРёС‚Рµ '+ Р”РѕР±Р°РІРёС‚СЊ РІС‹РєР»Р°РґРєСѓ'.";
           treeRoot.appendChild(empty);
           return;
         }
 
         for (const entry of state.layouts) {
           const card = document.createElement("div");
-          card.className = "tree-detail";
-          card.style.padding = "8px";
-
-          const row = document.createElement("div");
-          row.style.display = "flex";
-          row.style.alignItems = "center";
-          row.style.gap = "8px";
+          card.className = "layout-list-card" + (Number(state.selectedLayoutId || 0) === Number(entry.id) ? " active" : "");
 
           const openBtn = document.createElement("button");
-          openBtn.style.flex = "1";
-          openBtn.style.textAlign = "left";
-          openBtn.textContent = entry.name || `(Без названия ${entry.id})`;
-          if (Number(state.selectedLayoutId || 0) === Number(entry.id)) {
-            openBtn.style.background = "#e0e0e0";
-            openBtn.style.fontWeight = "600";
-          }
+          openBtn.type = "button";
+          openBtn.className = "layout-list-main";
           openBtn.addEventListener("click", () => {
             state.selectedLayoutId = entry.id;
             applyLayoutMode(entry.mode);
@@ -69,9 +92,48 @@
             renderScene();
           });
 
+          const thumb = document.createElement("div");
+          thumb.className = "layout-list-thumb";
+          thumb.innerHTML = typeof getLayoutModeThumbSvg === "function"
+            ? getLayoutModeThumbSvg(entry.mode)
+            : "";
+          openBtn.appendChild(thumb);
+
+          const textWrap = document.createElement("div");
+          textWrap.className = "layout-list-text";
+
+          const title = document.createElement("div");
+          title.className = "layout-list-title";
+          title.textContent = entry.name || `(Layout ${entry.id})`;
+
+          const subtitle = document.createElement("div");
+          subtitle.className = "layout-list-subtitle";
+          subtitle.textContent = typeof getLayoutModeTitle === "function"
+            ? getLayoutModeTitle(entry.mode)
+            : String(entry.mode || "");
+
+          textWrap.appendChild(title);
+          textWrap.appendChild(subtitle);
+          openBtn.appendChild(textWrap);
+
+          const actions = document.createElement("div");
+          actions.className = "layout-list-actions";
+
+          const focusBtn = document.createElement("button");
+          focusBtn.type = "button";
+          focusBtn.className = "layout-list-action-btn";
+          focusBtn.textContent = "Open";
+          focusBtn.title = "Open layout";
+          focusBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            openBtn.click();
+          });
+
           const delBtn = document.createElement("button");
-          delBtn.textContent = "x";
-          delBtn.title = "Удалить выкладку";
+          delBtn.type = "button";
+          delBtn.className = "layout-list-action-btn danger";
+          delBtn.textContent = "Delete";
+          delBtn.title = "Delete layout";
           delBtn.addEventListener("click", (e) => {
             e.stopPropagation();
             state.layouts = state.layouts.filter((x) => Number(x.id) !== Number(entry.id));
@@ -85,74 +147,118 @@
             renderPropertyEditor();
           });
 
-          row.appendChild(openBtn);
-          row.appendChild(delBtn);
-          card.appendChild(row);
-
+          actions.appendChild(focusBtn);
+          actions.appendChild(delBtn);
+          card.appendChild(openBtn);
+          card.appendChild(actions);
           treeRoot.appendChild(card);
         }
         return;
       }
+
       if (!Array.isArray(state.details) || state.details.length === 0) {
         const empty = document.createElement("div");
         empty.className = "tree-empty";
-        empty.textContent = "Нет деталей";
+        empty.textContent = "РќРµС‚ РґРµС‚Р°Р»РµР№";
         treeRoot.appendChild(empty);
         return;
       }
 
       for (const d of state.details) {
+        const detailId = Number(d && d.id || 0);
+        const detailKey = String(detailId);
+        const detailCollapsed = !!treeUi.detailsCollapsed[detailKey];
+
         const detailBox = document.createElement("div");
         detailBox.className = "tree-detail";
+
         const detailHead = document.createElement("div");
-        detailHead.className = "tree-detail-head" + (state.selectedDetailId === d.id ? " active" : "");
+        detailHead.className = "tree-detail-head" + (state.selectedDetailId === detailId ? " active" : "");
+
+        const detailToggle = makeToggleButton(
+          detailCollapsed,
+          "Р Р°Р·РІРµСЂРЅСѓС‚СЊ РґРµС‚Р°Р»СЊ",
+          "РЎРІРµСЂРЅСѓС‚СЊ РґРµС‚Р°Р»СЊ",
+          () => {
+            treeUi.detailsCollapsed[detailKey] = !detailCollapsed;
+            renderDetailZoneTree();
+          }
+        );
+        detailHead.appendChild(detailToggle);
+
         const detailName = document.createElement("span");
         detailName.className = "tree-detail-title";
-        detailName.textContent = `Деталь ${d.id}`;
+        detailName.textContent = `Р”РµС‚Р°Р»СЊ ${detailId}`;
         detailHead.appendChild(detailName);
+
         detailHead.addEventListener("click", () => {
-          state.selectedDetailId = d.id;
+          state.selectedDetailId = detailId;
           fitBBoxToView(d.bbox);
           renderScene();
         });
 
         const zonesWrap = document.createElement("div");
         zonesWrap.className = "tree-zones";
-        const zones = state.zones
-          .filter((z) => Number(z.detailId || 0) === Number(d.id));
+        zonesWrap.style.display = detailCollapsed ? "none" : "";
+
+        const zones = state.zones.filter((z) => Number(z.detailId || 0) === detailId);
         if (zones.length === 0) {
           const zEmpty = document.createElement("div");
           zEmpty.className = "tree-empty";
-          zEmpty.textContent = "зон нет";
+          zEmpty.textContent = "Р·РѕРЅ РЅРµС‚";
           zonesWrap.appendChild(zEmpty);
         } else {
           for (const z of zones) {
+            const zoneId = Number(z && z.id || 0);
+            const zoneKey = String(zoneId);
+            const zoneCollapsed = !!treeUi.zonesCollapsed[zoneKey];
+
             const zi = document.createElement("div");
-            zi.className = "tree-zone" + (state.selectedZoneId === z.id ? " active" : "");
+            zi.className = "tree-zone" + (state.selectedZoneId === zoneId ? " active" : "");
+
             const zrow = document.createElement("div");
             zrow.className = "zone-row";
+
+            const zoneToggle = makeToggleButton(
+              zoneCollapsed,
+              "Р Р°Р·РІРµСЂРЅСѓС‚СЊ Р·РѕРЅСѓ",
+              "РЎРІРµСЂРЅСѓС‚СЊ Р·РѕРЅСѓ",
+              () => {
+                treeUi.zonesCollapsed[zoneKey] = !zoneCollapsed;
+                renderDetailZoneTree();
+              }
+            );
+            zoneToggle.classList.add("zone-toggle-btn");
+            zrow.appendChild(zoneToggle);
+
             const zthumb = document.createElement("div");
             zthumb.className = "zone-thumb";
             zthumb.innerHTML = contourThumbSvg(z.points || [], true);
+
             const zname = document.createElement("div");
-            zname.textContent = z.name || `Зона ${z.id}`;
+            zname.textContent = z.name || `Р—РѕРЅР° ${zoneId}`;
+
             zrow.appendChild(zthumb);
             zrow.appendChild(zname);
             zi.appendChild(zrow);
+
             zi.addEventListener("click", (e) => {
               e.stopPropagation();
-              state.selectedZoneId = z.id;
+              state.selectedZoneId = zoneId;
               state.selectedFragmentId = null;
-              state.selectedDetailId = Number(z.detailId || d.id);
+              state.selectedDetailId = Number(z.detailId || detailId);
               fitPointsToView(z.points);
               renderScene();
             });
+
             zonesWrap.appendChild(zi);
 
-            const zoneHasLayout = state.layoutRun.active && Number(state.layoutRun.selectedZoneId || 0) === Number(z.id);
+            const zoneHasLayout = state.layoutRun.active && Number(state.layoutRun.selectedZoneId || 0) === zoneId;
             if (zoneHasLayout) {
               const frWrap = document.createElement("div");
               frWrap.className = "tree-fragments";
+              frWrap.style.display = zoneCollapsed ? "none" : "";
+
               const frags = Array.isArray(state.layoutRun.fragments) ? state.layoutRun.fragments.slice() : [];
               frags.sort((a, b) => {
                 const pa = findPlacementForFragment(a);
@@ -164,13 +270,16 @@
                 const sb = Number(pb && pb.fitScore || -1);
                 return sa - sb;
               });
+
               for (const frag of frags) {
                 const fragId = Number(frag.id || 0);
                 const p = findPlacementForFragment(frag);
                 const item = document.createElement("div");
                 item.className = "tree-fragment" + (state.selectedFragmentId === fragId ? " active" : "");
+
                 const left = document.createElement("span");
-                left.textContent = `- ${z.id}-${fragId}`;
+                left.textContent = `- ${zoneId}-${fragId}`;
+
                 const right = document.createElement("span");
                 right.className = "tree-frag-tag";
                 if (p && p.status === "needs_attention") {
@@ -184,12 +293,13 @@
                   right.textContent = p && p.status ? String(p.status) : "";
                   right.style.color = "#666";
                 }
+
                 item.appendChild(left);
                 item.appendChild(right);
                 item.addEventListener("click", (e) => {
                   e.stopPropagation();
-                  state.selectedDetailId = Number(z.detailId || d.id);
-                  state.selectedZoneId = z.id;
+                  state.selectedDetailId = Number(z.detailId || detailId);
+                  state.selectedZoneId = zoneId;
                   state.selectedFragmentId = fragId;
                   const fragPts =
                     (Array.isArray(frag && frag.points) && frag.points.length >= 2) ? frag.points :
@@ -200,12 +310,14 @@
                 });
                 frWrap.appendChild(item);
               }
+
               if (!frags.length) {
                 const emptyFrag = document.createElement("div");
                 emptyFrag.className = "tree-empty";
-                emptyFrag.textContent = "фрагментов нет";
+                emptyFrag.textContent = "С„СЂР°РіРјРµРЅС‚РѕРІ РЅРµС‚";
                 frWrap.appendChild(emptyFrag);
               }
+
               zonesWrap.appendChild(frWrap);
             }
           }

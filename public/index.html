@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -32,6 +32,7 @@
       <span class="kbd">Wheel: zoom</span>
       <span class="kbd">Space+Drag / Right Mouse: pan</span>
       <span class="kbd">Double click in draw mode: finish polygon</span>
+      <span id="buildTag" class="muted build-tag-top">build: ...</span>
     </div>
     <details id="zprjSettingsPanel" class="subpanel" open style="display:none;">
       <summary><h3 style="display:inline;">ZPRJ options</h3></summary>
@@ -104,17 +105,17 @@
       </div>
       <aside class="right-panel">
         <div class="right-top">
-          <div class="right-head">Сборка меха</div>
+          <div class="right-head">РЎР±РѕСЂРєР° РјРµС…Р°</div>
           <div id="layoutModeSwitch" class="layout-switch">
-            <button data-panel="zones">Зоны</button>
-            <button data-panel="layouts">Выкладки</button>
+            <button data-panel="zones">Р—РѕРЅС‹</button>
+            <button data-panel="layouts">Р’С‹РєР»Р°РґРєРё</button>
           </div>
-          <div id="rightTabsTitle" class="right-tabs">Детали / Зоны</div>
+          <div id="rightTabsTitle" class="right-tabs">Р”РµС‚Р°Р»Рё / Р—РѕРЅС‹</div>
           <div id="detailZoneTree" class="tree"></div>
         </div>
-        <div id="rightPanelSplitter" class="right-splitter" title="Потяни для изменения высоты"></div>
+        <div id="rightPanelSplitter" class="right-splitter" title="РџРѕС‚СЏРЅРё РґР»СЏ РёР·РјРµРЅРµРЅРёСЏ РІС‹СЃРѕС‚С‹"></div>
         <div class="right-bottom">
-          <div class="right-head">Редактор свойств</div>
+          <div class="right-head">Р РµРґР°РєС‚РѕСЂ СЃРІРѕР№СЃС‚РІ</div>
           <div id="propertyEditor" class="props"></div>
         </div>
       </aside>
@@ -123,46 +124,46 @@
 
   <div id="inventoryStep1Backdrop" class="modal-backdrop">
     <div id="inventoryStep1Modal" class="modal" style="width:340px; max-width:calc(100vw - 20px);">
-      <div id="inventoryStep1Head" class="modal-head draggable"><span id="inventoryStep1Title">Шаг 1. Заполнить остаток</span><button id="inventoryStep1CloseBtn">x</button></div>
+      <div id="inventoryStep1Head" class="modal-head draggable"><span id="inventoryStep1Title">РЁР°Рі 1. Р—Р°РїРѕР»РЅРёС‚СЊ РѕСЃС‚Р°С‚РѕРє</span><button id="inventoryStep1CloseBtn">x</button></div>
       <div class="modal-body">
-        <div id="inventoryScenarioRow" class="field-row" style="display:none;"><label>Сценарий</label><select id="inventoryScenario"><option value="A">A: Выкладка из инвентаря</option><option value="B">B: Подбор под фрагменты</option></select></div>
+        <div id="inventoryScenarioRow" class="field-row" style="display:none;"><label>РЎС†РµРЅР°СЂРёР№</label><select id="inventoryScenario"><option value="A">A: Р’С‹РєР»Р°РґРєР° РёР· РёРЅРІРµРЅС‚Р°СЂСЏ</option><option value="B">B: РџРѕРґР±РѕСЂ РїРѕРґ С„СЂР°РіРјРµРЅС‚С‹</option></select></div>
         <div id="inventoryScenarioHint" style="display:none; margin:-2px 0 8px; font-size:12px; color:#555;"></div>
         <input id="inventoryOptimizationMode" type="hidden" value="sew_quality_economy" />
         <div id="inventoryOptimizationHint" style="display:none; margin:-2px 0 8px; font-size:12px; color:#555;"></div>
-        <div id="fillTypeRow" class="field-row"><label>Тип заполнения</label><select id="fillType"><option value="voronoi">Мозаика Вороного</option><option value="regular">Регулярный</option></select></div>
-        <div id="placementStrategyRow" class="field-row"><label>Стратегия размещения</label><select id="placementStrategy"><option value="bestFit">bestFit</option><option value="greedy">greedy</option><option value="manualAssist">manualAssist</option></select></div>
+        <div id="fillTypeRow" class="field-row"><label>РўРёРї Р·Р°РїРѕР»РЅРµРЅРёСЏ</label><select id="fillType"><option value="voronoi">РњРѕР·Р°РёРєР° Р’РѕСЂРѕРЅРѕРіРѕ</option><option value="regular">Р РµРіСѓР»СЏСЂРЅС‹Р№</option></select></div>
+        <div id="placementStrategyRow" class="field-row"><label>РЎС‚СЂР°С‚РµРіРёСЏ СЂР°Р·РјРµС‰РµРЅРёСЏ</label><select id="placementStrategy"><option value="bestFit">bestFit</option><option value="greedy">greedy</option><option value="manualAssist">manualAssist</option></select></div>
         <div id="fillVoronoiFields">
-          <div class="field-row"><label>Плотность заполнения (0-100)</label><input id="fillDensity" type="number" min="0" max="100" value="50" /></div>
-          <div class="field-row"><label>Вариативность (0-100)</label><input id="fillVariability" type="number" min="0" max="100" value="50" /></div>
-          <div class="field-row"><label>Анизотропия (вдоль ворса, 0-100)</label><input id="fillAnisotropy" type="number" min="0" max="100" value="50" /></div>
+          <div class="field-row"><label>РџР»РѕС‚РЅРѕСЃС‚СЊ Р·Р°РїРѕР»РЅРµРЅРёСЏ (0-100)</label><input id="fillDensity" type="number" min="0" max="100" value="50" /></div>
+          <div class="field-row"><label>Р’Р°СЂРёР°С‚РёРІРЅРѕСЃС‚СЊ (0-100)</label><input id="fillVariability" type="number" min="0" max="100" value="50" /></div>
+          <div class="field-row"><label>РђРЅРёР·РѕС‚СЂРѕРїРёСЏ (РІРґРѕР»СЊ РІРѕСЂСЃР°, 0-100)</label><input id="fillAnisotropy" type="number" min="0" max="100" value="50" /></div>
         </div>
         <div id="fillRegularFields" style="display:none;">
           <div id="intarsiaStep1GridFields">
-            <div class="field-row"><label>Ряды</label><input id="fillRows" type="number" min="2" max="20" value="5" /></div>
-            <div class="field-row"><label>Колонки</label><input id="fillCols" type="number" min="2" max="20" value="5" /></div>
-            <div class="field-row"><label>Зазор X, мм</label><input id="fillGapX" type="number" min="0" max="1000" value="0" /></div>
-            <div class="field-row"><label>Зазор Y, мм</label><input id="fillGapY" type="number" min="0" max="1000" value="0" /></div>
-            <div class="field-row"><label>Скругление углов, мм</label><input id="fillCornerRadius" type="number" min="0" max="1000" value="0" /></div>
+            <div class="field-row"><label>Р СЏРґС‹</label><input id="fillRows" type="number" min="2" max="20" value="5" /></div>
+            <div class="field-row"><label>РљРѕР»РѕРЅРєРё</label><input id="fillCols" type="number" min="2" max="20" value="5" /></div>
+            <div class="field-row"><label>Р—Р°Р·РѕСЂ X, РјРј</label><input id="fillGapX" type="number" min="0" max="1000" value="0" /></div>
+            <div class="field-row"><label>Р—Р°Р·РѕСЂ Y, РјРј</label><input id="fillGapY" type="number" min="0" max="1000" value="0" /></div>
+            <div class="field-row"><label>РЎРєСЂСѓРіР»РµРЅРёРµ СѓРіР»РѕРІ, РјРј</label><input id="fillCornerRadius" type="number" min="0" max="1000" value="0" /></div>
           </div>
         </div>
         <div id="intarsiaStep2CandidateFields">
-          <div class="field-row"><label>Лимит кандидатов</label><input id="invLimit" type="number" min="10" max="2000" value="300" /></div>
-          <div class="field-row"><label>Допуск по ворсу, °</label><input id="invNapTol" type="number" min="0" max="180" value="15" /></div>
-          <div class="field-row"><label>Резерв припуска (из свойств выкладки), мм</label><input id="invAllowanceMm" type="number" min="0" max="200" step="0.5" value="12.0" readonly /></div>
+          <div class="field-row"><label>Р›РёРјРёС‚ РєР°РЅРґРёРґР°С‚РѕРІ</label><input id="invLimit" type="number" min="10" max="2000" value="300" /></div>
+          <div class="field-row"><label>Р”РѕРїСѓСЃРє РїРѕ РІРѕСЂСЃСѓ, В°</label><input id="invNapTol" type="number" min="0" max="180" value="15" /></div>
+          <div class="field-row"><label>Р РµР·РµСЂРІ РїСЂРёРїСѓСЃРєР° (РёР· СЃРІРѕР№СЃС‚РІ РІС‹РєР»Р°РґРєРё), РјРј</label><input id="invAllowanceMm" type="number" min="0" max="200" step="0.5" value="12.0" readonly /></div>
           <details id="inventoryAdvancedFields" style="margin-top:8px;">
-            <summary style="cursor:pointer;">Расширенные</summary>
+            <summary style="cursor:pointer;">Р Р°СЃС€РёСЂРµРЅРЅС‹Рµ</summary>
             <div style="margin-top:8px;">
-              <div class="field-row"><label>Мин. площадь, мм²</label><input id="invMinArea" type="number" min="0" max="100000" value="0" /></div>
-              <div class="field-row"><label>Мин. ширина фрагм., мм</label><input id="minFragmentWidthMm" type="number" min="0" max="10000" value="100" /></div>
-              <div class="field-row"><label>Мин. длина фрагм., мм</label><input id="minFragmentLengthMm" type="number" min="0" max="10000" value="100" /></div>
+              <div class="field-row"><label>РњРёРЅ. РїР»РѕС‰Р°РґСЊ, РјРјВІ</label><input id="invMinArea" type="number" min="0" max="100000" value="0" /></div>
+              <div class="field-row"><label>РњРёРЅ. С€РёСЂРёРЅР° С„СЂР°РіРј., РјРј</label><input id="minFragmentWidthMm" type="number" min="0" max="10000" value="100" /></div>
+              <div class="field-row"><label>РњРёРЅ. РґР»РёРЅР° С„СЂР°РіРј., РјРј</label><input id="minFragmentLengthMm" type="number" min="0" max="10000" value="100" /></div>
             </div>
           </details>
         </div>
       </div>
       <div class="modal-actions">
-        <button id="inventoryStep1RunBtn">Подобрать</button>
-        <button id="inventoryStep1IntarsiaAssignBtn" style="display:none;">Шаг 2: Подобрать куски</button>
-        <button id="inventoryStep1CancelBtn">Закрыть</button>
+        <button id="inventoryStep1RunBtn">РџРѕРґРѕР±СЂР°С‚СЊ</button>
+        <button id="inventoryStep1IntarsiaAssignBtn" style="display:none;">РЁР°Рі 2: РџРѕРґРѕР±СЂР°С‚СЊ РєСѓСЃРєРё</button>
+        <button id="inventoryStep1CancelBtn">Р—Р°РєСЂС‹С‚СЊ</button>
       </div>
       <div id="inventoryStep1FlowHint" style="padding:0 16px 12px; font-size:12px; color:#555;"></div>
     </div>
@@ -171,81 +172,81 @@
   <div id="inventoryProgressBackdrop" class="modal-backdrop">
     <div class="modal" style="width:340px;">
       <div class="modal-body" style="padding:16px; text-align:center;">
-        <div id="inventoryProgressTitle" style="margin-bottom:10px;">Формирование пула кандидатов</div>
+        <div id="inventoryProgressTitle" style="margin-bottom:10px;">Р¤РѕСЂРјРёСЂРѕРІР°РЅРёРµ РїСѓР»Р° РєР°РЅРґРёРґР°С‚РѕРІ</div>
         <div style="position:relative; width:300px; margin:0 auto;">
           <div class="progress-wrap"><div id="inventoryProgressBar" class="progress-bar"></div></div>
           <div id="inventoryProgressText" class="progress-text">0%</div>
         </div>
         <ul id="inventoryProgressSteps" class="progress-steps"></ul>
         <div class="progress-kpi">
-          <div class="kpi-label">Кусков (подбор)</div><div id="inventoryProgressKpiPieces" class="kpi-value">-</div>
-          <div class="kpi-label">Покрытие, %</div><div id="inventoryProgressKpiCoverage" class="kpi-value">-</div>
-          <div class="kpi-label">Утилизация, %</div><div id="inventoryProgressKpiUtilization" class="kpi-value">-</div>
-          <div class="kpi-label">Хвостовой штраф, %</div><div id="inventoryProgressKpiTail" class="kpi-value">-</div>
+          <div class="kpi-label">РљСѓСЃРєРѕРІ (РїРѕРґР±РѕСЂ)</div><div id="inventoryProgressKpiPieces" class="kpi-value">-</div>
+          <div class="kpi-label">РџРѕРєСЂС‹С‚РёРµ, %</div><div id="inventoryProgressKpiCoverage" class="kpi-value">-</div>
+          <div class="kpi-label">РЈС‚РёР»РёР·Р°С†РёСЏ, %</div><div id="inventoryProgressKpiUtilization" class="kpi-value">-</div>
+          <div class="kpi-label">РҐРІРѕСЃС‚РѕРІРѕР№ С€С‚СЂР°С„, %</div><div id="inventoryProgressKpiTail" class="kpi-value">-</div>
         </div>
         <div id="inventoryProgressTimer" style="margin-top:8px; font-size:12px; color:#555;">00:00</div>
-        <pre id="inventoryProgressLive" style="margin-top:8px; max-height:120px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; text-align:left; font-size:11px; line-height:1.35; background:#f7f7f7; border:1px solid #ddd; padding:6px;">live: waiting...</pre>
+        <div id="inventoryProgressStatus" class="progress-status-line">РћР¶РёРґР°РЅРёРµ С‚РµР»РµРјРµС‚СЂРёРёвЂ¦</div>
       </div>
     </div>
   </div>
 
   <div id="inventoryStep2Backdrop" class="modal-backdrop">
     <div id="inventoryStep2Modal" class="modal" style="width:360px; max-width:calc(100vw - 20px);">
-      <div id="inventoryStep2Head" class="modal-head draggable"><span>Шаг 2. Предпросмотр и доводка подбора</span><button id="inventoryStep2CloseBtn">x</button></div>
+      <div id="inventoryStep2Head" class="modal-head draggable"><span>РЁР°Рі 2. РџСЂРµРґРїСЂРѕСЃРјРѕС‚СЂ Рё РґРѕРІРѕРґРєР° РїРѕРґР±РѕСЂР°</span><button id="inventoryStep2CloseBtn">x</button></div>
       <div class="modal-body">
-        <div class="field-row"><label>Фрагментов добавлено</label><div id="invTotalFragments">0</div></div>
-        <div class="field-row"><label>Нарушения ограничений</label><div id="invViolations">0</div></div>
-        <div class="field-row"><label>Пересечения</label><div id="invIntersections">0</div></div>
-        <div class="field-row"><label>Непокрытые области</label><div id="invUncovered">0</div></div>
-        <div class="field-row"><label>Покрытие зоны, %</label><div id="invCoveragePercent">0</div></div>
-        <div class="field-row"><label>Остаток, мм²</label><div id="invResidualArea">0</div></div>
-        <div class="field-row"><label>Полезно использовано, мм²</label><div id="invUsefulArea">0</div></div>
-        <div class="field-row"><label>Выбрано кусков в зоне, мм²</label><div id="invUsedScrapArea">0</div></div>
-        <div class="field-row"><label>Использование кусков, %</label><div id="invScrapUtilization">0</div></div>
-        <div class="field-row"><label>Отходы кусков, %</label><div id="invScrapWaste">0</div></div>
-        <div class="field-row"><label>Перекрытия, мм²</label><div id="invOverlapArea">0</div></div>
-        <div class="field-row"><label>Бюджет площади, мм²</label><div id="invCandidateAreaBudget">0</div></div>
-        <div class="field-row"><label>Кандидатов в БД</label><div id="invDbCandidates">0</div></div>
-        <div class="field-row"><label>Совместимых</label><div id="invCompatibleCandidates">0</div></div>
-        <div class="field-row"><label>Стратегия подбора</label><div id="invStrategyUsed">-</div></div>
-        <div class="field-row"><label>Сопоставлено фрагм., %</label><div id="invMatchedPct">0.00</div></div>
-        <div class="field-row"><label>KPI покрытие, %</label><div id="invKpiCoveragePct">0.00</div></div>
-        <div class="field-row"><label>Tail старт (coverage)</label><div id="invTailCoverageStart">-</div></div>
+        <div class="field-row"><label>Р¤СЂР°РіРјРµРЅС‚РѕРІ РґРѕР±Р°РІР»РµРЅРѕ</label><div id="invTotalFragments">0</div></div>
+        <div class="field-row"><label>РќР°СЂСѓС€РµРЅРёСЏ РѕРіСЂР°РЅРёС‡РµРЅРёР№</label><div id="invViolations">0</div></div>
+        <div class="field-row"><label>РџРµСЂРµСЃРµС‡РµРЅРёСЏ</label><div id="invIntersections">0</div></div>
+        <div class="field-row"><label>РќРµРїРѕРєСЂС‹С‚С‹Рµ РѕР±Р»Р°СЃС‚Рё</label><div id="invUncovered">0</div></div>
+        <div class="field-row"><label>РџРѕРєСЂС‹С‚РёРµ Р·РѕРЅС‹, %</label><div id="invCoveragePercent">0</div></div>
+        <div class="field-row"><label>РћСЃС‚Р°С‚РѕРє, РјРјВІ</label><div id="invResidualArea">0</div></div>
+        <div class="field-row"><label>РџРѕР»РµР·РЅРѕ РёСЃРїРѕР»СЊР·РѕРІР°РЅРѕ, РјРјВІ</label><div id="invUsefulArea">0</div></div>
+        <div class="field-row"><label>Р’С‹Р±СЂР°РЅРѕ РєСѓСЃРєРѕРІ РІ Р·РѕРЅРµ, РјРјВІ</label><div id="invUsedScrapArea">0</div></div>
+        <div class="field-row"><label>РСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ РєСѓСЃРєРѕРІ, %</label><div id="invScrapUtilization">0</div></div>
+        <div class="field-row"><label>РћС‚С…РѕРґС‹ РєСѓСЃРєРѕРІ, %</label><div id="invScrapWaste">0</div></div>
+        <div class="field-row"><label>РџРµСЂРµРєСЂС‹С‚РёСЏ, РјРјВІ</label><div id="invOverlapArea">0</div></div>
+        <div class="field-row"><label>Р‘СЋРґР¶РµС‚ РїР»РѕС‰Р°РґРё, РјРјВІ</label><div id="invCandidateAreaBudget">0</div></div>
+        <div class="field-row"><label>РљР°РЅРґРёРґР°С‚РѕРІ РІ Р‘Р”</label><div id="invDbCandidates">0</div></div>
+        <div class="field-row"><label>РЎРѕРІРјРµСЃС‚РёРјС‹С…</label><div id="invCompatibleCandidates">0</div></div>
+        <div class="field-row"><label>РЎС‚СЂР°С‚РµРіРёСЏ РїРѕРґР±РѕСЂР°</label><div id="invStrategyUsed">-</div></div>
+        <div class="field-row"><label>РЎРѕРїРѕСЃС‚Р°РІР»РµРЅРѕ С„СЂР°РіРј., %</label><div id="invMatchedPct">0.00</div></div>
+        <div class="field-row"><label>KPI РїРѕРєСЂС‹С‚РёРµ, %</label><div id="invKpiCoveragePct">0.00</div></div>
+        <div class="field-row"><label>Tail СЃС‚Р°СЂС‚ (coverage)</label><div id="invTailCoverageStart">-</div></div>
         <div class="field-row"><label>Tail alpha</label><div id="invTailOversizeAlpha">-</div></div>
-        <div class="field-row"><label>Отбрак. oversize</label><div id="invRejectedOversize">0</div></div>
-        <div class="field-row"><label>Отбрак. overlap</label><div id="invRejectedOverlap">0</div></div>
-        <div class="field-row"><label>Отбрак. lowGain</label><div id="invRejectedLowGain">0</div></div>
-        <div class="field-row"><label>Отбрак. outside</label><div id="invRejectedOutside">0</div></div>
+        <div class="field-row"><label>РћС‚Р±СЂР°Рє. oversize</label><div id="invRejectedOversize">0</div></div>
+        <div class="field-row"><label>РћС‚Р±СЂР°Рє. overlap</label><div id="invRejectedOverlap">0</div></div>
+        <div class="field-row"><label>РћС‚Р±СЂР°Рє. lowGain</label><div id="invRejectedLowGain">0</div></div>
+        <div class="field-row"><label>РћС‚Р±СЂР°Рє. outside</label><div id="invRejectedOutside">0</div></div>
         <div style="margin:6px 0 8px;">
-          <button id="inventoryStep2ExportCaseBtn">Экспорт case</button>
+          <button id="inventoryStep2ExportCaseBtn">Р­РєСЃРїРѕСЂС‚ case</button>
         </div>
         <div id="inventoryManualPanel" class="inventory-manual-panel" style="display:none; margin:6px 0 2px 0; padding:2px 0;">
-          <div id="inventoryManualSummary" class="inventory-manual-summary">Нажмите «Оценить»</div>
+          <div id="inventoryManualSummary" class="inventory-manual-summary">РќР°Р¶РјРёС‚Рµ В«РћС†РµРЅРёС‚СЊВ»</div>
           <div class="row" style="margin:4px 0 0 0; gap:6px;">
-            <button id="inventoryManualRecomputeBtn">Оценить раскладку</button>
+            <button id="inventoryManualRecomputeBtn">РћС†РµРЅРёС‚СЊ СЂР°СЃРєР»Р°РґРєСѓ</button>
           </div>
-          <div id="inventoryManualState" class="inventory-manual-state">Выбранный кусок: нет</div>
+          <div id="inventoryManualState" class="inventory-manual-state">Р’С‹Р±СЂР°РЅРЅС‹Р№ РєСѓСЃРѕРє: РЅРµС‚</div>
           <div id="inventoryManualMetrics" class="inventory-manual-metrics">gain=- overlap=- outside=- util=-</div>
         </div>
-        <div style="margin-top:8px; font-size:12px; color:#444;">Диагностика:</div>
+        <div style="margin-top:8px; font-size:12px; color:#444;">Р”РёР°РіРЅРѕСЃС‚РёРєР°:</div>
         <pre id="invDebugInfo" style="max-height:80px; margin:6px 0 0 0; font-size:12px;"></pre>
-        <div style="margin-top:8px; font-size:12px; color:#444;">Использованные inventoryTag:</div>
+        <div style="margin-top:8px; font-size:12px; color:#444;">РСЃРїРѕР»СЊР·РѕРІР°РЅРЅС‹Рµ inventoryTag:</div>
         <pre id="invUsedTags" style="max-height:80px; margin:6px 0 0 0; font-size:12px;"></pre>
         <div id="invSplitEventsBlock" style="margin-top:8px; display:none;">
-          <div style="font-size:12px; color:#444;">Split &amp; Return события:</div>
+          <div style="font-size:12px; color:#444;">Split &amp; Return СЃРѕР±С‹С‚РёСЏ:</div>
           <pre id="invSplitEvents" style="max-height:120px; margin:6px 0 0 0; font-size:12px;"></pre>
         </div>
         <div id="invPlacementMatchBlock" style="margin-top:8px;">
-          <div style="font-size:12px; color:#444;">Соответствие фрагментов и кандидатов:</div>
+          <div style="font-size:12px; color:#444;">РЎРѕРѕС‚РІРµС‚СЃС‚РІРёРµ С„СЂР°РіРјРµРЅС‚РѕРІ Рё РєР°РЅРґРёРґР°С‚РѕРІ:</div>
           <div style="max-height:160px; overflow:auto; border:1px solid #ccc; background:#fff;">
           <table style="width:100%; border-collapse:collapse; margin:0;">
             <thead>
               <tr>
-                <th style="font-size:12px;">Фрагм.</th>
-                <th style="font-size:12px;">Площадь</th>
-                <th style="font-size:12px;">Кандидат</th>
-                <th style="font-size:12px;">Ворс</th>
-                <th style="font-size:12px;">Статус</th>
+                <th style="font-size:12px;">Р¤СЂР°РіРј.</th>
+                <th style="font-size:12px;">РџР»РѕС‰Р°РґСЊ</th>
+                <th style="font-size:12px;">РљР°РЅРґРёРґР°С‚</th>
+                <th style="font-size:12px;">Р’РѕСЂСЃ</th>
+                <th style="font-size:12px;">РЎС‚Р°С‚СѓСЃ</th>
               </tr>
             </thead>
             <tbody id="invPlacementRows"></tbody>
@@ -253,16 +254,16 @@
           </div>
         </div>
         <div id="invPlacementExplainBlock" style="margin-top:8px;">
-          <div style="font-size:12px; color:#444;">Почему выбран этот кандидат (top-3):</div>
+          <div style="font-size:12px; color:#444;">РџРѕС‡РµРјСѓ РІС‹Р±СЂР°РЅ СЌС‚РѕС‚ РєР°РЅРґРёРґР°С‚ (top-3):</div>
           <div id="invPlacementExplainSummary" style="margin:6px 0 0 0; padding:6px; border:1px solid #ddd; background:#fafafa; font-size:12px; color:#333;">
-            Нет данных объяснимости
+            РќРµС‚ РґР°РЅРЅС‹С… РѕР±СЉСЏСЃРЅРёРјРѕСЃС‚Рё
           </div>
           <div style="max-height:140px; overflow:auto; border:1px solid #ccc; background:#fff; margin-top:6px;">
             <table style="width:100%; border-collapse:collapse; margin:0;">
               <thead>
                 <tr>
                   <th style="font-size:12px;">#</th>
-                  <th style="font-size:12px;">Кандидат</th>
+                  <th style="font-size:12px;">РљР°РЅРґРёРґР°С‚</th>
                   <th style="font-size:12px;">Score</th>
                   <th style="font-size:12px;">Inside</th>
                   <th style="font-size:12px;">Outside</th>
@@ -270,56 +271,56 @@
                 </tr>
               </thead>
               <tbody id="invPlacementExplainRows">
-                <tr><td colspan="6" style="font-size:12px; color:#666; text-align:center;">Нет данных</td></tr>
+                <tr><td colspan="6" style="font-size:12px; color:#666; text-align:center;">РќРµС‚ РґР°РЅРЅС‹С…</td></tr>
               </tbody>
             </table>
           </div>
         </div>
         <div id="invFragmentCoverageBlock" style="margin-top:8px;">
-          <div style="font-size:12px; color:#444;">Покрытие фрагментов (худшие):</div>
+          <div style="font-size:12px; color:#444;">РџРѕРєСЂС‹С‚РёРµ С„СЂР°РіРјРµРЅС‚РѕРІ (С…СѓРґС€РёРµ):</div>
           <div id="invFragmentCoverageSummary" style="margin:6px 0 0 0; padding:6px; border:1px solid #ddd; background:#fafafa; font-size:12px; color:#333;">
-            Нет данных
+            РќРµС‚ РґР°РЅРЅС‹С…
           </div>
           <div style="max-height:140px; overflow:auto; border:1px solid #ccc; background:#fff; margin-top:6px;">
             <table style="width:100%; border-collapse:collapse; margin:0;">
               <thead>
                 <tr>
-                  <th style="font-size:12px;">Фрагм.</th>
+                  <th style="font-size:12px;">Р¤СЂР°РіРј.</th>
                   <th style="font-size:12px;">Coverage</th>
                   <th style="font-size:12px;">Inside</th>
                   <th style="font-size:12px;">Outside</th>
-                  <th style="font-size:12px;">Кандидат</th>
+                  <th style="font-size:12px;">РљР°РЅРґРёРґР°С‚</th>
                 </tr>
               </thead>
               <tbody id="invFragmentCoverageRows">
-                <tr><td colspan="5" style="font-size:12px; color:#666; text-align:center;">Нет данных</td></tr>
+                <tr><td colspan="5" style="font-size:12px; color:#666; text-align:center;">РќРµС‚ РґР°РЅРЅС‹С…</td></tr>
               </tbody>
             </table>
           </div>
         </div>
       </div>
       <div class="modal-actions">
-        <button id="inventoryStep2BackBtn">Назад</button>
-        <button id="inventoryStep2ApplyBtn">Применить</button>
-        <button id="inventoryStep2CancelBtn">Отмена</button>
+        <button id="inventoryStep2BackBtn">РќР°Р·Р°Рґ</button>
+        <button id="inventoryStep2ApplyBtn">РџСЂРёРјРµРЅРёС‚СЊ</button>
+        <button id="inventoryStep2CancelBtn">РћС‚РјРµРЅР°</button>
       </div>
     </div>
   </div>
 
   <div id="replaceCandidateBackdrop" class="modal-backdrop">
     <div class="modal" style="width:520px;">
-      <div class="modal-head"><span>Заменить кандидат для фрагмента</span><button id="replaceCandidateCloseBtn">x</button></div>
+      <div class="modal-head"><span>Р—Р°РјРµРЅРёС‚СЊ РєР°РЅРґРёРґР°С‚ РґР»СЏ С„СЂР°РіРјРµРЅС‚Р°</span><button id="replaceCandidateCloseBtn">x</button></div>
       <div class="modal-body">
-        <div id="replaceCandidateInfo" style="margin-bottom:8px; font-size:12px; color:#444;">Нет данных</div>
+        <div id="replaceCandidateInfo" style="margin-bottom:8px; font-size:12px; color:#444;">РќРµС‚ РґР°РЅРЅС‹С…</div>
         <div style="max-height:240px; overflow:auto; border:1px solid #ccc; background:#fff;">
           <table style="width:100%; border-collapse:collapse; margin:0;">
             <thead>
               <tr>
-                <th style="font-size:12px;">Инв.номер</th>
+                <th style="font-size:12px;">РРЅРІ.РЅРѕРјРµСЂ</th>
                 <th style="font-size:12px;">Score</th>
                 <th style="font-size:12px;">Overlap</th>
                 <th style="font-size:12px;">Chamfer</th>
-                <th style="font-size:12px;">Выбор</th>
+                <th style="font-size:12px;">Р’С‹Р±РѕСЂ</th>
               </tr>
             </thead>
             <tbody id="replaceCandidateRows"></tbody>
@@ -327,27 +328,61 @@
         </div>
       </div>
       <div class="modal-actions">
-        <button id="replaceCandidateApplyBtn">Применить</button>
-        <button id="replaceCandidateCancelBtn">Отмена</button>
+        <button id="replaceCandidateApplyBtn">РџСЂРёРјРµРЅРёС‚СЊ</button>
+        <button id="replaceCandidateCancelBtn">РћС‚РјРµРЅР°</button>
       </div>
     </div>
   </div>
 
   <div id="layoutTypeBackdrop" class="modal-backdrop">
-    <div class="modal" style="width:760px; max-width:calc(100vw - 24px);">
-      <div class="modal-head"><span>Добавить выкладку</span><button id="layoutTypeCloseBtn">x</button></div>
-      <div class="modal-body">
-        <div style="margin-bottom:8px; font-size:12px; color:#555;">Выберите тип выкладки</div>
-        <div id="layoutTypeGrid" class="layout-type-grid"></div>
+  <div id="layoutTypeModal" class="layout-library-modal">
+    <div class="layout-library-head">
+      <span class="layout-library-title">Библиотека FurLab</span>
+      <button id="layoutTypeCloseBtn" class="layout-library-close" aria-label="Закрыть">x</button>
+    </div>
+    <div class="layout-library-body">
+      <aside class="layout-library-side">
+        <button class="layout-library-side-btn" type="button" aria-label="Мех">
+          <span class="layout-library-side-icon fur"></span>
+          <span class="layout-library-side-text">Мех</span>
+        </button>
+        <button class="layout-library-side-btn active" type="button" aria-label="Выкладка">
+          <span class="layout-library-side-icon grid"></span>
+          <span class="layout-library-side-text">Выкладка</span>
+        </button>
+        <button class="layout-library-side-btn" type="button" aria-label="Обработка">
+          <span class="layout-library-side-icon tool"></span>
+          <span class="layout-library-side-text">Обработка</span>
+        </button>
+      </aside>
+        <section class="layout-library-main">
+          <div class="layout-library-toolbar">
+            <label class="layout-library-search-wrap">
+              <input id="layoutTypeSearch" type="text" class="layout-library-search" placeholder="Поиск" />
+            </label>
+            <div class="layout-library-toolbar-right">
+              <div class="layout-library-sort">Сортировка <strong>Популярные</strong></div>
+              <button class="layout-toolbar-icon active" type="button" aria-label="Плитка">
+                <span class="layout-toolbar-icon-grid"></span>
+              </button>
+              <button class="layout-toolbar-icon" type="button" aria-label="Список">
+                <span class="layout-toolbar-icon-list"></span>
+              </button>
+              <button class="layout-toolbar-icon" type="button" aria-label="Инфо">
+                <span class="layout-toolbar-icon-info">i</span>
+              </button>
+            </div>
+          </div>
+          <div id="layoutTypeGrid" class="layout-library-grid"></div>
+        </section>
       </div>
-      <div class="modal-actions">
-        <button id="layoutTypeAddBtn" disabled>Добавить</button>
-        <button id="layoutTypeCancelBtn">Отмена</button>
-      </div>
+    <div class="layout-library-actions">
+      <button id="layoutTypeAddBtn" disabled>Добавить</button>
+      <button id="layoutTypeCancelBtn">Отмена</button>
     </div>
   </div>
-
-  <div id="importPanel" class="panel compact-panel">
+</div>
+<div id="importPanel" class="panel compact-panel">
     <h2>Import</h2>
     <div class="row">
       <label>Mode
@@ -364,7 +399,7 @@
     <div id="importActionsRow" class="row import-actions" style="display:none;">
       <span id="selectionInfo" class="muted">selected: 0</span>
     </div>
-    <div id="previewEmptyHint" class="row muted">Сначала выберите источник и нажмите Preview.</div>
+    <div id="previewEmptyHint" class="row muted">РЎРЅР°С‡Р°Р»Р° РІС‹Р±РµСЂРёС‚Рµ РёСЃС‚РѕС‡РЅРёРє Рё РЅР°Р¶РјРёС‚Рµ Preview.</div>
     <div id="previewTableWrap" class="preview-table-wrap" style="display:none;">
       <table>
         <thead>
@@ -388,7 +423,6 @@
     </details>
   </div>
 
-  <div class="app-caption">FurLab Web Plugin: DXF Import + Konva Editor</div>
   <input id="importFileInput" type="file" accept=".dxf" multiple style="display:none" />
 
   <script src="https://unpkg.com/konva@9/konva.min.js"></script>
@@ -422,3 +456,4 @@
 
 </body>
 </html>
+

@@ -114,3 +114,74 @@
 ## 12. Русские термины
 - `outside` → **выход за пределы зоны**
 - `utilization` → **полезность использования**
+
+## 13. Terms: Pfull / Pcore / Final Working Region / Seam
+
+### 13.1 Piece (Pfull)
+Full physical contour of the piece.
+
+### 13.2 Working area (Pcore)
+Part of the piece inside seam allowance that can participate in coverage.
+
+### 13.3 Final working region
+Final working region is the part of a piece that after **Apply**:
+- is inside the target zone;
+- is inside this piece `Pcore`;
+- belongs to this piece after overlap resolution by current `z-order`.
+
+Short formula:
+
+`final_region_i = (Pcore_i ? Zone) \ CoveredByHigherZ_i`
+
+Where `CoveredByHigherZ_i` is coverage by pieces above this piece in current stack order.
+
+### 13.4 Important note
+A single piece after Apply can have:
+- one final region;
+- multiple final regions;
+- zero final regions (fully covered by higher layers).
+
+### 13.5 Seam
+Seam is only a shared **internal** boundary between two neighboring final working regions that belong to **different** pieces.
+
+Not a seam:
+- external boundary of the zone;
+- external boundary of full piece contour (`Pfull`);
+- boundary with no neighboring region from another piece;
+- raw intersection/overlap by itself.
+
+### 13.6 Seam build rule
+1. Build final working regions (after Apply) from `Pcore` with zone clipping and `z-order`.
+2. Extract seams only as shared internal boundaries of neighboring regions with different owners.
+
+## 14. Definition Of Fragment (InventoryLayout / Manual Mode)
+
+### 14.1 Source vs Result
+- `ScrapPiece` (piece contour) is the source geometry.
+- `Fragment` (`fragmentContour` / `resultContourSnapshot`) is the resulting geometry after layout apply.
+
+Rule:
+**piece != fragment**.
+
+### 14.2 Fragment Definition
+A **fragment** is a final normalized in-zone result region produced from inventory pieces after Apply:
+1. place pieces,
+2. clip by zone,
+3. resolve overlaps by current `z-order`,
+4. normalize by `normalizeRules` (including `seamAllowanceReserveMm`, `mergeSmallFragments`).
+
+### 14.3 Manual Mode Stages
+- Before Apply:
+  - show pieces, working areas, diagnostic layers,
+  - no final fragments yet.
+- After Apply:
+  - final result is fixed,
+  - fragments are built from resulting geometry (`Fragment.fragmentContour` / `resultContourSnapshot`).
+
+### 14.4 No Entity Substitution
+Fragments MUST NOT be built directly from `ScrapPiece.scrapContour` or full piece contour.
+Fragments MUST be built from final result geometry after clipping and normalization.
+
+### 14.5 Short Rule
+**Piece is source. Fragment is result.**
+

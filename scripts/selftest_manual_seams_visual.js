@@ -57,6 +57,67 @@ function mmRect(x0, y0, x1, y1) {
       ]]]
     }
   ];
+  const payloadSeamVisibleContours = [
+    {
+      placementIndex: 0,
+      ownerPlacementId: 1,
+      scrapPieceId: "A",
+      inventoryTag: "A",
+      visibleContours: [[[
+        [632, 212], [748, 212], [748, 348], [632, 348], [632, 212]
+      ]]]
+    },
+    {
+      placementIndex: 1,
+      ownerPlacementId: 2,
+      scrapPieceId: "B",
+      inventoryTag: "B",
+      visibleContours: [[[
+        [748, 222], [864, 222], [864, 358], [748, 358], [748, 222]
+      ]]]
+    },
+    {
+      placementIndex: 2,
+      ownerPlacementId: 3,
+      scrapPieceId: "C",
+      inventoryTag: "C",
+      visibleContours: [[[
+        [652, 348], [808, 348], [808, 464], [652, 464], [652, 348]
+      ]]]
+    }
+  ];
+  const payloadFragments = [
+    {
+      id: 101,
+      ownerPlacementId: 1,
+      ownerPlacementIndex: 0,
+      scrapPieceId: "A",
+      inventoryTag: "A",
+      points: [
+        { x: 632, y: 212 }, { x: 748, y: 212 }, { x: 748, y: 348 }, { x: 632, y: 348 }
+      ]
+    },
+    {
+      id: 102,
+      ownerPlacementId: 2,
+      ownerPlacementIndex: 1,
+      scrapPieceId: "B",
+      inventoryTag: "B",
+      points: [
+        { x: 748, y: 212 }, { x: 864, y: 212 }, { x: 864, y: 348 }, { x: 748, y: 348 }
+      ]
+    },
+    {
+      id: 103,
+      ownerPlacementId: 3,
+      ownerPlacementIndex: 2,
+      scrapPieceId: "C",
+      inventoryTag: "C",
+      points: [
+        { x: 632, y: 348 }, { x: 864, y: 348 }, { x: 864, y: 464 }, { x: 632, y: 464 }
+      ]
+    }
+  ];
 
   let recomputeCalls = 0;
   await page.route("**/api/layout/manual/recompute", async (route) => {
@@ -70,8 +131,10 @@ function mmRect(x0, y0, x1, y1) {
         recomputeZoneId: 1,
         usedZoneFallback: false,
         layerPolicy: "first_on_top",
-        fragments: [],
+        fragments: payloadFragments,
         visibleContours: payloadVisibleContours,
+        seamVisibleContours: payloadSeamVisibleContours,
+        seamGeometrySource: "core_visible",
         visibleMetrics: {
           usefulAreaMm2: 70000,
           selectedPiecesAreaMm2: 76000,
@@ -127,6 +190,8 @@ function mmRect(x0, y0, x1, y1) {
       state.view.showDetailLabels = false;
       renderScene();
     });
+    await page.click("#inventoryManualEvalBtn");
+    await page.waitForTimeout(500);
 
     await page.click("#workspace");
     await page.keyboard.press("Control+E");
@@ -163,6 +228,10 @@ function mmRect(x0, y0, x1, y1) {
     }));
     if (!summary.seamsLayerEnabled || !summary.seamsCheckboxChecked) {
       throw new Error("SELFTEST_INVALID_SCREENSHOT: seams layer is not enabled before capture");
+    }
+    const seamsBuilt = Number(summary && summary.seamsDebug && summary.seamsDebug.seamsCount || 0);
+    if (seamsBuilt <= 0) {
+      throw new Error(`SELFTEST_INVALID_SCREENSHOT: seams not built (seamsBuilt=${seamsBuilt})`);
     }
 
     await page.screenshot({ path: shot, fullPage: true });

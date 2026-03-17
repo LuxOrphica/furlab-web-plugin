@@ -17,6 +17,9 @@
       const formatSectionRangeCm = typeof cfg.formatSectionRangeCm === "function" ? cfg.formatSectionRangeCm : () => "";
       const metricsLine = String(cfg.metricsLine || "");
       const selectedInfoLine = String(cfg.selectedInfoLine || "");
+      const seamDebugLine = String(cfg.seamDebugLine || "");
+      const seamFlowSummary = String(cfg.seamFlowSummary || "");
+      const seamExcludedSummary = String(cfg.seamExcludedSummary || "");
       const rotateStepDeg = Math.max(1, Number(cfg.rotateStepDeg || 5));
       const noDataHtml = String(cfg.noDataHtml || '<div class="tree-empty">-</div>');
 
@@ -53,8 +56,8 @@
           <button type="button" data-manual-toolbar="apply">${t("btn_apply", null, "Apply")}</button>
         </div>
         <div class="manual-tray-toolbar" style="margin-top:6px;">
-          <button type="button" data-manual-toolbar="rotate-left">↺</button>
-          <button type="button" data-manual-toolbar="rotate-right">↻</button>
+          <button type="button" data-manual-toolbar="rotate-left">↶</button>
+          <button type="button" data-manual-toolbar="rotate-right">↷</button>
           <button type="button" data-manual-toolbar="rotate-step-minus">−</button>
           <button type="button" data-manual-toolbar="rotate-step-plus">+</button>
           <span style="font-size:12px; color:#555; align-self:center;">шаг ${rotateStepDeg}°</span>
@@ -65,6 +68,9 @@
         </div>
         <div class="manual-tray-metrics" title="${selectedInfoLine.replace(/"/g, "&quot;")}">${selectedInfoLine}</div>
         <div class="manual-tray-metrics" title="${metricsLine.replace(/"/g, "&quot;")}">${metricsLine}</div>
+        ${seamDebugLine ? `<div class="manual-tray-metrics" title="${seamDebugLine.replace(/"/g, "&quot;")}">${seamDebugLine}</div>` : ""}
+        ${seamFlowSummary ? `<div class="manual-tray-metrics" title="${seamFlowSummary.replace(/"/g, "&quot;")}">${seamFlowSummary}</div>` : ""}
+        ${seamExcludedSummary ? `<div class="manual-tray-metrics" title="${seamExcludedSummary.replace(/"/g, "&quot;")}">${seamExcludedSummary}</div>` : ""}
         <div class="manual-tray-sections">
           ${sectionHtml("large", `${t("tray_section_large", null, "Large")} ${formatSectionRangeCm("large", sections)}`, sections.large)}
           ${sectionHtml("medium", `${t("tray_section_medium", null, "Medium")} ${formatSectionRangeCm("medium", sections)}`, sections.medium)}

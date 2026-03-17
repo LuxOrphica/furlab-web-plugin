@@ -1,4 +1,4 @@
-﻿// Extracted from app.js: bulk UI event bindings.
+// Extracted from app.js: bulk UI event bindings.
 (function (global) {
   function createUiBindings(options) {
     const opts = options && typeof options === "object" ? options : {};
@@ -117,7 +117,7 @@
           const frags = Array.isArray(state.layoutRun && state.layoutRun.fragments) ? state.layoutRun.fragments : [];
           if (!frags.length) {
             const workspaceInfo = byId("workspaceInfo");
-            if (workspaceInfo) workspaceInfo.textContent = "РЎРЅР°С‡Р°Р»Р° РІС‹РїРѕР»РЅРёС‚Рµ РЁР°Рі 1: СЃРіРµРЅРµСЂРёСЂСѓР№С‚Рµ С„СЂР°РіРјРµРЅС‚С‹.";
+            if (workspaceInfo) workspaceInfo.textContent = "Сначала выполните Шаг 1: сгенерируйте фрагменты.";
             setIntarsiaStepPhase(1);
             return;
           }
@@ -141,14 +141,14 @@
         const caseObj = buildOracleCaseFromCurrentPreview();
         if (!caseObj) {
           const workspaceInfo = byId("workspaceInfo");
-          if (workspaceInfo) workspaceInfo.textContent = "Р­РєСЃРїРѕСЂС‚ case: РЅРµС‚ Р°РєС‚РёРІРЅРѕР№ Р·РѕРЅС‹ РёР»Рё РїСѓР»Р° РєР°РЅРґРёРґР°С‚РѕРІ.";
+          if (workspaceInfo) workspaceInfo.textContent = "Экспорт case: нет активной зоны или пула кандидатов.";
           return;
         }
         const zoneId = Number(caseObj.zone && caseObj.zone.id || 0);
         const fileName = `oracle_case_zone_${zoneId}_${Date.now()}.json`;
         downloadJsonFile(fileName, caseObj);
         const workspaceInfo = byId("workspaceInfo");
-        if (workspaceInfo) workspaceInfo.textContent = `Р­РєСЃРїРѕСЂС‚РёСЂРѕРІР°РЅ case: ${fileName} (pieces=${caseObj.pieces.length})`;
+        if (workspaceInfo) workspaceInfo.textContent = `Экспортирован case: ${fileName} (pieces=${caseObj.pieces.length})`;
       };
       const manualSuggestBtn = byId("inventoryManualSuggestBtn");
       if (manualSuggestBtn) manualSuggestBtn.onclick = () => { void requestInventoryManualSuggestions(); };

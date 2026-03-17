@@ -6,9 +6,14 @@
       ? opts.byId
       : (id) => global.document && global.document.getElementById(id);
 
-    function ensureModalPosition(modalId, minHeight, fallbackHeight) {
+    function ensureModalPosition(modalId, minHeight, fallbackHeight, options2) {
       const modal = byId(modalId);
       if (!modal) return;
+      const cfg = options2 && typeof options2 === "object" ? options2 : {};
+      const anchor = String(cfg.anchor || "center");
+      const forceAnchor = !!cfg.forceAnchor;
+      const topOffset = Math.max(0, Number(cfg.topOffset || 10));
+      const rightOffset = Math.max(0, Number(cfg.rightOffset || 14));
       modal.style.position = "absolute";
       modal.style.margin = "0";
       const vw = global.innerWidth || 1200;
@@ -18,9 +23,15 @@
       const h = Math.max(Number(minHeight || 220), Math.min(vh - 20, rect.height || Number(fallbackHeight || 420)));
       let left = Number(String(modal.style.left || "").replace("px", ""));
       let top = Number(String(modal.style.top || "").replace("px", ""));
-      if (!Number.isFinite(left) || !Number.isFinite(top)) {
-        left = Math.round((vw - w) * 0.5);
-        top = Math.round((vh - h) * 0.5);
+      const invalidPos = !Number.isFinite(left) || !Number.isFinite(top);
+      if (forceAnchor || invalidPos) {
+        if (anchor === "top-right") {
+          left = Math.round(vw - w - rightOffset);
+          top = Math.round(topOffset);
+        } else {
+          left = Math.round((vw - w) * 0.5);
+          top = Math.round((vh - h) * 0.5);
+        }
       }
       left = Math.max(10, Math.min(vw - w - 10, left));
       top = Math.max(10, Math.min(vh - h - 10, top));
@@ -77,11 +88,21 @@
     }
 
     function ensureStep1() {
-      ensureModalPosition("inventoryStep1Modal", 220, 420);
+      ensureModalPosition("inventoryStep1Modal", 220, 420, {
+        anchor: "top-right",
+        forceAnchor: true,
+        topOffset: 10,
+        rightOffset: 14
+      });
     }
 
     function ensureStep2() {
-      ensureModalPosition("inventoryStep2Modal", 260, 500);
+      ensureModalPosition("inventoryStep2Modal", 260, 500, {
+        anchor: "top-right",
+        forceAnchor: true,
+        topOffset: 10,
+        rightOffset: 14
+      });
     }
 
     function setupStep1Drag() {
@@ -114,4 +135,3 @@
     createInventoryModalDrag
   });
 })(window);
-

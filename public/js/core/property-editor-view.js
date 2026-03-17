@@ -286,6 +286,10 @@
       }
 
       const allowanceValue = Number.isFinite(allowance) ? allowance : 12;
+      const loadedCandidatesCount = Array.isArray(state.layoutRun && state.layoutRun.candidatePool)
+        ? state.layoutRun.candidatePool.length
+        : 0;
+      const lockManualInventoryParams = !!(isManualInventoryMode() && loadedCandidatesCount > 0);
       const nameInputReadonly = selectedLayout ? "" : "readonly";
       const typeValue = selectedLayout ? selectedLayoutModeTitle : "-";
 
@@ -302,7 +306,7 @@
       const btn = byId("inventoryPickBtn");
       if (btn) {
         const hasAnyZone = Array.isArray(state.zones) && state.zones.length > 0;
-        btn.disabled = !hasAnyZone;
+        btn.disabled = !hasAnyZone || lockManualInventoryParams;
         btn.onclick = () => openInventoryStep1();
       }
       const layoutNameInput = byId("layoutNameInput");
@@ -317,7 +321,10 @@
       }
       const layoutAllowanceInput = byId("layoutAllowanceInput");
       if (layoutAllowanceInput) {
+        layoutAllowanceInput.disabled = lockManualInventoryParams;
+        layoutAllowanceInput.readOnly = lockManualInventoryParams;
         layoutAllowanceInput.oninput = () => {
+          if (lockManualInventoryParams) return;
           const v = parseLocaleNumber(layoutAllowanceInput.value, null);
           if (!Number.isFinite(v)) return;
           state.layoutRun.allowanceMm = Math.max(0, Math.min(200, v));
@@ -325,6 +332,7 @@
           if (invAllowance) invAllowance.value = Number(state.layoutRun.allowanceMm).toFixed(1);
         };
         layoutAllowanceInput.onblur = () => {
+          if (lockManualInventoryParams) return;
           const v = parseLocaleNumber(layoutAllowanceInput.value, null);
           const n = Number.isFinite(v) ? Math.max(0, Math.min(200, v)) : 12;
           state.layoutRun.allowanceMm = n;

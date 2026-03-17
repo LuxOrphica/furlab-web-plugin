@@ -365,6 +365,9 @@ function buildVisibleMosaicModel(placements, zonePoints, options) {
   const cfg = options && typeof options === "object" ? options : {};
   const layerPolicyRaw = String(cfg.layerPolicy || "priority_on_top").toLowerCase();
   const layerPolicy = layerPolicyRaw === "first_on_top" ? "first_on_top" : "priority_on_top";
+  const geometrySource = String(cfg.geometrySource || "full").toLowerCase() === "core" ? "core" : "full";
+  const useCoreGeometry = geometrySource === "core";
+  const preservePerPieceFragments = !!cfg.preservePerPieceFragments;
   const minAreaMm2 = Math.max(0.01, Number(cfg.minAreaMm2 || 1));
   const maxFragments = Math.max(50, Math.min(4000, Number(cfg.maxFragments || 2000)));
   const maxPolygons = Math.max(20, Math.min(1200, Number(cfg.maxPolygons || 500)));
@@ -399,52 +402,66 @@ function buildVisibleMosaicModel(placements, zonePoints, options) {
 
       // Always clip by current aligned contour first.
       // Cached inZoneContours can become stale after manual drag/rotate.
-      const raw = Array.isArray(p.alignedContour) ? p.alignedContour : [];
-      const points = raw
-        .map((q) => ({ x: Number(q && q.x), y: Number(q && q.y) }))
-        .filter((q) => Number.isFinite(q.x) && Number.isFinite(q.y));
-      if (points.length >= 3) {
+      const raw = Array.isArray(useCoreGeometry ? p.alignedCoreContour : p.alignedContour)
+        ? (useCoreGeometry ? p.alignedCoreContour : p.alignedContour)
+        : [];
+      const points = normalizeContour(raw);
+      const alignedMulti = Array.isArray(useCoreGeometry ? p.alignedCoreContours : p.alignedContours)
+        ? (useCoreGeometry ? p.alignedCoreContours : p.alignedContours)
+        : [];
+      if (Array.isArray(alignedMulti) && alignedMulti.length > 0) {
+        pieceMp = alignedMulti;
+      } else if (points.length >= 3) {
         pieceMp = pointsToMultiPolygon(points);
-        if (Array.isArray(pieceMp) && pieceMp.length) {
-          inZoneMp = intersectMulti(pieceMp, zoneMp);
-          // Robust fallback for manual mode: boolean kernel may fail on noisy contours
-          // and return empty intersection even when piece is visually inside zone.
-          if (!Array.isArray(inZoneMp) || !inZoneMp.length) {
-            const insideCount = points.reduce((acc, q) => acc + (pointInPolygon(q, zonePoints) ? 1 : 0), 0);
-            const center = (() => {
-              let sx = 0;
-              let sy = 0;
-              let n = 0;
-              for (const q of points) {
-                const x = Number(q && q.x);
-                const y = Number(q && q.y);
-                if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-                sx += x;
-                sy += y;
-                n++;
-              }
-              return n > 0 ? { x: sx / n, y: sy / n } : null;
-            })();
-            const centerInside = center ? pointInPolygon(center, zonePoints) : false;
-            // Use full piece as in-zone only when geometry strongly indicates piece is inside.
-            if ((insideCount >= Math.max(3, Math.floor(points.length * 0.6))) || centerInside) {
-              inZoneMp = pieceMp;
+      }
+      if (Array.isArray(pieceMp) && pieceMp.length) {
+        inZoneMp = intersectMulti(pieceMp, zoneMp);
+        // Robust fallback for manual mode: boolean kernel may fail on noisy contours
+        // and return empty intersection even when piece is visually inside zone.
+        if (!Array.isArray(inZoneMp) || !inZoneMp.length) {
+          const insideCount = points.reduce((acc, q) => acc + (pointInPolygon(q, zonePoints) ? 1 : 0), 0);
+          const center = (() => {
+            let sx = 0;
+            let sy = 0;
+            let n = 0;
+            for (const q of points) {
+              const x = Number(q && q.x);
+              const y = Number(q && q.y);
+              if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+              sx += x;
+              sy += y;
+              n++;
             }
+            return n > 0 ? { x: sx / n, y: sy / n } : null;
+          })();
+          const centerInside = center ? pointInPolygon(center, zonePoints) : false;
+          // Use full piece as in-zone only when geometry strongly indicates piece is inside.
+          if ((insideCount >= Math.max(3, Math.floor(points.length * 0.6))) || centerInside) {
+            inZoneMp = pieceMp;
           }
         }
       }
 
       // Fallback for legacy placements without alignedContour.
       if (!Array.isArray(inZoneMp) || !inZoneMp.length) {
-        const fromPlacement = Array.isArray(p.inZoneContours) ? p.inZoneContours : [];
-        inZoneMp = Array.isArray(fromPlacement) ? fromPlacement : [];
+        const fromPlacementMulti = Array.isArray(useCoreGeometry ? p.inZoneCoreContours : p.inZoneContours)
+          ? (useCoreGeometry ? p.inZoneCoreContours : p.inZoneContours)
+          : [];
+        if (Array.isArray(fromPlacementMulti) && fromPlacementMulti.length > 0) {
+          inZoneMp = fromPlacementMulti;
+        } else {
+          const fromPlacementSingle = Array.isArray(useCoreGeometry ? p.inZoneCoreContour : p.inZoneContour)
+            ? (useCoreGeometry ? p.inZoneCoreContour : p.inZoneContour)
+            : [];
+          inZoneMp = fromPlacementSingle.length >= 3 ? pointsToMultiPolygon(fromPlacementSingle) : [];
+        }
       }
       if (!Array.isArray(inZoneMp) || inZoneMp.length === 0) return null;
       const inZoneAreaMm2 = Math.max(0, multiPolygonArea(inZoneMp));
       if (inZoneAreaMm2 <= 1e-9) return null;
       const fullPieceAreaMm2 = Math.max(
         0,
-        Number.isFinite(Number(p.scrapAreaMm2))
+        (!useCoreGeometry && Number.isFinite(Number(p.scrapAreaMm2)))
           ? Number(p.scrapAreaMm2)
           : (pieceMp.length ? multiPolygonArea(pieceMp) : inZoneAreaMm2)
       );
@@ -482,13 +499,16 @@ function buildVisibleMosaicModel(placements, zonePoints, options) {
   let visibleAreaMm2Total = 0;
   const byPlacementIndex = new Map();
   const debugPlacements = [];
+  const debugFragmentFlow = [];
 
   // Visible part of each piece is (pieceInZone - union(of all pieces above it)).
   for (let i = 0; i < topOrder.length; i++) {
     const item = topOrder[i];
-    const visibleMp = coveredAboveMp.length
-      ? diffMulti(item.inZoneMp, coveredAboveMp)
-      : item.inZoneMp;
+    const visibleMp = preservePerPieceFragments
+      ? item.inZoneMp
+      : (coveredAboveMp.length
+        ? diffMulti(item.inZoneMp, coveredAboveMp)
+        : item.inZoneMp);
     const visibleAreaMm2 = Math.max(0, multiPolygonArea(visibleMp));
     const overlapAreaMm2 = Math.max(0, item.inZoneAreaMm2 - visibleAreaMm2);
     coveredAboveMp = coveredAboveMp.length
@@ -567,12 +587,43 @@ function buildVisibleMosaicModel(placements, zonePoints, options) {
       });
     }
 
+    const flow = includeDebug
+      ? {
+          placementIndex: item.placementIndex,
+          pieceId: scrapPieceId,
+          inventoryTag,
+          inZoneAreaMm2: Math.round(Number(rec.inZoneAreaMm2 || 0) * 1000) / 1000,
+          visibleAreaMm2: Math.round(Number(rec.visibleAreaMm2 || 0) * 1000) / 1000,
+          droppedReason: "",
+          fragmentsAdded: 0,
+          drops: {
+            empty_poly: 0,
+            outer_too_short: 0,
+            area_below_min: 0,
+            clean_too_short: 0,
+            clean_area_below_min: 0
+          }
+        }
+      : null;
+    if (flow && Number(rec.visibleAreaMm2 || 0) <= 1e-9) {
+      flow.droppedReason = "visible_area_zero_after_zorder";
+    }
+
     for (const poly of Array.isArray(rec.visibleMp) ? rec.visibleMp : []) {
-      if (!Array.isArray(poly) || poly.length === 0) continue;
+      if (!Array.isArray(poly) || poly.length === 0) {
+        if (flow) flow.drops.empty_poly += 1;
+        continue;
+      }
       const outer = Array.isArray(poly[0]) ? poly[0] : null;
-      if (!Array.isArray(outer) || outer.length < 4) continue;
+      if (!Array.isArray(outer) || outer.length < 4) {
+        if (flow) flow.drops.outer_too_short += 1;
+        continue;
+      }
       const areaMm2 = multiPolygonArea([poly]);
-      if (!Number.isFinite(areaMm2) || areaMm2 < minAreaMm2) continue;
+      if (!Number.isFinite(areaMm2) || areaMm2 < minAreaMm2) {
+        if (flow) flow.drops.area_below_min += 1;
+        continue;
+      }
       const pts = [];
       for (let i = 0; i < outer.length - 1; i++) {
         const x = Number(outer[i] && outer[i][0]);
@@ -581,12 +632,21 @@ function buildVisibleMosaicModel(placements, zonePoints, options) {
         pts.push({ x, y });
       }
       const cleanPts = cleanClosedPolygon(pts, contourCleanCfg);
-      if (!Array.isArray(cleanPts) || cleanPts.length < 3) continue;
+      if (!Array.isArray(cleanPts) || cleanPts.length < 3) {
+        if (flow) flow.drops.clean_too_short += 1;
+        continue;
+      }
       const cleanAreaMm2 = polygonArea(cleanPts);
-      if (!Number.isFinite(cleanAreaMm2) || cleanAreaMm2 < minAreaMm2) continue;
+      if (!Number.isFinite(cleanAreaMm2) || cleanAreaMm2 < minAreaMm2) {
+        if (flow) flow.drops.clean_area_below_min += 1;
+        continue;
+      }
       fragments.push({
         id: nextFragId++,
         points: cleanPts,
+        // Keep pre-clean boundary for seam extraction: visual cleaning can
+        // slightly shift/simplify edges and hide valid shared borders.
+        seamPoints: pts,
         areaMm2: Math.round(cleanAreaMm2 * 1000) / 1000,
         ownerPlacementId,
         ownerPlacementIndex: item.placementIndex,
@@ -594,8 +654,13 @@ function buildVisibleMosaicModel(placements, zonePoints, options) {
         inventoryTag,
         zOrder: rec.zOrder
       });
+      if (flow) flow.fragmentsAdded += 1;
       if (fragments.length >= maxFragments) break;
     }
+    if (flow && !flow.droppedReason && flow.fragmentsAdded === 0) {
+      flow.droppedReason = "no_fragment_after_cleanup_or_thresholds";
+    }
+    if (flow) debugFragmentFlow.push(flow);
     if (fragments.length >= maxFragments) break;
   }
 
@@ -611,19 +676,42 @@ function buildVisibleMosaicModel(placements, zonePoints, options) {
     visibleContours,
     visibleAreaPolygons: multiToOuterPolygons(inZoneUnionMp, { minAreaMm2, maxPolygons }),
     layerPolicy,
+    geometrySource,
     usefulAreaMm2: Math.round(usefulAreaMm2 * 1000) / 1000,
     selectedPiecesAreaMm2: Math.round(selectedPiecesAreaMm2 * 1000) / 1000,
     selectedInZoneAreaMm2: Math.round(selectedInZoneAreaMm2 * 1000) / 1000,
     overlapAreaMm2: Math.round(overlapAreaMm2 * 1000) / 1000,
     utilizationPct: Math.round(utilizationPct * 1000) / 1000,
-    debugPlacements
+    debugPlacements,
+    debugFragmentFlow
   };
 }
 
 function normalizeContour(points) {
-  return (Array.isArray(points) ? points : [])
-    .map((p) => ({ x: Number(p && p.x), y: Number(p && p.y) }))
-    .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+  const out = [];
+  const pushPoint = (x, y) => {
+    const xn = Number(x);
+    const yn = Number(y);
+    if (Number.isFinite(xn) && Number.isFinite(yn)) out.push({ x: xn, y: yn });
+  };
+  const walk = (node) => {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      if (node.length >= 2 && Number.isFinite(Number(node[0])) && Number.isFinite(Number(node[1]))) {
+        pushPoint(node[0], node[1]);
+        return;
+      }
+      for (const child of node) walk(child);
+      return;
+    }
+    if (typeof node === "object") {
+      if (node.x !== undefined && node.y !== undefined) {
+        pushPoint(node.x, node.y);
+      }
+    }
+  };
+  walk(points);
+  return out;
 }
 
 function largestOuterRingPointsLocal(mp) {
@@ -1813,7 +1901,31 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
     const selectedZoneId = Number(body.selectedZoneId || 0);
     const zonePoints = normalizePolygonInput(zone.points);
     if (zonePoints.length < 3) return jsonReply(res, 400, { ok: false, error: "zone_points_required" });
-    const placements = Array.isArray(body.placements) ? body.placements : [];
+    const placementsRaw = Array.isArray(body.placements) ? body.placements : [];
+    const pieceSeamReserveMm = Math.max(0, Number(body.pieceSeamReserveMm || 0));
+    const placements = placementsRaw.map((pl) => {
+      const p = pl && typeof pl === "object" ? { ...pl } : {};
+      const full = normalizeContour(p.alignedContour);
+      if (full.length >= 3) {
+        const wrk = buildPieceWorkingContour(full, pieceSeamReserveMm);
+        if (wrk && wrk.applied && Array.isArray(wrk.contour) && wrk.contour.length >= 3) {
+          p.alignedCoreContour = wrk.contour;
+          p.alignedCoreContours = pointsToMultiPolygon(wrk.contour);
+          p.seamStatus = "ok";
+        } else {
+          p.alignedCoreContour = full;
+          p.alignedCoreContours = pointsToMultiPolygon(full);
+          p.seamStatus = String((wrk && wrk.status) || (pieceSeamReserveMm > 0 ? "failed" : "disabled"));
+        }
+        p.seamReserveMm = pieceSeamReserveMm;
+      } else if (!Array.isArray(p.alignedCoreContour) || p.alignedCoreContour.length < 3) {
+        p.alignedCoreContour = [];
+        p.alignedCoreContours = [];
+        p.seamStatus = pieceSeamReserveMm > 0 ? "failed" : "disabled";
+        p.seamReserveMm = pieceSeamReserveMm;
+      }
+      return p;
+    });
     const layerPolicy = String(body.layerPolicy || "first_on_top");
     const minAreaMm2 = Math.max(1, Number(body.minAreaMm2 || 1));
     const rasterMm = Math.max(1, Number(body.rasterMm || 2));
@@ -1828,14 +1940,41 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
       collinearEpsMm: Math.max(0.8, rasterMm * 0.7),
       includeDebug: debugManual
     });
+    let seamVisible = buildVisibleMosaicModel(placements, zonePoints, {
+      layerPolicy,
+      geometrySource: "core",
+      minAreaMm2,
+      maxPolygons: 500,
+      minEdgeMm: Math.max(2, rasterMm * 2),
+      spikeEdgeMm: Math.max(6, rasterMm * 5),
+      spikeAngleDeg: 32,
+      collinearEpsMm: Math.max(0.8, rasterMm * 0.7),
+      includeDebug: debugManual
+    });
+    let seamGeometrySource = "core_visible";
+    if (
+      Number(pieceSeamReserveMm || 0) > 0 &&
+      Array.isArray(visible.fragments) && visible.fragments.length > 0 &&
+      (!Array.isArray(seamVisible.fragments) || seamVisible.fragments.length === 0)
+    ) {
+      // Keep manual mode usable on geometry edge-cases: if core clipping collapses to empty
+      // while full clipping is non-empty, expose explicit fallback source for diagnostics.
+      seamVisible = visible;
+      seamGeometrySource = "core_visible_fallback_full";
+    }
+
     const payload = {
       ok: true,
       layerPolicy: visible.layerPolicy,
       selectedZoneId,
       recomputeZoneId: Number(zone && zone.id || 0),
       usedZoneFallback: false,
-      fragments: visible.fragments,
+      // Manual mode contract: final fragments are built from working/core geometry.
+      fragments: seamVisible.fragments,
+      fragmentsFull: visible.fragments,
       visibleContours: visible.visibleContours,
+      seamVisibleContours: seamVisible.visibleContours,
+      seamGeometrySource,
       visibleMetrics: {
         usefulAreaMm2: visible.usefulAreaMm2,
         selectedPiecesAreaMm2: visible.selectedPiecesAreaMm2,
@@ -1871,9 +2010,13 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
         placementsReceived: Array.isArray(placements) ? placements.length : 0,
         placementsMatched: Array.isArray(placements) ? placements.filter((p) => String(p && p.status || "") === "matched").length : 0,
         placements: Array.isArray(visible.debugPlacements) ? visible.debugPlacements : [],
+        seamFragmentFlow: Array.isArray(seamVisible.debugFragmentFlow) ? seamVisible.debugFragmentFlow : [],
+        fullFragmentFlow: Array.isArray(visible.debugFragmentFlow) ? visible.debugFragmentFlow : [],
         selectedZoneId,
         recomputeZoneId: Number(zone && zone.id || 0),
         usedZoneFallback: false,
+        seamGeometrySource,
+        seamContoursCount: Array.isArray(seamVisible.visibleContours) ? seamVisible.visibleContours.length : 0,
         warning: impossibleZero ? "manual_recompute_selected_zone_mismatch" : ""
       };
       console.info("[manual/recompute][debug]", JSON.stringify(payload.debug));

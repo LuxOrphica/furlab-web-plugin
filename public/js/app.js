@@ -1,4 +1,4 @@
-﻿// In FurLab, default grain/nap direction in 2D is vertical down.
+// In FurLab, default grain/nap direction in 2D is vertical down.
     const DEFAULT_NAP_DIRECTION_DEG = 90;
     const INVENTORY_OPTIMIZATION_DEFAULT = "sew_quality_economy";
     const INVENTORY_OPTIMIZATION_PROFILE = {
@@ -84,6 +84,18 @@
 
 
     function byId(id) { return document.getElementById(id); }
+    async function refreshBuildTag() {
+      const tagNode = byId("buildTag");
+      if (!tagNode) return;
+      try {
+        const r = await fetch("/api/health", { cache: "no-store" });
+        const j = await r.json();
+        const id = String(j && j.buildId ? j.buildId : "unknown");
+        tagNode.textContent = `build: ${id}`;
+      } catch (_) {
+        tagNode.textContent = "build: unavailable";
+      }
+    }
     function parseLocaleNumber(v, fallback = null) {
       if (v === null || v === undefined) return fallback;
       if (typeof v === "number") return Number.isFinite(v) ? v : fallback;
@@ -163,8 +175,7 @@
         setProgress: (percent, title) => setInventoryProgress(percent, title),
         onEvent: (payload) => handleInventoryProgressEvent(payload),
         setLiveText: (text) => {
-          const liveEl = byId("inventoryProgressLive");
-          if (liveEl) liveEl.textContent = String(text || "");
+          setInventoryProgressStatus(text);
         }
       })
       : null;
@@ -238,6 +249,8 @@
         state,
         openLayoutTypePicker: () => openLayoutTypePicker(),
         applyLayoutMode: (mode) => applyLayoutMode(mode),
+        getLayoutModeTitle: (mode) => getLayoutModeTitle(mode),
+        getLayoutModeThumbSvg: (mode) => getLayoutModeThumbSvg(mode),
         renderLayoutModeSwitch: () => renderLayoutModeSwitch(),
         renderPropertyEditor: () => renderPropertyEditor(),
         renderScene: () => renderScene(),
@@ -342,15 +355,25 @@
       }
     }
 
+    function setInventoryProgressStatus(text) {
+      const el = byId("inventoryProgressStatus");
+      if (!el) return;
+      const raw = String(text || "").trim();
+      if (!raw) {
+        el.textContent = "Ожидание телеметрии…";
+        return;
+      }
+      el.textContent = raw.replace(/\s*\n+\s*/g, " | ");
+    }
+
     function addInventoryProgressNote(text) {
       const msg = String(text || "").trim();
       if (!msg) return;
       const stamp = new Date().toLocaleTimeString();
       inventoryLiveHistory.push(`[${stamp}] ${msg}`);
       if (inventoryLiveHistory.length > 12) inventoryLiveHistory = inventoryLiveHistory.slice(-12);
-      const liveEl = byId("inventoryProgressLive");
-      if (!liveEl) return;
-      liveEl.textContent = [t("checkpoints_title", null, "Checkpoints:"), ...inventoryLiveHistory.slice(-8)].join("\n");
+      const tail = inventoryLiveHistory.slice(-2).join(" · ");
+      setInventoryProgressStatus(`${t("checkpoints_title", null, "Checkpoints")}: ${tail}`);
     }
 
     const formatDurationClock = typeof progressApi.formatDurationClock === "function"
@@ -467,17 +490,9 @@
         inventoryLiveLastEvalBucket = evalBucket;
       }
 
-      const liveEl = byId("inventoryProgressLive");
-      if (liveEl && (now - inventoryLiveLastRenderAt > 300 || phaseChanged || reasonChanged)) {
-        const block = [];
-        block.push("\u0422\u0435\u043a\u0443\u0449\u0438\u0439 \u0441\u0440\u0435\u0437:");
-        block.push(...lines);
-        if (inventoryLiveHistory.length) {
-          block.push("");
-          block.push("\u0427\u0435\u043a\u043f\u043e\u0438\u043d\u0442\u044b (\u043f\u043e\u0441\u043b\u0435\u0434\u043d\u0438\u0435):");
-          block.push(...inventoryLiveHistory.slice(-8));
-        }
-        liveEl.textContent = block.join("\n");
+      if (now - inventoryLiveLastRenderAt > 300 || phaseChanged || reasonChanged) {
+        const current = lines[0] || described.shortLine || described.phaseLabel || phaseRaw || "processing";
+        setInventoryProgressStatus(current);
         inventoryLiveLastRenderAt = now;
       }
       if (Number.isFinite(Number(p.iterations)) || Number.isFinite(Number(p.evaluated))) {
@@ -786,7 +801,7 @@
       if (cmd.type === "create-zone") {
         state.zones.push({
           id: cmd.zone.id,
-          name: cmd.zone.name || `Р—РѕРЅР° ${cmd.zone.id}`,
+          name: cmd.zone.name || `Зона ${cmd.zone.id}`,
           detailId: cmd.zone.detailId || null,
           napDirectionDeg: normalizeDeg(cmd.zone.napDirectionDeg, DEFAULT_NAP_DIRECTION_DEG),
           points: cmd.zone.points.map((p) => ({ ...p }))
@@ -1072,7 +1087,7 @@
 
       return dedup.slice(0, 400).map((d, i) => ({
         id: i + 1,
-        name: `Р”РµС‚Р°Р»СЊ ${i + 1}`,
+        name: `Деталь ${i + 1}`,
         bbox: d.bbox,
         area: d.area,
         points: d.points,
@@ -1184,7 +1199,7 @@
         if (pts.length < 3) continue;
         newZones.push({
           id: zid,
-          name: `Р—РѕРЅР° ${zid}`,
+          name: `Зона ${zid}`,
           detailId: d.id,
           napDirectionDeg: DEFAULT_NAP_DIRECTION_DEG,
           points: pts.map((p) => ({ x: p.x, y: p.y }))
@@ -1843,10 +1858,10 @@ function renderSplitEvents(events) {
 
       if (metricsEl) {
         if (!mm) {
-          metricsEl.textContent = "gain=- | util=- | СЃС‚Р°С‚СѓСЃ=-";
+          metricsEl.textContent = "gain=- | util=- | статус=-";
         } else {
           const reason = String(mm.statusReason || "").trim();
-          metricsEl.textContent = `gain=${Number(mm.gainAreaMm2 || 0).toFixed(0)} РјРјВІ | util=${(Number(mm.utilizationLocal || 0) * 100).toFixed(1)}% | СЃС‚Р°С‚СѓСЃ=${String(mm.status || "ok")}${reason ? ` (${reason})` : ""}`;
+          metricsEl.textContent = `gain=${Number(mm.gainAreaMm2 || 0).toFixed(0)} мм² | util=${(Number(mm.utilizationLocal || 0) * 100).toFixed(1)}% | статус=${String(mm.status || "ok")}${reason ? ` (${reason})` : ""}`;
         }
       }
 
@@ -2084,28 +2099,111 @@ function renderSplitEvents(events) {
       return `${ab}::${pp}`;
     }
 
-    function computeSeamSegmentsFromVisibleContours(visibleContours, opts) {
-      const list = Array.isArray(visibleContours) ? visibleContours : [];
-      const items = list.map((vc, idx) => {
-        const contours = extractOuterContoursFromMulti(vc && vc.visibleContours);
-        const edges = [];
-        for (const contour of contours) edges.push(...contourEdges(contour));
-        return {
-          idx,
-          placementIndex: Number(vc && vc.placementIndex || idx),
-          ownerPlacementId: Number(vc && vc.ownerPlacementId || 0),
-          scrapPieceId: String(vc && vc.scrapPieceId || ""),
-          inventoryTag: String(vc && vc.inventoryTag || ""),
-          edges
-        };
-      }).filter((x) => Array.isArray(x.edges) && x.edges.length > 0);
+    function pointSegDistance(pt, a, b) {
+      const px = Number(pt && pt.x);
+      const py = Number(pt && pt.y);
+      const ax = Number(a && a.x);
+      const ay = Number(a && a.y);
+      const bx = Number(b && b.x);
+      const by = Number(b && b.y);
+      if (!Number.isFinite(px) || !Number.isFinite(py) || !Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(bx) || !Number.isFinite(by)) {
+        return Number.POSITIVE_INFINITY;
+      }
+      const abx = bx - ax;
+      const aby = by - ay;
+      const apx = px - ax;
+      const apy = py - ay;
+      const ab2 = abx * abx + aby * aby;
+      const t = ab2 > 1e-9 ? Math.max(0, Math.min(1, (apx * abx + apy * aby) / ab2)) : 0;
+      const cx = ax + abx * t;
+      const cy = ay + aby * t;
+      return Math.hypot(px - cx, py - cy);
+    }
 
+    function minDistancePointToEdges(pt, edges) {
+      let best = Number.POSITIVE_INFINITY;
+      for (const e of Array.isArray(edges) ? edges : []) {
+        const d = pointSegDistance(pt, { x: e.ax, y: e.ay }, { x: e.bx, y: e.by });
+        if (d < best) best = d;
+      }
+      return best;
+    }
+
+    function seamOnZoneBoundary(seam, zonePoints, tolMm) {
+      const pts = Array.isArray(seam && seam.points) ? seam.points : [];
+      if (pts.length < 2 || !Array.isArray(zonePoints) || zonePoints.length < 3) return false;
+      const zoneEdges = contourEdges(zonePoints);
+      if (!zoneEdges.length) return false;
+      const p1 = pts[0];
+      const p2 = pts[pts.length - 1];
+      const pm = {
+        x: (Number(p1 && p1.x || 0) + Number(p2 && p2.x || 0)) * 0.5,
+        y: (Number(p1 && p1.y || 0) + Number(p2 && p2.y || 0)) * 0.5
+      };
+      const tol = Math.max(0.5, Number(tolMm || 1.4));
+      const d1 = minDistancePointToEdges(p1, zoneEdges);
+      const d2 = minDistancePointToEdges(p2, zoneEdges);
+      const dm = minDistancePointToEdges(pm, zoneEdges);
+      return d1 <= tol && d2 <= tol && dm <= tol;
+    }
+
+    function computeSeamSegmentsFromEdgeItems(itemsInput, opts, diagnosticsOut) {
+      const diag = diagnosticsOut && typeof diagnosticsOut === "object" ? diagnosticsOut : null;
+      const tolDistMm = Math.max(0.2, Number(opts && opts.tolDistMm || 0.8));
+      const minLenMm = Math.max(0.5, Number(opts && opts.minLenMm || 5));
+      const items = (Array.isArray(itemsInput) ? itemsInput : []).filter((x) => Array.isArray(x && x.edges) && x.edges.length > 0);
       const seams = [];
       const seen = new Set();
-      for (let i = 0; i < items.length; i++) {
+      let candidatePairs = 0;
+      const rejectReasons = {
+        same_owner: 0,
+        disjoint: 0,
+        point_touch_only: 0,
+        shared_border_too_short: 0,
+        not_collinear: 0
+      };
+      const pairSamples = [];
+      function addReject(reason, a, b, maxSharedLenMm) {
+        if (Object.prototype.hasOwnProperty.call(rejectReasons, reason)) rejectReasons[reason] += 1;
+        if (pairSamples.length >= 120) return;
+        pairSamples.push({
+          fragmentA: Number(a && (a.fragmentId || a.placementIndex || a.idx) || 0),
+          fragmentB: Number(b && (b.fragmentId || b.placementIndex || b.idx) || 0),
+          ownerA: String(a && (a.scrapPieceId || a.inventoryTag || `p${a.ownerPlacementIndex}`) || ""),
+          ownerB: String(b && (b.scrapPieceId || b.inventoryTag || `p${b.ownerPlacementIndex}`) || ""),
+          rejectReason: String(reason || "unknown"),
+          maxSharedLenMm: Math.round(Number(maxSharedLenMm || 0) * 1000) / 1000
+        });
+      }
+      function bboxDisjoint(a, b) {
+        if (!a || !b) return true;
+        return (
+          Number(a.maxX) + 1 < Number(b.minX) ||
+          Number(b.maxX) + 1 < Number(a.minX) ||
+          Number(a.maxY) + 1 < Number(b.minY) ||
+          Number(b.maxY) + 1 < Number(a.minY)
+        );
+      }
+      for (let i = 0; i < items.length; i += 1) {
         const a = items[i];
-        for (let j = i + 1; j < items.length; j++) {
+        for (let j = i + 1; j < items.length; j += 1) {
           const b = items[j];
+          const aKey = a.scrapPieceId || a.inventoryTag || `p${Number.isFinite(a.ownerPlacementIndex) ? a.ownerPlacementIndex : a.idx}`;
+          const bKey = b.scrapPieceId || b.inventoryTag || `p${Number.isFinite(b.ownerPlacementIndex) ? b.ownerPlacementIndex : b.idx}`;
+          if (aKey === bKey) {
+            addReject("same_owner", a, b, 0);
+            continue;
+          }
+          candidatePairs += 1;
+          if (bboxDisjoint(a.bbox, b.bbox)) {
+            addReject("disjoint", a, b, 0);
+            continue;
+          }
+          let acceptedInPair = false;
+          let hasShortShared = false;
+          let hasPointTouchOnly = false;
+          let hasAnyEdgeOverlap = false;
+          let maxSharedLenMm = 0;
           for (const ea of a.edges) {
             const minAx = Math.min(ea.ax, ea.bx), maxAx = Math.max(ea.ax, ea.bx);
             const minAy = Math.min(ea.ay, ea.by), maxAy = Math.max(ea.ay, ea.by);
@@ -2113,27 +2211,186 @@ function renderSplitEvents(events) {
               const minBx = Math.min(eb.ax, eb.bx), maxBx = Math.max(eb.ax, eb.bx);
               const minBy = Math.min(eb.ay, eb.by), maxBy = Math.max(eb.ay, eb.by);
               if (maxAx + 1 < minBx || maxBx + 1 < minAx || maxAy + 1 < minBy || maxBy + 1 < minAy) continue;
-              const seg = sharedCollinearSegment(ea, eb, opts);
-              if (!seg) continue;
-              const aKey = a.scrapPieceId || a.inventoryTag || `p${a.placementIndex}`;
-              const bKey = b.scrapPieceId || b.inventoryTag || `p${b.placementIndex}`;
-              const key = seamKey(seg, aKey, bKey);
-              if (seen.has(key)) continue;
-              seen.add(key);
-              seams.push({
-                pieceA: { placementIndex: a.placementIndex, ownerPlacementId: a.ownerPlacementId, scrapPieceId: a.scrapPieceId, inventoryTag: a.inventoryTag },
-                pieceB: { placementIndex: b.placementIndex, ownerPlacementId: b.ownerPlacementId, scrapPieceId: b.scrapPieceId, inventoryTag: b.inventoryTag },
-                lengthMm: Math.round(Number(seg.lengthMm || 0) * 1000) / 1000,
-                points: [
-                  { x: Number(seg.p1 && seg.p1.x || 0), y: Number(seg.p1 && seg.p1.y || 0) },
-                  { x: Number(seg.p2 && seg.p2.x || 0), y: Number(seg.p2 && seg.p2.y || 0) }
-                ]
-              });
+              hasAnyEdgeOverlap = true;
+              const endpointTouch =
+                (Math.hypot(ea.ax - eb.ax, ea.ay - eb.ay) <= tolDistMm) ||
+                (Math.hypot(ea.ax - eb.bx, ea.ay - eb.by) <= tolDistMm) ||
+                (Math.hypot(ea.bx - eb.ax, ea.by - eb.ay) <= tolDistMm) ||
+                (Math.hypot(ea.bx - eb.bx, ea.by - eb.by) <= tolDistMm);
+              if (endpointTouch) hasPointTouchOnly = true;
+              const segAny = sharedCollinearSegment(ea, eb, { ...(opts || {}), minLenMm: 0.1 });
+              if (!segAny) continue;
+              maxSharedLenMm = Math.max(maxSharedLenMm, Number(segAny.lengthMm || 0));
+              if (Number(segAny.lengthMm || 0) < minLenMm) {
+                hasShortShared = true;
+                continue;
+              }
+              const key = seamKey(segAny, aKey, bKey);
+              if (!seen.has(key)) {
+                seen.add(key);
+                seams.push({
+                  pieceA: {
+                    placementIndex: Number.isFinite(a.ownerPlacementIndex) ? a.ownerPlacementIndex : a.idx,
+                    ownerPlacementId: Number.isFinite(a.ownerPlacementId) ? a.ownerPlacementId : 0,
+                    scrapPieceId: a.scrapPieceId,
+                    inventoryTag: a.inventoryTag
+                  },
+                  pieceB: {
+                    placementIndex: Number.isFinite(b.ownerPlacementIndex) ? b.ownerPlacementIndex : b.idx,
+                    ownerPlacementId: Number.isFinite(b.ownerPlacementId) ? b.ownerPlacementId : 0,
+                    scrapPieceId: b.scrapPieceId,
+                    inventoryTag: b.inventoryTag
+                  },
+                  lengthMm: Math.round(Number(segAny.lengthMm || 0) * 1000) / 1000,
+                  points: [
+                    { x: Number(segAny.p1 && segAny.p1.x || 0), y: Number(segAny.p1 && segAny.p1.y || 0) },
+                    { x: Number(segAny.p2 && segAny.p2.x || 0), y: Number(segAny.p2 && segAny.p2.y || 0) }
+                  ]
+                });
+              }
+              acceptedInPair = true;
             }
+          }
+          if (!acceptedInPair) {
+            if (hasShortShared) addReject("shared_border_too_short", a, b, maxSharedLenMm);
+            else if (hasPointTouchOnly) addReject("point_touch_only", a, b, maxSharedLenMm);
+            else if (!hasAnyEdgeOverlap) addReject("disjoint", a, b, maxSharedLenMm);
+            else addReject("not_collinear", a, b, maxSharedLenMm);
           }
         }
       }
+      if (diag) {
+        diag.fragmentsCount = items.length;
+        diag.candidatePairs = candidatePairs;
+        diag.acceptedSeams = seams.length;
+        diag.rejectReasons = rejectReasons;
+        diag.pairSamples = pairSamples;
+      }
       return seams;
+    }
+
+    function computeSeamSegmentsFromVisibleContours(visibleContours, opts, diagnosticsOut) {
+      const diag = diagnosticsOut && typeof diagnosticsOut === "object" ? diagnosticsOut : null;
+      const list = Array.isArray(visibleContours) ? visibleContours : [];
+      const items = list.map((vc, idx) => {
+        const contours = extractOuterContoursFromMulti(vc && vc.visibleContours);
+        const edges = [];
+        for (const contour of contours) edges.push(...contourEdges(contour));
+        let minX = Number.POSITIVE_INFINITY;
+        let minY = Number.POSITIVE_INFINITY;
+        let maxX = Number.NEGATIVE_INFINITY;
+        let maxY = Number.NEGATIVE_INFINITY;
+        for (const contour of contours) {
+          for (const p of contour) {
+            minX = Math.min(minX, Number(p && p.x));
+            minY = Math.min(minY, Number(p && p.y));
+            maxX = Math.max(maxX, Number(p && p.x));
+            maxY = Math.max(maxY, Number(p && p.y));
+          }
+        }
+        const bbox = Number.isFinite(minX) && Number.isFinite(minY) && Number.isFinite(maxX) && Number.isFinite(maxY)
+          ? { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY }
+          : null;
+        return {
+          idx,
+          fragmentId: Number(vc && vc.ownerPlacementId || 0),
+          placementIndex: Number(vc && vc.placementIndex || idx),
+          ownerPlacementIndex: Number(vc && vc.placementIndex || idx),
+          ownerPlacementId: Number(vc && vc.ownerPlacementId || 0),
+          scrapPieceId: String(vc && vc.scrapPieceId || ""),
+          inventoryTag: String(vc && vc.inventoryTag || ""),
+          areaMm2: Math.max(0, Number(vc && vc.visibleAreaMm2 || 0)),
+          pointCount: contours.reduce((acc, c) => acc + Number(Array.isArray(c) ? c.length : 0), 0),
+          bbox,
+          edges
+        };
+      }).filter((x) => Array.isArray(x.edges) && x.edges.length > 0);
+      if (diag) {
+        diag.fragments = items.map((it) => ({
+          fragmentId: Number(it.fragmentId || 0),
+          ownerPlacementIndex: Number.isFinite(it.ownerPlacementIndex) ? it.ownerPlacementIndex : -1,
+          ownerPlacementId: Number.isFinite(it.ownerPlacementId) ? it.ownerPlacementId : 0,
+          pieceId: String(it.scrapPieceId || ""),
+          inventoryTag: String(it.inventoryTag || ""),
+          areaMm2: Math.round(Number(it.areaMm2 || 0) * 1000) / 1000,
+          pointCount: Number(it.pointCount || 0),
+          bbox: it.bbox
+            ? {
+                minX: Math.round(it.bbox.minX * 1000) / 1000,
+                minY: Math.round(it.bbox.minY * 1000) / 1000,
+                maxX: Math.round(it.bbox.maxX * 1000) / 1000,
+                maxY: Math.round(it.bbox.maxY * 1000) / 1000,
+                width: Math.round(it.bbox.width * 1000) / 1000,
+                height: Math.round(it.bbox.height * 1000) / 1000
+              }
+            : null
+        }));
+      }
+      return computeSeamSegmentsFromEdgeItems(items, opts, diag);
+    }
+
+    function computeSeamSegmentsFromAppliedFragments(fragments, opts, diagnosticsOut) {
+      const diag = diagnosticsOut && typeof diagnosticsOut === "object" ? diagnosticsOut : null;
+      const list = (Array.isArray(fragments) ? fragments : [])
+        .map((f, idx) => {
+          const seamSrc = (Array.isArray(f && f.seamPoints) && f.seamPoints.length >= 3)
+            ? f.seamPoints
+            : (Array.isArray(f && f.points) ? f.points : []);
+          const points = seamSrc
+            .map((q) => ({ x: Number(q && q.x), y: Number(q && q.y) }))
+            .filter((q) => Number.isFinite(q.x) && Number.isFinite(q.y));
+          if (points.length < 3) return null;
+          const edges = contourEdges(points);
+          if (!edges.length) return null;
+          let minX = Number.POSITIVE_INFINITY;
+          let minY = Number.POSITIVE_INFINITY;
+          let maxX = Number.NEGATIVE_INFINITY;
+          let maxY = Number.NEGATIVE_INFINITY;
+          for (const p of points) {
+            minX = Math.min(minX, Number(p && p.x));
+            minY = Math.min(minY, Number(p && p.y));
+            maxX = Math.max(maxX, Number(p && p.x));
+            maxY = Math.max(maxY, Number(p && p.y));
+          }
+          const bbox = Number.isFinite(minX) && Number.isFinite(minY) && Number.isFinite(maxX) && Number.isFinite(maxY)
+            ? { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY }
+            : null;
+          return {
+            idx,
+            fragmentId: Number(f && f.id || 0),
+            ownerPlacementIndex: Number(f && f.ownerPlacementIndex),
+            ownerPlacementId: Number(f && f.ownerPlacementId),
+            scrapPieceId: String(f && f.scrapPieceId || ""),
+            inventoryTag: String(f && f.inventoryTag || ""),
+            areaMm2: Math.max(0, Number(f && f.areaMm2 || 0)),
+            pointCount: points.length,
+            bbox,
+            edges
+          };
+        })
+        .filter(Boolean);
+      if (diag) {
+        diag.fragments = list.map((it) => ({
+          fragmentId: Number(it.fragmentId || 0),
+          ownerPlacementIndex: Number.isFinite(it.ownerPlacementIndex) ? it.ownerPlacementIndex : -1,
+          ownerPlacementId: Number.isFinite(it.ownerPlacementId) ? it.ownerPlacementId : 0,
+          pieceId: String(it.scrapPieceId || ""),
+          inventoryTag: String(it.inventoryTag || ""),
+          areaMm2: Math.round(Number(it.areaMm2 || 0) * 1000) / 1000,
+          pointCount: Number(it.pointCount || 0),
+          bbox: it.bbox
+            ? {
+                minX: Math.round(it.bbox.minX * 1000) / 1000,
+                minY: Math.round(it.bbox.minY * 1000) / 1000,
+                maxX: Math.round(it.bbox.maxX * 1000) / 1000,
+                maxY: Math.round(it.bbox.maxY * 1000) / 1000,
+                width: Math.round(it.bbox.width * 1000) / 1000,
+                height: Math.round(it.bbox.height * 1000) / 1000
+              }
+            : null
+        }));
+      }
+      return computeSeamSegmentsFromEdgeItems(list, opts, diagnosticsOut);
     }
 
     function updateManualActivePiecePoints(nextPoints) {
@@ -2181,7 +2438,7 @@ function renderSplitEvents(events) {
           status: "error",
           statusReason: String(res && (res.error || res.errorCode) || "manual_recompute_failed")
         };
-        state.layoutRun.manual.statusNote = "РѕС†РµРЅРєР° РЅРµ РїРѕР»СѓС‡РµРЅР°";
+        state.layoutRun.manual.statusNote = "оценка не получена";
         renderInventoryManualPanel();
         renderManualTrayIntoRoot();
         renderScene();
@@ -2245,14 +2502,9 @@ function renderSplitEvents(events) {
       const placements = Array.isArray(state.layoutRun && state.layoutRun.placements) ? state.layoutRun.placements : [];
       if (!placements.length) return;
       const seamMm = getCurrentManualAllowanceMm();
-      const missing = placements.filter((p) => {
-        const hasCoreMulti = Array.isArray(p && p.inZoneCoreContours) && p.inZoneCoreContours.length > 0;
-        const hasCoreSingle = Array.isArray(p && p.inZoneCoreContour) && p.inZoneCoreContour.length >= 3;
-        const hasAligned = Array.isArray(p && p.alignedContour) && p.alignedContour.length >= 3;
-        return hasAligned && !hasCoreMulti && !hasCoreSingle;
-      });
-      if (!missing.length) return;
-      for (const p of missing) {
+      const targets = placements.filter((p) => Array.isArray(p && p.alignedContour) && p.alignedContour.length >= 3);
+      if (!targets.length) return;
+      for (const p of targets) {
         try {
           const res = await api("/api/layout/manual/evaluate", "POST", {
             zone: { id: zone.id, points: zone.points || [] },
@@ -2267,8 +2519,10 @@ function renderSplitEvents(events) {
           p.inZoneCoreContours = Array.isArray(ctr.inZoneCore) ? ctr.inZoneCore : [];
           p.inZoneCoreContour = multiLargestOuterPoints(p.inZoneCoreContours);
           p.inZoneCoreAreaMm2 = Number(res && res.metrics && res.metrics.inZoneCoreAreaMm2 || 0);
+          p.seamStatus = String(res && res.metrics && res.metrics.seamStatus || (seamMm > 0 ? "failed" : "disabled"));
+          p.seamReserveMm = seamMm;
         } catch (_) {
-          // Keep placement unchanged; allowance for this piece will remain hidden.
+          // Keep placement unchanged on transport/runtime errors.
         }
       }
     }
@@ -2305,7 +2559,7 @@ function renderSplitEvents(events) {
         center: centroid(moved),
         rotationDeg: 0
       };
-      state.layoutRun.manual.statusNote = "РЅРµ Р·Р°С„РёРєСЃРёСЂРѕРІР°РЅ";
+      state.layoutRun.manual.statusNote = "не зафиксирован";
       state.layoutRun.manual.lastMetrics = null;
       state.layoutRun.manual.lastEvalContours = null;
       renderInventoryManualPanel();
@@ -2353,13 +2607,13 @@ function renderSplitEvents(events) {
       state.layoutRun.manual.activePiece = null;
       state.layoutRun.manual.lastMetrics = null;
       state.layoutRun.manual.lastEvalContours = null;
-      state.layoutRun.manual.statusNote = "РєСѓСЃРѕРє РґРѕР±Р°РІР»РµРЅ (СЂСѓС‡РЅРѕР№ СЂРµР¶РёРј)";
+      state.layoutRun.manual.statusNote = "кусок добавлен (ручной режим)";
       byId("invTotalFragments").textContent = String(state.layoutRun.placements.length);
       renderPlacementRows(state.layoutRun.placements || []);
       renderInventoryManualPanel();
       renderScene();
       // Important: when adding directly from tray, compute Pfull/Pcore metrics immediately,
-      // otherwise "РЁРѕРІРЅС‹Рµ РїСЂРёРїСѓСЃРєРё" has no geometry to render for this placement.
+      // otherwise "Шовные припуски" has no geometry to render for this placement.
       const coveredBefore = getManualCoveredContours();
       void (async () => {
         try {
@@ -2447,7 +2701,7 @@ function renderSplitEvents(events) {
       state.layoutRun.manual.lastMetrics = null;
       state.layoutRun.manual.lastEvalContours = null;
       state.layoutRun.manual.activePiece = null;
-      state.layoutRun.manual.statusNote = gainArea > 0 ? "Р·Р°С„РёРєСЃРёСЂРѕРІР°РЅ" : "Р·Р°С„РёРєСЃРёСЂРѕРІР°РЅ (Р±РµР· РїСЂРёСЂРѕСЃС‚Р°)";
+      state.layoutRun.manual.statusNote = gainArea > 0 ? "зафиксирован" : "зафиксирован (без прироста)";
       updateManualStatsFromPlacements();
       renderPlacementRows(state.layoutRun.placements || []);
       await recomputeInventoryManualVisibility();
@@ -2460,6 +2714,10 @@ function renderSplitEvents(events) {
       state.layoutRun.manual = state.layoutRun.manual || { suggestions: [], lastMetrics: null, selectedCandidateTag: "", activePiece: null, lastEvalContours: null, statusNote: "", selectedPlacementIndex: -1 };
       const recomputeSeq = Number(state.layoutRun.manual.recomputeSeq || 0) + 1;
       state.layoutRun.manual.recomputeSeq = recomputeSeq;
+      const isStale = () => {
+        const currentSeq = Number(state.layoutRun && state.layoutRun.manual && state.layoutRun.manual.recomputeSeq || 0);
+        return currentSeq !== recomputeSeq;
+      };
       const placements = Array.isArray(state.layoutRun.placements) ? state.layoutRun.placements : [];
       const selectedZoneId = Number(state.layoutRun && state.layoutRun.selectedZoneId || state.selectedZoneId || 0);
       const zoneBySelectedId = (Array.isArray(state.zones) ? state.zones : []).find((z) => Number(z && z.id || 0) === selectedZoneId) || null;
@@ -2488,10 +2746,40 @@ function renderSplitEvents(events) {
         return false;
       }
       await ensureManualPlacementsCoreContours();
+      const toFlatContour = (raw) => {
+        const out = [];
+        const push = (x, y) => {
+          const xn = Number(x);
+          const yn = Number(y);
+          if (Number.isFinite(xn) && Number.isFinite(yn)) out.push({ x: xn, y: yn });
+        };
+        const walk = (node) => {
+          if (!node) return;
+          if (Array.isArray(node)) {
+            if (node.length >= 2 && Number.isFinite(Number(node[0])) && Number.isFinite(Number(node[1]))) {
+              push(node[0], node[1]);
+              return;
+            }
+            for (const child of node) walk(child);
+            return;
+          }
+          if (typeof node === "object" && node.x !== undefined && node.y !== undefined) {
+            push(node.x, node.y);
+          }
+        };
+        walk(raw);
+        return out;
+      };
       // Manual mode: evaluate all actually placed contours, even if status got lost.
       const placementsForEval = placements
-        .filter((p) => Array.isArray(p && p.alignedContour) && p.alignedContour.length >= 3)
-        .map((p) => ({ ...p, status: "matched" }));
+        .map((p) => {
+          const alignedSingle = toFlatContour(p && p.alignedContour);
+          const alignedMulti = toFlatContour(p && p.alignedContours);
+          const alignedContour = alignedSingle.length >= 3 ? alignedSingle : (alignedMulti.length >= 3 ? alignedMulti : []);
+          if (alignedContour.length < 3) return null;
+          return { ...p, alignedContour, status: "matched" };
+        })
+        .filter(Boolean);
       const debugPlacementsPreview = placementsForEval.map((p, idx) => ({
         index: idx,
         pieceId: String(p && p.scrapPieceId || ""),
@@ -2506,6 +2794,7 @@ function renderSplitEvents(events) {
           zone: { id: z.id, points: z.points || [] },
           selectedZoneId,
           placements: placementsForEval,
+          pieceSeamReserveMm: getCurrentManualAllowanceMm(),
           layerPolicy: "first_on_top",
           minAreaMm2: 1,
           rasterMm: 2,
@@ -2518,18 +2807,24 @@ function renderSplitEvents(events) {
       } catch (err) {
         res = { ok: false, error: String(err && err.message ? err.message : "manual_recompute_request_failed") };
       }
+      if (isStale()) return false;
       const looksImpossibleZero = !!(res && res.ok && placementsForEval.length > 0 && Number(res.visibleMetrics && res.visibleMetrics.usefulAreaMm2 || 0) <= 1e-9 && Number(res.visibleMetrics && res.visibleMetrics.selectedPiecesAreaMm2 || 0) <= 1e-9);
-      const allowZoneFallbackDiagnostics = !!(window && window.__FURLAB_DEBUG_MANUAL_ZONE_FALLBACK__);
+      // Production-safe guard: impossible all-zero metrics with non-empty placements
+      // must trigger zone sanity fallback. This is explicitly logged and reflected in debug.
+      const allowZoneFallbackDiagnostics = false;
       let usedZoneFallback = false;
+      let recomputeDebug = null;
       if (looksImpossibleZero && allowZoneFallbackDiagnostics) {
         const zones = (Array.isArray(state.zones) ? state.zones : []).filter((z) => Array.isArray(z && z.points) && z.points.length >= 3);
         let bestRes = res;
         let bestZone = zone;
         let bestScore = Number(res.visibleMetrics && res.visibleMetrics.usefulAreaMm2 || 0);
         for (const z of zones) {
+          if (isStale()) return false;
           if (Number(z && z.id || 0) === Number(zone && zone.id || 0)) continue;
           try {
             const zz = await callRecomputeForZone(z);
+            if (isStale()) return false;
             if (!zz || !zz.ok) continue;
             const useful = Number(zz.visibleMetrics && zz.visibleMetrics.usefulAreaMm2 || 0);
             const inZone = Number(zz.visibleMetrics && zz.visibleMetrics.selectedInZoneAreaMm2 || 0);
@@ -2565,6 +2860,7 @@ function renderSplitEvents(events) {
       try {
         const debug = res && res.debug && typeof res.debug === "object" ? res.debug : null;
         if (debug) {
+          recomputeDebug = debug;
           debug.usedZoneFallback = usedZoneFallback;
           debug.selectedZoneId = selectedZoneId;
           debug.recomputeZoneId = Number(zone && zone.id || 0);
@@ -2576,6 +2872,7 @@ function renderSplitEvents(events) {
           if (state.layoutRun && state.layoutRun.manual) state.layoutRun.manual.lastRecomputeDiagnostics = debug;
         }
       } catch (_) {}
+      if (isStale()) return false;
       if (!res || !res.ok) {
         state.layoutRun.manual.lastMetrics = {
           gainAreaMm2: 0,
@@ -2587,7 +2884,7 @@ function renderSplitEvents(events) {
           statusReason: String(res && (res.error || res.errorCode) || "manual_recompute_failed"),
           recomputeSeq
         };
-        state.layoutRun.manual.statusNote = "РѕС†РµРЅРєР° РЅРµ РїРѕР»СѓС‡РµРЅР°";
+        state.layoutRun.manual.statusNote = "оценка не получена";
         renderInventoryManualPanel();
         renderManualTrayIntoRoot();
         renderScene();
@@ -2595,11 +2892,32 @@ function renderSplitEvents(events) {
       }
       state.layoutRun.fragments = Array.isArray(res.fragments) ? res.fragments : [];
       const visibleContours = Array.isArray(res.visibleContours) ? res.visibleContours : [];
-      const seamSegments = computeSeamSegmentsFromVisibleContours(visibleContours, {
-        minLenMm: 6,
-        tolDistMm: 0.9,
-        tolParallel: 0.012
-      });
+      const hasBackendSeamContours = Array.isArray(res.seamVisibleContours);
+      const seamVisibleContours = hasBackendSeamContours ? res.seamVisibleContours : visibleContours;
+      const seamGeometrySource = String(res.seamGeometrySource || (hasBackendSeamContours ? "backend_seam" : "visible"));
+      const manualApplied = isManualInventoryMode() && String(state.layoutRun && state.layoutRun.status || "") === "applied";
+      let seamSegments = [];
+      const seamDiag = {};
+      let seamSourceResolved = manualApplied ? "applied_fragments" : "disabled_before_apply";
+      if (manualApplied) {
+        const appliedFragments = Array.isArray(res.fragments) ? res.fragments : [];
+        seamSegments = computeSeamSegmentsFromAppliedFragments(appliedFragments, {
+          minLenMm: 3,
+          tolDistMm: 2.5,
+          tolParallel: 0.35
+        }, seamDiag);
+        if (!Array.isArray(seamSegments) || seamSegments.length === 0) {
+          seamSegments = computeSeamSegmentsFromVisibleContours(Array.isArray(seamVisibleContours) ? seamVisibleContours : [], {
+            minLenMm: 3,
+            tolDistMm: 2.5,
+            tolParallel: 0.35
+          }, seamDiag);
+        }
+        const beforeBoundaryDrop = Array.isArray(seamSegments) ? seamSegments.length : 0;
+        seamSegments = (Array.isArray(seamSegments) ? seamSegments : []).filter((seg) => !seamOnZoneBoundary(seg, zone && zone.points, 1.6));
+        seamDiag.boundaryDropped = Math.max(0, beforeBoundaryDrop - seamSegments.length);
+        seamSourceResolved = `applied_fragments:${seamGeometrySource}`;
+      }
       state.layoutRun.previewLayers = {
         pieceIntersections: [],
         visibleArea: visibleContours,
@@ -2616,6 +2934,35 @@ function renderSplitEvents(events) {
       const coveragePct = zoneArea > 0 ? (usefulArea / zoneArea) * 100 : 0;
       const seamsCount = Array.isArray(seamSegments) ? seamSegments.length : 0;
       const seamsTotalLengthMm = (Array.isArray(seamSegments) ? seamSegments : []).reduce((acc, s) => acc + Number(s && s.lengthMm || 0), 0);
+      const seamItems = (Array.isArray(seamSegments) ? seamSegments : []).map((s, idx) => {
+        const pts = Array.isArray(s && s.points) ? s.points : [];
+        let minX = Number.POSITIVE_INFINITY;
+        let minY = Number.POSITIVE_INFINITY;
+        let maxX = Number.NEGATIVE_INFINITY;
+        let maxY = Number.NEGATIVE_INFINITY;
+        for (const p of pts) {
+          const x = Number(p && p.x);
+          const y = Number(p && p.y);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          minX = Math.min(minX, x);
+          minY = Math.min(minY, y);
+          maxX = Math.max(maxX, x);
+          maxY = Math.max(maxY, y);
+        }
+        const hasBBox = Number.isFinite(minX) && Number.isFinite(minY) && Number.isFinite(maxX) && Number.isFinite(maxY);
+        return {
+          index: idx,
+          pointCount: pts.length,
+          bbox: hasBBox ? {
+            minX: Math.round(minX * 1000) / 1000,
+            minY: Math.round(minY * 1000) / 1000,
+            maxX: Math.round(maxX * 1000) / 1000,
+            maxY: Math.round(maxY * 1000) / 1000,
+            width: Math.round((maxX - minX) * 1000) / 1000,
+            height: Math.round((maxY - minY) * 1000) / 1000
+          } : null
+        };
+      });
       state.layoutRun.manual.lastMetrics = {
         gainAreaMm2: usefulArea,
         overlapAreaMm2: overlapArea,
@@ -2628,14 +2975,42 @@ function renderSplitEvents(events) {
         recomputeSeq
       };
       state.layoutRun.manual.lastSeamDebug = {
+        source: seamSourceResolved,
+        seamContoursCount: Array.isArray(seamVisibleContours) ? seamVisibleContours.length : 0,
         seamsCount,
+        fragmentsCount: Number(seamDiag.fragmentsCount || 0),
+        candidatePairs: Number(seamDiag.candidatePairs || 0),
+        acceptedSeams: Number(seamDiag.acceptedSeams || 0),
+        boundaryDropped: Number(seamDiag.boundaryDropped || 0),
+        rejectReasons: seamDiag.rejectReasons || {},
+        fragments: Array.isArray(seamDiag.fragments) ? seamDiag.fragments : [],
+        pairSamples: Array.isArray(seamDiag.pairSamples) ? seamDiag.pairSamples : [],
+        seamItems,
         seamsTotalLengthMm: Math.round(seamsTotalLengthMm * 1000) / 1000,
-        sample: seamsCount > 0 ? seamSegments[0] : null
+        sample: seamsCount > 0 ? seamSegments[0] : null,
+        usedZoneFallback: !!usedZoneFallback,
+        selectedZoneId: Number(selectedZoneId || 0),
+        recomputeZoneId: Number(zone && zone.id || 0),
+        layerEnabled: !!(state.layers && state.layers.visibleCore),
+        renderedSeams: 0
       };
-      if (seamsCount > 0) {
-        console.info("[manual/seams][debug]", state.layoutRun.manual.lastSeamDebug);
+      if (recomputeDebug && Array.isArray(recomputeDebug.seamFragmentFlow)) {
+        const flow = recomputeDebug.seamFragmentFlow;
+        const byReason = {};
+        let zeroVisible = 0;
+        for (const it of flow) {
+          if (Number(it && it.visibleAreaMm2 || 0) <= 1e-9) zeroVisible += 1;
+          const r = String(it && it.droppedReason || "");
+          if (r) byReason[r] = Number(byReason[r] || 0) + 1;
+        }
+        state.layoutRun.manual.lastSeamDebug.fragmentFlowSummary = {
+          items: flow.length,
+          zeroVisible,
+          byReason
+        };
       }
-      state.layoutRun.manual.statusNote = "РѕС†РµРЅРєР° РѕР±РЅРѕРІР»РµРЅР°";
+      console.info("[manual/seams][debug]", state.layoutRun.manual.lastSeamDebug);
+      state.layoutRun.manual.statusNote = "оценка обновлена";
       byId("invUsefulArea").textContent = Number(vm.usefulAreaMm2 || 0).toFixed(1);
       byId("invUsedScrapArea").textContent = Number(vm.selectedInZoneAreaMm2 || 0).toFixed(1);
       byId("invScrapUtilization").textContent = Number(vm.utilizationPct || 0).toFixed(2);
@@ -2648,21 +3023,21 @@ function renderSplitEvents(events) {
 
     async function applyInventoryManualNow() {
       if (!isManualInventoryMode()) return false;
+      state.layoutRun.status = "applied";
       const recomputeOk = await recomputeInventoryManualVisibility();
       if (recomputeOk === false) return false;
-      state.layoutRun.status = "applied";
       state.layoutRun.manual = state.layoutRun.manual || { suggestions: [], lastMetrics: null, selectedCandidateTag: "", activePiece: null, lastEvalContours: null, statusNote: "", selectedPlacementIndex: -1 };
       state.layoutRun.manual.activePiece = null;
       state.layoutRun.manual.lastEvalContours = null;
       state.layoutRun.manual.selectedCandidateTag = "";
       const placements = Array.isArray(state.layoutRun && state.layoutRun.placements) ? state.layoutRun.placements : [];
       state.layoutRun.manual.statusNote = placements.length
-        ? `РїСЂРёРјРµРЅРµРЅРѕ: ${placements.length} РєСѓСЃРєРѕРІ`
-        : "РїСЂРёРјРµРЅРµРЅРѕ";
+        ? `применено: ${placements.length} кусков`
+        : "применено";
       renderInventoryManualPanel();
       renderManualTrayIntoRoot();
       const workspaceInfo = byId("workspaceInfo");
-      if (workspaceInfo) workspaceInfo.textContent = `Р СѓС‡РЅР°СЏ РІС‹РєР»Р°РґРєР° РїСЂРёРјРµРЅРµРЅР°: ${placements.length} РєСѓСЃРєРѕРІ`;
+      if (workspaceInfo) workspaceInfo.textContent = `Ручная выкладка применена: ${placements.length} кусков`;
       const step2Backdrop = byId("inventoryStep2Backdrop");
       if (step2Backdrop && step2Backdrop.style.display === "flex") closeInventoryStep2();
       renderScene();
@@ -2745,7 +3120,7 @@ function renderSplitEvents(events) {
       state.layoutRun.manual = state.layoutRun.manual || { suggestions: [], lastMetrics: null, selectedCandidateTag: "", activePiece: null, lastEvalContours: null, statusNote: "", selectedPlacementIndex: -1 };
       const nextSel = Math.min(idx, Math.max(0, (state.layoutRun.placements || []).length - 1));
       state.layoutRun.manual.selectedPlacementIndex = (state.layoutRun.placements || []).length ? nextSel : -1;
-      state.layoutRun.manual.statusNote = noteText || "РєСѓСЃРѕРє СѓРґР°Р»РµРЅ";
+      state.layoutRun.manual.statusNote = noteText || "кусок удален";
       state.layoutRun.manual.lastMetrics = null;
       updateManualStatsFromPlacements();
       renderPlacementRows(state.layoutRun.placements || []);
@@ -2769,7 +3144,7 @@ function renderSplitEvents(events) {
       state.layoutRun.placements = placements;
       state.layoutRun.manual = state.layoutRun.manual || { suggestions: [], lastMetrics: null, selectedCandidateTag: "", activePiece: null, lastEvalContours: null, statusNote: "", selectedPlacementIndex: -1 };
       state.layoutRun.manual.selectedPlacementIndex = targetIdx;
-      state.layoutRun.manual.statusNote = dir > 0 ? "РєСѓСЃРѕРє РїРѕРґРЅСЏС‚ РїРѕ СЃР»РѕСЋ" : "РєСѓСЃРѕРє РѕРїСѓС‰РµРЅ РїРѕ СЃР»РѕСЋ";
+      state.layoutRun.manual.statusNote = dir > 0 ? "кусок поднят по слою" : "кусок опущен по слою";
       state.layoutRun.manual.lastMetrics = null;
       renderPlacementRows(state.layoutRun.placements || []);
       renderInventoryManualPanel();
@@ -2816,14 +3191,34 @@ function renderSplitEvents(events) {
       if (contour.length < 3) return false;
       const center = centroid(contour);
       const rad = (dd * Math.PI) / 180;
+      const toPointObj = (q) => {
+        if (Array.isArray(q) && q.length >= 2) {
+          const x = Number(q[0]);
+          const y = Number(q[1]);
+          if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+        }
+        const x = Number(q && q.x);
+        const y = Number(q && q.y);
+        if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+        return null;
+      };
+      const isPointLike = (v) => !!toPointObj(v);
       const rotateOne = (list) => {
         if (!Array.isArray(list)) return list;
         return list.map((q) => {
-          const out = rotatePoints([{ x: Number(q && q.x), y: Number(q && q.y) }], rad, center);
-          return (Array.isArray(out) && out[0]) ? out[0] : { x: Number(q && q.x), y: Number(q && q.y) };
-        });
+          const src = toPointObj(q) || { x: Number(q && q.x), y: Number(q && q.y) };
+          const out = rotatePoints([{ x: Number(src.x), y: Number(src.y) }], rad, center);
+          return (Array.isArray(out) && out[0]) ? out[0] : src;
+        }).filter((q) => Number.isFinite(Number(q && q.x)) && Number.isFinite(Number(q && q.y)));
       };
-      const rotateMany = (multi) => Array.isArray(multi) ? multi.map((poly) => rotateOne(poly)) : multi;
+      const rotatePolyOrContour = (poly) => {
+        if (!Array.isArray(poly) || !poly.length) return poly;
+        if (Array.isArray(poly[0]) && (poly[0].length === 0 || isPointLike(poly[0][0]))) {
+          return poly.map((ring) => rotateOne(ring));
+        }
+        return rotateOne(poly);
+      };
+      const rotateMany = (multi) => Array.isArray(multi) ? multi.map((poly) => rotatePolyOrContour(poly)) : multi;
       pl.alignedContour = rotateOne(pl.alignedContour);
       pl.inZoneContour = rotateOne(pl.inZoneContour);
       pl.alignedCoreContour = rotateOne(pl.alignedCoreContour);
@@ -2851,7 +3246,7 @@ function renderSplitEvents(events) {
       if (!isManualInventoryMode()) return;
       const placements = Array.isArray(state.layoutRun.placements) ? state.layoutRun.placements.slice() : [];
       if (!placements.length) return;
-      removeInventoryManualPlacementByIndex(placements.length - 1, "РїРѕСЃР»РµРґРЅРёР№ РєСѓСЃРѕРє СѓРґР°Р»РµРЅ (Undo)");
+      removeInventoryManualPlacementByIndex(placements.length - 1, "последний кусок удален (Undo)");
     }
 
     function buildManualTraySections(items) {
@@ -3035,6 +3430,70 @@ function renderSplitEvents(events) {
       const selectedInfoLine = selectedPlacement
         ? `Выбран: ${String(selectedPlacement.inventoryTag || selectedPlacement.scrapPieceId || `#${selectedPlacementIndex + 1}`)} | угол=${Number(selectedPlacement.alignRotationDeg || 0).toFixed(1)}° | слой=${selectedPlacementIndex + 1}/${placements.length}`
         : "Выбран: нет";
+      const seamDbg = state.layoutRun && state.layoutRun.manual && state.layoutRun.manual.lastSeamDebug
+        ? state.layoutRun.manual.lastSeamDebug
+        : null;
+      const seamRejectSummary = (() => {
+        const rej = seamDbg && seamDbg.rejectReasons && typeof seamDbg.rejectReasons === "object"
+          ? seamDbg.rejectReasons
+          : null;
+        if (!rej) return "";
+        const order = ["same_owner", "disjoint", "point_touch_only", "shared_border_too_short", "not_collinear"];
+        const parts = [];
+        for (const key of order) {
+          const count = Number(rej[key] || 0);
+          if (count > 0) parts.push(`${key}=${count}`);
+        }
+        return parts.length ? ` | reject=${parts.join(",")}` : "";
+      })();
+      const seamDebugLine = seamDbg
+        ? `Швы: built=${Number(seamDbg.seamsCount || 0)} | rendered=${Number(seamDbg.renderedSeams || 0)} | seamContours=${Number(seamDbg.seamContoursCount || 0)} | frags=${Number(seamDbg.fragmentsCount || 0)} | pairs=${Number(seamDbg.candidatePairs || 0)} | source=${String(seamDbg.source || "unknown")} | layer=${(state.layers && state.layers.visibleCore) ? "on" : "off"}${seamRejectSummary}${(Number(seamDbg.fragmentsCount||0)<2 || Number(seamDbg.candidatePairs||0)<1) ? " | no_seams_reason=not_enough_fragments_or_pairs" : ""}`
+        : "";
+      const seamFlowSummary = (() => {
+        const s = seamDbg && seamDbg.fragmentFlowSummary && typeof seamDbg.fragmentFlowSummary === "object"
+          ? seamDbg.fragmentFlowSummary
+          : null;
+        if (!s) return "";
+        const reasonsObj = s.byReason && typeof s.byReason === "object" ? s.byReason : {};
+        const reasonKeys = Object.keys(reasonsObj).filter((k) => Number(reasonsObj[k] || 0) > 0).sort();
+        const reasons = reasonKeys.map((k) => `${k}=${Number(reasonsObj[k] || 0)}`).join(",");
+        return `coreFlow: items=${Number(s.items || 0)} | zeroVisible=${Number(s.zeroVisible || 0)}${reasons ? ` | reasons=${reasons}` : ""}`;
+      })();
+      const seamExcludedSummary = (() => {
+        const diagnostics = state.layoutRun && state.layoutRun.manual && state.layoutRun.manual.lastRecomputeDiagnostics
+          ? state.layoutRun.manual.lastRecomputeDiagnostics
+          : null;
+        const placementsAll = Array.isArray(state.layoutRun && state.layoutRun.placements) ? state.layoutRun.placements : [];
+        const flow = diagnostics && Array.isArray(diagnostics.seamFragmentFlow) ? diagnostics.seamFragmentFlow : [];
+        if (!placementsAll.length) return "";
+        const excluded = [];
+        const flowByKey = new Map();
+        for (const it of flow) {
+          const key = `${String(it && it.pieceId || "")}|${String(it && it.inventoryTag || "")}|${Number(it && it.placementIndex || -1)}`;
+          flowByKey.set(key, it);
+        }
+        for (let i = 0; i < placementsAll.length; i += 1) {
+          const p = placementsAll[i] || {};
+          const key = `${String(p.scrapPieceId || "")}|${String(p.inventoryTag || "")}|${i}`;
+          const tag = String(p.inventoryTag || p.scrapPieceId || `#${i + 1}`);
+          const st = String(p.status || "");
+          const flowRec = flowByKey.get(key) || null;
+          if (st !== "matched") {
+            excluded.push(`${tag}:status=${st || "unknown"}`);
+            continue;
+          }
+          if (!flowRec) {
+            excluded.push(`${tag}:missing_in_core_flow`);
+            continue;
+          }
+          const added = Number(flowRec.fragmentsAdded || 0);
+          const reason = String(flowRec.droppedReason || "");
+          if (added <= 0) {
+            excluded.push(`${tag}:${reason || "no_fragment_after_cleanup_or_thresholds"}`);
+          }
+        }
+        return excluded.length ? `excluded(${excluded.length}): ${excluded.join(" | ")}` : "";
+      })();
       const trayOpen = (state.layoutRun.manual.trayOpen && typeof state.layoutRun.manual.trayOpen === "object")
         ? state.layoutRun.manual.trayOpen
         : { large: false, medium: false, small: false };
@@ -3046,6 +3505,9 @@ function renderSplitEvents(events) {
           selectedTag,
           metricsLine,
           selectedInfoLine,
+          seamDebugLine,
+          seamFlowSummary,
+          seamExcludedSummary,
           rotateStepDeg: Math.max(1, Math.round(Number((state.layoutRun && state.layoutRun.manual && state.layoutRun.manual.rotateStepDeg) || 5))),
           getThumbSvg: (c, sectionKey) => getManualTrayThumbSvg(c, sectionScaleMm[String(sectionKey || "")] || 0),
           formatSectionRangeCm: (kind, sectionsInput) => formatSectionRangeCm(kind, sectionsInput),
@@ -3327,7 +3789,7 @@ function renderSplitEvents(events) {
         btn.classList.toggle("active", panel === state.uiPanel);
       });
       const title = byId("rightTabsTitle");
-      if (title) title.textContent = state.uiPanel === "layouts" ? "" : "Р”РµС‚Р°Р»Рё / Р—РѕРЅС‹";
+      if (title) title.textContent = state.uiPanel === "layouts" ? "" : "Детали / Зоны";
     }
 
     function openInventoryStep1() {
@@ -3376,8 +3838,7 @@ function renderSplitEvents(events) {
         inventoryProgressController.setHadEvent(false);
       }
       updateInventoryProgressKpis({});
-      const liveEl = byId("inventoryProgressLive");
-      if (liveEl) liveEl.textContent = "live: waiting...";
+      setInventoryProgressStatus("Ожидание телеметрии…");
       inventoryProgressStartedAt = Date.now();
       updateInventoryProgressTimer();
       if (inventoryProgressTimerId) clearInterval(inventoryProgressTimerId);
@@ -3393,8 +3854,7 @@ function renderSplitEvents(events) {
       }
       if (inventoryProgressView && typeof inventoryProgressView.resetSteps === "function") inventoryProgressView.resetSteps();
       inventoryProgressStartedAt = 0;
-      const liveEl = byId("inventoryProgressLive");
-      if (liveEl) liveEl.textContent = "live: waiting...";
+      setInventoryProgressStatus("Ожидание телеметрии…");
     }
     function openInventoryStep2() {
       byId("inventoryStep2Backdrop").style.display = "flex";
@@ -3419,7 +3879,7 @@ function renderSplitEvents(events) {
       const intarsiaStart = state.layoutMode === "intarsia" && !intarsiaAssignOnly;
       if (!intarsiaStart) closeInventoryStep1();
       resetInventoryProgressMonotonic();
-      setInventoryProgress(0, t("progress_prepare", null, "РџРѕРґРіРѕС‚РѕРІРєР° СЂР°СЃС‡РµС‚Р°"), { allowDecrease: true });
+      setInventoryProgress(0, t("progress_prepare", null, "Подготовка расчета"), { allowDecrease: true });
       showInventoryProgress();
       try {
         const zone = state.zones.find((z) => Number(z && z.id) === Number(state.selectedZoneId));
@@ -3464,7 +3924,7 @@ function renderSplitEvents(events) {
             [],
             (msg) => {
               const pct = Math.min(35, Number(msg.progressPercent || 0) * 0.35);
-              const title = String(msg.phase || "РџРѕРґРіРѕС‚РѕРІРєР°");
+              const title = String(msg.phase || "Подготовка");
               setInventoryProgress(pct, `Worker: ${title}`);
             }
           );
@@ -3625,7 +4085,7 @@ function renderSplitEvents(events) {
             selectedCandidateTag: "",
             activePiece: null,
             lastEvalContours: null,
-            statusNote: "РЅРµС‚ Р°РєС‚РёРІРЅРѕРіРѕ",
+            statusNote: "нет активного",
             selectedPlacementIndex: -1
           };
           byId("invTotalFragments").textContent = "0";
@@ -3658,7 +4118,7 @@ function renderSplitEvents(events) {
           renderInventoryManualPanel();
           openInventoryStep2();
           if (isStaleRun()) return;
-          setInventoryProgress(100, "Р СѓС‡РЅРѕР№ СЂРµР¶РёРј / РіРѕС‚РѕРІРѕ");
+          setInventoryProgress(100, "Ручной режим / готово");
             addInventoryProgressNote(t("note_worker_raster_init", null, "Worker: raster initialization."));
           hideInventoryProgress();
           renderScene();
@@ -4081,7 +4541,7 @@ function renderSplitEvents(events) {
         }
         renderPlacementRows(state.layoutRun.placements);
         renderSplitEvents(state.layoutRun.splitEvents);
-        byId("workspaceInfo").textContent = `РљР°РЅРґРёРґР°С‚С‹: ${Number(candidatesRes.matchedCandidates || 0)}, С„СЂР°РіРјРµРЅС‚С‹: ${state.layoutRun.fragments.length}, seed=${state.layoutRun.lastSeed}`;
+        byId("workspaceInfo").textContent = `Кандидаты: ${Number(candidatesRes.matchedCandidates || 0)}, фрагменты: ${state.layoutRun.fragments.length}, seed=${state.layoutRun.lastSeed}`;
         const canApply = !(
           (state.layoutMode === "inventory" || state.layoutMode === "inventory_split_return") &&
           inventoryScenario === "A" &&
@@ -4109,7 +4569,7 @@ function renderSplitEvents(events) {
         stopServerPreviewProgressTicker();
         closeInventoryProgressStream();
         const msg = err && err.message ? err.message : String(err);
-        byId("workspaceInfo").textContent = `РћС€РёР±РєР° РїРѕРґР±РѕСЂР°: ${msg}`;
+        byId("workspaceInfo").textContent = `Ошибка подбора: ${msg}`;
         byId("invTotalFragments").textContent = "0";
         byId("invViolations").textContent = "0";
         byId("invIntersections").textContent = "0";
@@ -4135,14 +4595,13 @@ function renderSplitEvents(events) {
         byId("invRejectedOutside").textContent = "0";
         if (inventoryProgressView && typeof inventoryProgressView.resetKpis === "function") inventoryProgressView.resetKpis();
         updateInventoryProgressKpis({});
-        const liveEl = byId("inventoryProgressLive");
-        if (liveEl) liveEl.textContent = `live: error: ${msg}`;
+        setInventoryProgressStatus(`Ошибка: ${msg}`);
           byId("invUsedTags").textContent = `(${t("no_data", null, "none")})`;
-        byId("invDebugInfo").textContent = `РћС€РёР±РєР°: ${msg}`;
+        byId("invDebugInfo").textContent = `Ошибка: ${msg}`;
         const applyBtn = byId("inventoryStep2ApplyBtn");
         if (applyBtn) {
           applyBtn.disabled = true;
-          applyBtn.title = "РќРµР»СЊР·СЏ РїСЂРёРјРµРЅРёС‚СЊ РёР·-Р·Р° РѕС€РёР±РєРё РїРѕРґР±РѕСЂР°";
+          applyBtn.title = "Нельзя применить из-за ошибки подбора";
         }
         state.layoutRun.placements = [];
         state.layoutRun.topChoicesByFragment = {};
@@ -4186,11 +4645,11 @@ function renderSplitEvents(events) {
           ? t("layer_working_areas_label", null, "Рабочие области")
           : t("layer_fragments_label", null, "Фрагменты");
       }
-      if (pieceLabel) pieceLabel.textContent = `${t("layer_pieces_label", null, "РџРѕРґРѕР±СЂР°РЅРЅС‹Рµ РєСѓСЃРєРё")} (${matchedPiecesCount})`;
+      if (pieceLabel) pieceLabel.textContent = `${t("layer_pieces_label", null, "Подобранные куски")} (${matchedPiecesCount})`;
       if (pieceToggle) {
         pieceToggle.title = matchedPiecesCount > 0
           ? ""
-          : t("layer_no_matched_pieces", null, "Р’ С‚РµРєСѓС‰РµРј СЂРµР·СѓР»СЊС‚Р°С‚Рµ РЅРµС‚ matched РєСѓСЃРєРѕРІ");
+          : t("layer_no_matched_pieces", null, "В текущем результате нет подобранных кусков");
       }
     }
 
@@ -4273,7 +4732,7 @@ function renderSplitEvents(events) {
       const renderEntities = getRenderablePatternEntities();
       state.renderEntities = renderEntities;
       // Recompute detail list only when we truly have renderable geometry.
-      // This prevents accidental tree reset to "РќРµС‚ РґРµС‚Р°Р»РµР№" on transient renders.
+      // This prevents accidental tree reset to "Нет деталей" on transient renders.
       if (Array.isArray(renderEntities) && renderEntities.length > 0) {
         const candNames = state.patternGeometry && state.patternGeometry.meta && Array.isArray(state.patternGeometry.meta.patternNames)
           ? state.patternGeometry.meta.patternNames
@@ -4288,7 +4747,7 @@ function renderSplitEvents(events) {
         for (const z of state.zones) {
           const did = Number(z && z.detailId || 0);
           if (!did || byId.has(did)) continue;
-          byId.set(did, { id: did, name: `Р”РµС‚Р°Р»СЊ ${did}`, bbox: null, area: 0, points: 0, entity: null });
+          byId.set(did, { id: did, name: `Деталь ${did}`, bbox: null, area: 0, points: 0, entity: null });
         }
         state.details = Array.from(byId.values()).sort((a, b) => a.id - b.id);
         if (!state.details.some((d) => d.id === state.selectedDetailId)) {
@@ -4351,6 +4810,7 @@ function renderSplitEvents(events) {
 
       const activeLayoutZoneId = Number(state.layoutRun && state.layoutRun.selectedZoneId || 0);
       const hasActiveLayoutOnZone = !!(state.layoutRun.active && activeLayoutZoneId > 0);
+      let deferredManualSeamSegments = [];
 
       if (hasActiveLayoutOnZone) {
         let selectedFragObj = null;
@@ -4532,25 +4992,12 @@ function renderSplitEvents(events) {
           }
         }
         if (state.layers.visibleCore) {
-          const manualApplied = isManualInventoryMode() && String(state.layoutRun && state.layoutRun.status || "") === "applied";
-          if (manualApplied) {
+          const manualMode = isManualInventoryMode();
+          if (manualMode) {
             const seamSegments = state.layoutRun && state.layoutRun.previewLayers && Array.isArray(state.layoutRun.previewLayers.seams)
               ? state.layoutRun.previewLayers.seams
               : [];
-            for (const seam of seamSegments) {
-              const pts = Array.isArray(seam && seam.points) ? seam.points : [];
-              if (pts.length < 2) continue;
-              layerPreview.add(new Konva.Line({
-                points: linePoints(pts),
-                stroke: ENGINEERING_STYLES.seams.stroke,
-                strokeWidth: Math.max(2, Number(ENGINEERING_STYLES.seams.strokeWidth || 1.5)),
-                dash: ENGINEERING_STYLES.seams.dash,
-                lineCap: "round",
-                lineJoin: "round",
-                fill: "rgba(0,0,0,0)",
-                closed: false
-              }));
-            }
+            deferredManualSeamSegments = Array.isArray(seamSegments) ? seamSegments : [];
           } else if (!isManualInventoryMode()) {
             const pc = (typeof window !== "undefined" && window.polygonClipping) ? window.polygonClipping : null;
             if (pc && typeof pc.union === "function" && typeof pc.difference === "function") {
@@ -4667,7 +5114,7 @@ function renderSplitEvents(events) {
             layerPreview.add(new Konva.Text({
               x: cs.x + 6,
               y: cs.y + 6,
-              text: String(ap.inventoryTag || "СЂСѓС‡РЅРѕР№ РєСѓСЃРѕРє"),
+              text: String(ap.inventoryTag || "ручной кусок"),
               fontSize: 12,
               fill: "#0b63ce",
               listening: false
@@ -4806,6 +5253,35 @@ function renderSplitEvents(events) {
             const c = centroid(z.points);
             drawNapArrow(layerZones, c, getZoneNapDirectionDeg(z), selected ? 34 : 24);
           }
+        }
+      }
+
+      let renderedManualSeams = 0;
+      if (state.layers.visibleCore && isManualInventoryMode() && Array.isArray(deferredManualSeamSegments) && deferredManualSeamSegments.length) {
+        for (const seam of deferredManualSeamSegments) {
+          const pts = Array.isArray(seam && seam.points) ? seam.points : [];
+          if (pts.length < 2) continue;
+          layerSelection.add(new Konva.Line({
+            points: linePoints(pts),
+            stroke: ENGINEERING_STYLES.seams.stroke,
+            strokeWidth: Math.max(2, Number(ENGINEERING_STYLES.seams.strokeWidth || 1.5)),
+            dash: ENGINEERING_STYLES.seams.dash,
+            lineCap: "round",
+            lineJoin: "round",
+            fill: "rgba(0,0,0,0)",
+            closed: false,
+            listening: false
+          }));
+          renderedManualSeams += 1;
+        }
+      }
+      if (isManualInventoryMode()) {
+        const manualDbg = state.layoutRun && state.layoutRun.manual && state.layoutRun.manual.lastSeamDebug
+          ? state.layoutRun.manual.lastSeamDebug
+          : null;
+        if (manualDbg) {
+          manualDbg.layerEnabled = !!(state.layers && state.layers.visibleCore);
+          manualDbg.renderedSeams = renderedManualSeams;
         }
       }
 
@@ -5087,7 +5563,7 @@ function refreshSelectionInfo() {
       const zoneId = state.nextZoneId++;
       const zone = {
         id: zoneId,
-        name: `Р—РѕРЅР° ${zoneId}`,
+        name: `Зона ${zoneId}`,
         detailId: state.selectedDetailId || null,
         napDirectionDeg: DEFAULT_NAP_DIRECTION_DEG,
         points: state.draftZone.map((p) => ({ ...p }))
@@ -5173,7 +5649,7 @@ function refreshSelectionInfo() {
           const selIdx = Number(manual && manual.selectedPlacementIndex);
           if (Number.isFinite(selIdx) && selIdx >= 0) {
             e.preventDefault();
-            removeInventoryManualPlacementByIndex(selIdx, "РєСѓСЃРѕРє СѓРґР°Р»РµРЅ");
+            removeInventoryManualPlacementByIndex(selIdx, "кусок удален");
             return;
           }
         }
@@ -5271,5 +5747,7 @@ function refreshSelectionInfo() {
     syncFillTypeUi();
     byId("importMode").onchange = syncImportModeUi;
     syncImportModeUi();
+    refreshBuildTag();
     renderScene();
     updateModeUi();
+
