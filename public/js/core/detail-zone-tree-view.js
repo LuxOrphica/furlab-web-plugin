@@ -37,7 +37,7 @@
       btn.type = "button";
       btn.className = "tree-toggle-btn";
       btn.title = collapsed ? expandTitle : collapseTitle;
-      btn.textContent = collapsed ? "в–ё" : "в–ѕ";
+      btn.textContent = collapsed ? "▸" : "▾";
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
         onToggle();
@@ -57,7 +57,7 @@
         addWrap.style.marginBottom = "8px";
 
         const addBtn = document.createElement("button");
-        addBtn.textContent = "+ Р”РѕР±Р°РІРёС‚СЊ РІС‹РєР»Р°РґРєСѓ";
+        addBtn.textContent = "+ Добавить выкладку";
         addBtn.addEventListener("click", () => {
           openLayoutTypePicker();
         });
@@ -67,7 +67,7 @@
         if (!state.layouts.length) {
           const empty = document.createElement("div");
           empty.className = "tree-empty";
-          empty.textContent = "РџРѕРєР° РЅРµС‚ РІС‹РєР»Р°РґРѕРє. РќР°Р¶РјРёС‚Рµ '+ Р”РѕР±Р°РІРёС‚СЊ РІС‹РєР»Р°РґРєСѓ'.";
+          empty.textContent = "Пока нет выкладок. Нажмите '+ Добавить выкладку'.";
           treeRoot.appendChild(empty);
           return;
         }
@@ -159,7 +159,7 @@
       if (!Array.isArray(state.details) || state.details.length === 0) {
         const empty = document.createElement("div");
         empty.className = "tree-empty";
-        empty.textContent = "РќРµС‚ РґРµС‚Р°Р»РµР№";
+        empty.textContent = "Нет деталей";
         treeRoot.appendChild(empty);
         return;
       }
@@ -177,8 +177,8 @@
 
         const detailToggle = makeToggleButton(
           detailCollapsed,
-          "Р Р°Р·РІРµСЂРЅСѓС‚СЊ РґРµС‚Р°Р»СЊ",
-          "РЎРІРµСЂРЅСѓС‚СЊ РґРµС‚Р°Р»СЊ",
+          "Развернуть деталь",
+          "Свернуть деталь",
           () => {
             treeUi.detailsCollapsed[detailKey] = !detailCollapsed;
             renderDetailZoneTree();
@@ -188,7 +188,7 @@
 
         const detailName = document.createElement("span");
         detailName.className = "tree-detail-title";
-        detailName.textContent = `Р”РµС‚Р°Р»СЊ ${detailId}`;
+        detailName.textContent = `Деталь ${detailId}`;
         detailHead.appendChild(detailName);
 
         detailHead.addEventListener("click", () => {
@@ -205,7 +205,7 @@
         if (zones.length === 0) {
           const zEmpty = document.createElement("div");
           zEmpty.className = "tree-empty";
-          zEmpty.textContent = "Р·РѕРЅ РЅРµС‚";
+          zEmpty.textContent = "зон нет";
           zonesWrap.appendChild(zEmpty);
         } else {
           for (const z of zones) {
@@ -221,8 +221,8 @@
 
             const zoneToggle = makeToggleButton(
               zoneCollapsed,
-              "Р Р°Р·РІРµСЂРЅСѓС‚СЊ Р·РѕРЅСѓ",
-              "РЎРІРµСЂРЅСѓС‚СЊ Р·РѕРЅСѓ",
+                "Развернуть зону",
+                "Свернуть зону",
               () => {
                 treeUi.zonesCollapsed[zoneKey] = !zoneCollapsed;
                 renderDetailZoneTree();
@@ -236,7 +236,7 @@
             zthumb.innerHTML = contourThumbSvg(z.points || [], true);
 
             const zname = document.createElement("div");
-            zname.textContent = z.name || `Р—РѕРЅР° ${zoneId}`;
+            zname.textContent = z.name || `Зона ${zoneId}`;
 
             zrow.appendChild(zthumb);
             zrow.appendChild(zname);
@@ -314,7 +314,7 @@
               if (!frags.length) {
                 const emptyFrag = document.createElement("div");
                 emptyFrag.className = "tree-empty";
-                emptyFrag.textContent = "С„СЂР°РіРјРµРЅС‚РѕРІ РЅРµС‚";
+                emptyFrag.textContent = "фрагментов нет";
                 frWrap.appendChild(emptyFrag);
               }
 

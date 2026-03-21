@@ -1,4 +1,4 @@
-// In FurLab, default grain/nap direction in 2D is vertical down.
+﻿// In FurLab, default grain/nap direction in 2D is vertical down.
     const DEFAULT_NAP_DIRECTION_DEG = 90;
     const INVENTORY_OPTIMIZATION_DEFAULT = "sew_quality_economy";
     const INVENTORY_OPTIMIZATION_PROFILE = {
@@ -130,6 +130,120 @@
       el.style.display = text ? "block" : "none";
     }
     function safeText(v) { return v === null || v === undefined ? "" : String(v); }
+    function escapeHtml(v) {
+      return String(v === null || v === undefined ? "" : v)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+    function canOpenReports() {
+      const isApplied = String(state && state.layoutRun && state.layoutRun.status || "") === "applied";
+      if (!isApplied) return false;
+      const frags = Array.isArray(state && state.layoutRun && state.layoutRun.fragments) ? state.layoutRun.fragments : [];
+      const placements = Array.isArray(state && state.layoutRun && state.layoutRun.placements) ? state.layoutRun.placements : [];
+      return frags.length > 0 || placements.length > 0;
+    }
+    function escapeCsv(value) {
+      const s = String(value === null || value === undefined ? "" : value);
+      if (/[",;\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    }
+    function buildReportsRows() {
+      const placements = Array.isArray(state && state.layoutRun && state.layoutRun.placements) ? state.layoutRun.placements : [];
+      if (!placements.length) return [];
+      const zoneId = Number(state && state.layoutRun && state.layoutRun.selectedZoneId || state.selectedZoneId || 0);
+      return placements.map((p, idx) => {
+        const fragId = Number(p && p.fragmentId || 0);
+        const area = Number(
+          (p && p.gainAreaMm2) ||
+          (p && p.inZoneAreaMm2) ||
+          (p && p.areaInZoneMm2) ||
+          0
+        );
+        const napDeg = Number.isFinite(Number(p && p.napEffectiveDeg))
+          ? Number(p.napEffectiveDeg)
+          : (Number.isFinite(Number(p && p.napDirectionDeg)) ? Number(p.napDirectionDeg) : DEFAULT_NAP_DIRECTION_DEG);
+        return {
+          index: idx + 1,
+          fragment: fragId > 0 ? `${zoneId || "-"}-${fragId}` : `${zoneId || "-"}-${idx + 1}`,
+          inventoryTag: String((p && (p.inventoryTag || p.candidateTag || p.scrapPieceId || p.id)) || "-"),
+          nap: `${Math.round(((napDeg % 360) + 360) % 360)}°`,
+          areaMm2: area,
+          status: String((p && p.status) || "applied")
+        };
+      });
+    }
+    function updateReportsButtonState() {
+      const btn = byId("reportsBtn");
+      if (!btn) return;
+      const enabled = canOpenReports();
+      btn.disabled = !enabled;
+      btn.title = enabled ? "" : "Отчёты доступны после Применить";
+    }
+    function closeReportsModal() {
+      const backdrop = byId("reportsBackdrop");
+      if (backdrop) backdrop.style.display = "none";
+    }
+    function openReportsModal() {
+      if (!canOpenReports()) {
+        const workspaceInfo = byId("workspaceInfo");
+        if (workspaceInfo) workspaceInfo.textContent = "Отчёты доступны только после Применить.";
+        return;
+      }
+      const rows = buildReportsRows();
+      const summary = byId("reportsSummary");
+      const body = byId("reportsTableBody");
+      if (body) body.innerHTML = "";
+      let totalArea = 0;
+      for (const r of rows) totalArea += Number(r.areaMm2 || 0);
+      if (summary) {
+        const zoneId = Number(state && state.layoutRun && state.layoutRun.selectedZoneId || state.selectedZoneId || 0);
+        summary.textContent = `Зона: ${zoneId || "-"} | Кусков: ${rows.length} | Полезная площадь: ${totalArea.toFixed(1)} мм²`;
+      }
+      if (body) {
+        for (const r of rows) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = [
+            `<td>${r.index}</td>`,
+            `<td>${escapeHtml(r.fragment)}</td>`,
+            `<td>${escapeHtml(r.inventoryTag)}</td>`,
+            `<td>${escapeHtml(r.nap)}</td>`,
+            `<td>${Number(r.areaMm2 || 0).toFixed(1)}</td>`,
+            `<td>${escapeHtml(r.status)}</td>`
+          ].join("");
+          body.appendChild(tr);
+        }
+      }
+      const backdrop = byId("reportsBackdrop");
+      if (backdrop) backdrop.style.display = "flex";
+      const exportBtn = byId("reportsExportCsvBtn");
+      if (exportBtn) {
+        exportBtn.onclick = () => {
+          const lines = [
+            "Index;Fragment;InventoryTag;Nap;AreaMm2;Status",
+            ...rows.map((r) => [
+              escapeCsv(r.index),
+              escapeCsv(r.fragment),
+              escapeCsv(r.inventoryTag),
+              escapeCsv(r.nap),
+              escapeCsv(Number(r.areaMm2 || 0).toFixed(1)),
+              escapeCsv(r.status)
+            ].join(";"))
+          ];
+          const blob = new Blob([`\uFEFF${lines.join("\n")}`], { type: "text/csv;charset=utf-8;" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `furlab_report_${Date.now()}.csv`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        };
+      }
+    }
     function findPlacementForFragment(fragmentOrId) {
       const placements = Array.isArray(state.layoutRun.placements) ? state.layoutRun.placements : [];
       const frag = (fragmentOrId && typeof fragmentOrId === "object")
@@ -360,7 +474,7 @@
       if (!el) return;
       const raw = String(text || "").trim();
       if (!raw) {
-        el.textContent = "Ожидание телеметрии…";
+        el.textContent = "Ожидание телеметрии...";
         return;
       }
       el.textContent = raw.replace(/\s*\n+\s*/g, " | ");
@@ -372,7 +486,7 @@
       const stamp = new Date().toLocaleTimeString();
       inventoryLiveHistory.push(`[${stamp}] ${msg}`);
       if (inventoryLiveHistory.length > 12) inventoryLiveHistory = inventoryLiveHistory.slice(-12);
-      const tail = inventoryLiveHistory.slice(-2).join(" · ");
+      const tail = inventoryLiveHistory.slice(-2).join(" В· ");
       setInventoryProgressStatus(`${t("checkpoints_title", null, "Checkpoints")}: ${tail}`);
     }
 
@@ -2612,8 +2726,9 @@ function renderSplitEvents(events) {
       renderPlacementRows(state.layoutRun.placements || []);
       renderInventoryManualPanel();
       renderScene();
+      void requestManualRecomputeFromUi();
       // Important: when adding directly from tray, compute Pfull/Pcore metrics immediately,
-      // otherwise "Шовные припуски" has no geometry to render for this placement.
+      // otherwise "Припуск куска" has no geometry to render for this placement.
       const coveredBefore = getManualCoveredContours();
       void (async () => {
         try {
@@ -2646,6 +2761,7 @@ function renderSplitEvents(events) {
           updateManualStatsFromPlacements();
           renderPlacementRows(state.layoutRun.placements || []);
           renderScene();
+          void requestManualRecomputeFromUi();
         } catch (_) {}
       })();
       return p;
@@ -3021,6 +3137,27 @@ function renderSplitEvents(events) {
       return true;
     }
 
+    async function requestManualRecomputeFromUi() {
+      if (!isManualInventoryMode()) return false;
+      state.layoutRun.manual = state.layoutRun.manual || { suggestions: [], lastMetrics: null, selectedCandidateTag: "", activePiece: null, lastEvalContours: null, statusNote: "", selectedPlacementIndex: -1 };
+      const manual = state.layoutRun.manual;
+      manual.recomputeUiQueue = Math.max(0, Number(manual.recomputeUiQueue || 0)) + 1;
+      if (manual.recomputeUiRunning) return true;
+      manual.recomputeUiRunning = true;
+      let ok = true;
+      try {
+        while (Number(manual.recomputeUiQueue || 0) > 0) {
+          manual.recomputeUiQueue = Math.max(0, Number(manual.recomputeUiQueue || 0) - 1);
+          const res = await recomputeInventoryManualVisibility();
+          if (res === false) ok = false;
+        }
+      } finally {
+        manual.recomputeUiRunning = false;
+        manual.recomputeUiQueue = 0;
+      }
+      return ok;
+    }
+
     async function applyInventoryManualNow() {
       if (!isManualInventoryMode()) return false;
       state.layoutRun.status = "applied";
@@ -3105,6 +3242,7 @@ function renderSplitEvents(events) {
       updateManualStatsFromPlacements();
       renderPlacementRows(state.layoutRun.placements || []);
       renderInventoryManualPanel();
+      await requestManualRecomputeFromUi();
     }
 
     function removeInventoryManualPlacementByIndex(index, noteText) {
@@ -3127,6 +3265,7 @@ function renderSplitEvents(events) {
       renderInventoryManualPanel();
       renderManualTrayIntoRoot();
       renderScene();
+      void requestManualRecomputeFromUi();
       return true;
     }
 
@@ -3149,6 +3288,7 @@ function renderSplitEvents(events) {
       renderPlacementRows(state.layoutRun.placements || []);
       renderInventoryManualPanel();
       renderScene();
+      void requestManualRecomputeFromUi();
       return true;
     }
 
@@ -3177,6 +3317,7 @@ function renderSplitEvents(events) {
       renderPlacementRows(state.layoutRun.placements || []);
       renderInventoryManualPanel();
       renderScene();
+      void requestManualRecomputeFromUi();
       return true;
     }
 
@@ -3239,6 +3380,7 @@ function renderSplitEvents(events) {
       renderPlacementRows(state.layoutRun.placements || []);
       renderInventoryManualPanel();
       renderScene();
+      void requestManualRecomputeFromUi();
       return true;
     }
 
@@ -3521,7 +3663,7 @@ function renderSplitEvents(events) {
           const action = String(btn.getAttribute("data-manual-toolbar") || "");
           try {
             if (action === "recompute") {
-              await recomputeInventoryManualVisibility();
+              await requestManualRecomputeFromUi();
               return;
             }
             if (action === "apply") {
@@ -3838,7 +3980,7 @@ function renderSplitEvents(events) {
         inventoryProgressController.setHadEvent(false);
       }
       updateInventoryProgressKpis({});
-      setInventoryProgressStatus("Ожидание телеметрии…");
+      setInventoryProgressStatus("Ожидание телеметрии...");
       inventoryProgressStartedAt = Date.now();
       updateInventoryProgressTimer();
       if (inventoryProgressTimerId) clearInterval(inventoryProgressTimerId);
@@ -3854,7 +3996,7 @@ function renderSplitEvents(events) {
       }
       if (inventoryProgressView && typeof inventoryProgressView.resetSteps === "function") inventoryProgressView.resetSteps();
       inventoryProgressStartedAt = 0;
-      setInventoryProgressStatus("Ожидание телеметрии…");
+      setInventoryProgressStatus("Ожидание телеметрии...");
     }
     function openInventoryStep2() {
       byId("inventoryStep2Backdrop").style.display = "flex";
@@ -4871,10 +5013,8 @@ function renderSplitEvents(events) {
           let contours = manualWholePieceMode
             ? toContours(pl.alignedContour, null)
             : toContours(pl.inZoneContour, pl.inZoneContours);
-          let coreContours = manualWholePieceMode
-            ? toContours(pl.alignedCoreContour, pl.alignedCoreContours)
-            : toContours(pl.alignedCoreContour, pl.alignedCoreContours);
-          if (!manualWholePieceMode && !coreContours.length) {
+          let coreContours = toContours(pl.alignedCoreContour, pl.alignedCoreContours);
+          if (!coreContours.length) {
             coreContours = toContours(pl.inZoneCoreContour, pl.inZoneCoreContours);
           }
           let usedVisibleContours = toContours(pl.usedVisibleContour, pl.usedVisibleContours);
@@ -5304,6 +5444,7 @@ function renderSplitEvents(events) {
       }
 
       layerGuides.draw(); layerPattern.draw(); layerFragments.draw(); layerVisibleArea.draw(); layerPreview.draw(); layerZones.draw(); layerSelection.draw();
+      updateReportsButtonState();
 
       const entities = state.patternGeometry ? Number(state.patternGeometry.entityCount || 0) : 0;
       const shown = renderEntities.length;
@@ -5592,7 +5733,7 @@ function refreshSelectionInfo() {
         buildOracleCaseFromCurrentPreview: () => buildOracleCaseFromCurrentPreview(),
         downloadJsonFile: (fileName, obj) => downloadJsonFile(fileName, obj),
         requestInventoryManualSuggestions: () => requestInventoryManualSuggestions(),
-        recomputeInventoryManualVisibility: () => recomputeInventoryManualVisibility(),
+        recomputeInventoryManualVisibility: () => requestManualRecomputeFromUi(),
         undoInventoryManualPlacement: () => undoInventoryManualPlacement(),
         closeReplaceCandidateModal: () => closeReplaceCandidateModal(),
         closeLayoutTypePicker: () => closeLayoutTypePicker(),
@@ -5608,8 +5749,27 @@ function refreshSelectionInfo() {
     if (uiBindings && typeof uiBindings.bindMainControls === "function") {
       uiBindings.bindMainControls();
     }
+    const reportsBtn = byId("reportsBtn");
+    if (reportsBtn) reportsBtn.onclick = () => openReportsModal();
+    const reportsCloseBtn = byId("reportsCloseBtn");
+    if (reportsCloseBtn) reportsCloseBtn.onclick = () => closeReportsModal();
+    const reportsCloseFooterBtn = byId("reportsCloseFooterBtn");
+    if (reportsCloseFooterBtn) reportsCloseFooterBtn.onclick = () => closeReportsModal();
+    const reportsBackdrop = byId("reportsBackdrop");
+    if (reportsBackdrop) {
+      reportsBackdrop.addEventListener("click", (e) => {
+        if (e.target === reportsBackdrop) closeReportsModal();
+      });
+    }
 
     window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        const reportsBackdrop = byId("reportsBackdrop");
+        if (reportsBackdrop && reportsBackdrop.style.display === "flex") {
+          closeReportsModal();
+          return;
+        }
+      }
       const target = e.target;
       const tag = target && target.tagName ? String(target.tagName).toUpperCase() : "";
       const isTyping = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || !!(target && target.isContentEditable);
@@ -5623,7 +5783,7 @@ function refreshSelectionInfo() {
         }
         if (ctrlOrMeta && String(e.key || "").toLowerCase() === "e") {
           e.preventDefault();
-          void recomputeInventoryManualVisibility();
+          void requestManualRecomputeFromUi();
           return;
         }
         if (ctrlOrMeta && e.code === "BracketRight") {
@@ -5692,7 +5852,7 @@ function refreshSelectionInfo() {
         findDetailAt: (worldPoint, thresholdPx) => findDetailAt(worldPoint, thresholdPx),
         findVertexAt: (worldPoint) => findVertexAt(worldPoint),
         pushCommand: (cmd) => pushCommand(cmd),
-        recomputeInventoryManualVisibility: () => recomputeInventoryManualVisibility(),
+        recomputeInventoryManualVisibility: () => requestManualRecomputeFromUi(),
         byId,
         getCanvasHeight: () => H
       })
