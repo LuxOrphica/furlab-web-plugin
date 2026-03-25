@@ -646,11 +646,14 @@ function buildVisibleMosaicModel(placements, zonePoints, options) {
       }
       fragments.push({
         id: nextFragId++,
-        points: cleanPts,
-        // Keep pre-clean boundary for seam extraction: visual cleaning can
-        // slightly shift/simplify edges and hide valid shared borders.
+        // Canonical fragment geometry must stay identical to the boolean
+        // result so adjacent fragments continue to share the same border.
+        // We still run cleanClosedPolygon above as a validity filter, but we
+        // no longer replace the render geometry with the cleaned contour.
+        points: pts,
         seamPoints: pts,
-        areaMm2: Math.round(cleanAreaMm2 * 1000) / 1000,
+        cleanPoints: cleanPts,
+        areaMm2: Math.round(areaMm2 * 1000) / 1000,
         ownerPlacementId,
         ownerPlacementIndex: item.placementIndex,
         scrapPieceId,
