@@ -37,7 +37,7 @@
         points: Array.isArray(f && f.points) ? f.points : []
       }));
       state.layoutRun.placements = [];
-      state.layoutRun.previewLayers = { pieceIntersections: [], visibleArea: [] };
+      state.layoutRun.previewLayers = { pieceIntersections: [], visibleArea: [], coverageHoles: [] };
       state.layoutRun.stats = splitRes && splitRes.stats ? splitRes.stats : { violations: 0, intersections: 0, uncovered: 0 };
       byId("workspaceInfo").textContent = `Интарсия: фрагментов ${state.layoutRun.fragments.length} (сетка ${rows}x${cols}, зазоры ${gapX}/${gapY} мм, скругл. ${cornerRadius} мм)`;
       refreshIntarsiaDerivedFragmentLimits();

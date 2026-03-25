@@ -20,6 +20,7 @@
     const renderScene = deps && deps.renderScene;
     const openInventoryStep1 = deps && deps.openInventoryStep1;
     const renderManualTrayIntoRoot = deps && deps.renderManualTrayIntoRoot;
+    const saveLayoutEntry = deps && deps.saveLayoutEntry;
     function parseLocaleNumber(v, fallback = null) {
       if (v === null || v === undefined) return fallback;
       if (typeof v === "number") return Number.isFinite(v) ? v : fallback;
@@ -94,16 +95,18 @@
       const alignRot = selectedPlacement && Number.isFinite(Number(selectedPlacement.alignRotationDeg))
         ? `${Number(selectedPlacement.alignRotationDeg).toFixed(1)}°`
         : "-";
-      const actionTitle = state.layoutMode === "inventory_manual"
-        ? "Загрузить кандидаты из БД"
-        : (state.layoutMode === "inventory_split_return"
-          ? "Подобрать (Split & Return)"
-          : (state.layoutMode === "inventory"
-          ? "Подобрать из библиотеки"
-          : (state.layoutMode === "intarsia" ? "Сгенерировать интарсию" : "Заполнить остаток")));
       const selectedLayout = Array.isArray(state.layouts)
         ? (state.layouts.find((x) => Number(x.id) === Number(state.selectedLayoutId || 0)) || null)
         : null;
+      const currentLayoutMode = String((selectedLayout && selectedLayout.mode) || state.layoutMode || "");
+      const isManualLayoutSelected = currentLayoutMode === "inventory_manual";
+      const actionTitle = currentLayoutMode === "inventory_manual"
+        ? "Загрузить кандидаты из БД"
+        : (currentLayoutMode === "inventory_split_return"
+          ? "Подобрать (Split & Return)"
+          : (currentLayoutMode === "inventory"
+          ? "Подобрать из библиотеки"
+          : (currentLayoutMode === "intarsia" ? "Сгенерировать интарсию" : "Заполнить остаток")));
       const selectedLayoutName = selectedLayout ? String(selectedLayout.name || "") : "";
       const selectedLayoutModeTitle = getLayoutModeTitle(selectedLayout ? selectedLayout.mode : state.layoutMode);
       const zoneAreaValue = zone ? polygonArea(zone.points || []).toFixed(2) : "-";
@@ -289,7 +292,7 @@
       const loadedCandidatesCount = Array.isArray(state.layoutRun && state.layoutRun.candidatePool)
         ? state.layoutRun.candidatePool.length
         : 0;
-      const lockManualInventoryParams = !!(isManualInventoryMode() && loadedCandidatesCount > 0);
+      const lockManualInventoryParams = !!(isManualLayoutSelected && loadedCandidatesCount > 0);
       const nameInputReadonly = selectedLayout ? "" : "readonly";
       const typeValue = selectedLayout ? selectedLayoutModeTitle : "-";
 
@@ -299,7 +302,8 @@
         <div class="prop-row"><div class="prop-label">Тип</div><div>${typeValue}</div></div>
         <div style="margin:8px 0 6px; font-weight:600;">Инвентарь</div>
         <div><button id="inventoryPickBtn" style="width:100%;">${actionTitle}</button></div>
-        <div class="tree-empty" style="margin-top:6px;">${isManualInventoryMode() ? "Ручной подбор" : "Настройки подбора, preview и применение"}</div>
+        ${isManualLayoutSelected && selectedLayout ? `<div style="margin-top:6px;"><button id="manualSaveNowBtn" style="width:100%;">Сохранить сейчас</button></div>` : ""}
+        <div class="tree-empty" style="margin-top:6px;">${isManualLayoutSelected ? "" : "Настройки подбора, preview и применение"}</div>
         <div style="margin:8px 0 6px; font-weight:600;">Параметры</div>
         <div class="prop-row"><div class="prop-label">Резерв припуска, мм</div><div><input id="layoutAllowanceInput" type="number" min="0" max="200" step="0.5" style="width:100%; min-width:0; box-sizing:border-box; padding:4px 6px;" value="${Number(allowanceValue).toFixed(1)}"></div></div>
       `;
@@ -307,7 +311,21 @@
       if (btn) {
         const hasAnyZone = Array.isArray(state.zones) && state.zones.length > 0;
         btn.disabled = !hasAnyZone || lockManualInventoryParams;
-        btn.onclick = () => openInventoryStep1();
+        btn.onclick = () => openInventoryStep1(currentLayoutMode);
+      }
+      const manualSaveNowBtn = byId("manualSaveNowBtn");
+      if (manualSaveNowBtn) {
+        const hasManualPlacements = Array.isArray(state.layoutRun && state.layoutRun.placements) && state.layoutRun.placements.length > 0;
+        manualSaveNowBtn.disabled = !selectedLayout || !hasManualPlacements || typeof saveLayoutEntry !== "function";
+        manualSaveNowBtn.onclick = async () => {
+          if (!selectedLayout || typeof saveLayoutEntry !== "function") return;
+          manualSaveNowBtn.disabled = true;
+          try {
+            await saveLayoutEntry(selectedLayout);
+          } finally {
+            manualSaveNowBtn.disabled = false;
+          }
+        };
       }
       const layoutNameInput = byId("layoutNameInput");
       if (layoutNameInput) {

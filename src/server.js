@@ -2801,7 +2801,8 @@ const server = http.createServer(async (req, res) => {
         assignInventoryDirect,
         rankCandidatesForFragment,
         createGridSpec,
-        emitLayoutProgress
+        emitLayoutProgress,
+        tmpDir: TMP_DIR
       });
       if (res.writableEnded) return;
     }
@@ -2847,7 +2848,11 @@ const server = http.createServer(async (req, res) => {
 
     if (
       req.method === "GET" &&
-      (reqUrl.pathname.startsWith("/js/") || reqUrl.pathname.startsWith("/css/"))
+      (
+        reqUrl.pathname.startsWith("/js/") ||
+        reqUrl.pathname.startsWith("/css/") ||
+        reqUrl.pathname.startsWith("/assets/")
+      )
     ) {
       const rel = reqUrl.pathname.replace(/^\/+/, "");
       const full = path.resolve(PUBLIC_DIR, rel);
@@ -2862,6 +2867,11 @@ const server = http.createServer(async (req, res) => {
       if (ext === ".js") ctype = "application/javascript; charset=utf-8";
       else if (ext === ".css") ctype = "text/css; charset=utf-8";
       else if (ext === ".map") ctype = "application/json; charset=utf-8";
+      else if (ext === ".svg") ctype = "image/svg+xml";
+      else if (ext === ".png") ctype = "image/png";
+      else if (ext === ".jpg" || ext === ".jpeg") ctype = "image/jpeg";
+      else if (ext === ".gif") ctype = "image/gif";
+      else if (ext === ".webp") ctype = "image/webp";
       res.writeHead(200, { "Content-Type": ctype });
       fs.createReadStream(full).pipe(res);
       return;
@@ -2877,5 +2887,3 @@ server.listen(PORT, HOST, () => {
   console.log(`[furlab-web-plugin] http://${HOST}:${PORT}`);
   console.log(`[furlab-web-plugin] db=${DB_PATH}`);
 });
-
-

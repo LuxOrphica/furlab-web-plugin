@@ -53,6 +53,7 @@
       byId("layerPcoreZ").onchange = (e) => { state.layers.pcoreZ = !!e.target.checked; renderScene(); };
       byId("layerVisibleCore").onchange = (e) => { state.layers.visibleCore = !!e.target.checked; renderScene(); };
       byId("layerSplitLeftovers").onchange = (e) => { state.layers.splitLeftovers = !!e.target.checked; renderScene(); };
+      byId("layerCoverageHoles").onchange = (e) => { state.layers.coverageHoles = !!e.target.checked; renderScene(); };
       byId("majorContoursOnly").onchange = (e) => { state.view.majorContoursOnly = !!e.target.checked; renderScene(); };
       byId("zprjCompactView").onchange = (e) => { state.view.zprjCompactView = !!e.target.checked; renderScene(); };
       byId("partsMode").onchange = (e) => { state.view.partsMode = String(e.target.value || "main"); renderScene(); };

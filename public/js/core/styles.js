@@ -31,6 +31,7 @@
     },
     usedPart: { stroke: "#914734", strokeWidth: 1.25, fill: "rgba(145,71,52,0.10)", selectedStrokeWidth: 1.6 },
     splitLeftovers: { stroke: "rgba(247,188,162,0.85)", strokeWidth: 1.0, dash: [4, 4], fill: "rgba(247,188,162,0.10)" },
+    coverageHoles: { stroke: "#C05600", strokeWidth: 1.25, fill: "rgba(255,190,46,0.22)" },
     visibleArea: { stroke: "#FFBE2E", strokeWidth: 1.0, fill: "rgba(255,190,46,0.12)" },
     intersections: { stroke: "#D54309", strokeWidth: 1.5, fill: "rgba(213,67,9,0.18)" },
     napArrow: { stroke: "#5a5a5a", fill: "#5a5a5a", strokeWidth: 1.5 },

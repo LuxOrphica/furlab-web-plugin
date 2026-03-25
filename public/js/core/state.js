@@ -8,6 +8,7 @@
         zones: true,
         selection: true,
         guides: true,
+        coverageHoles: false,
         visibleArea: false,
         pieceIntersections: false,
         pieceBorders: true,
@@ -70,7 +71,8 @@
         stats: { violations: 0, intersections: 0, uncovered: 0 },
         previewLayers: {
           pieceIntersections: [],
-          visibleArea: []
+          visibleArea: [],
+          coverageHoles: []
         },
         topChoicesByFragment: {},
         selectedPlacementFragmentId: null,

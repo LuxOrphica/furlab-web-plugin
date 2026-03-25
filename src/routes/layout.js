@@ -1,5 +1,8 @@
 "use strict";
 
+const fs = require("fs");
+const path = require("path");
+
 const {
   pointsToMultiPolygon,
   intersectMulti,
@@ -837,6 +840,41 @@ function buildSplitReturnPreviewArtifacts(placements, visibleContours, options) 
   return { placements: placementsOut, splitEvents };
 }
 
+function ensureManualRunsStore(storePath) {
+  const dir = path.dirname(storePath);
+  fs.mkdirSync(dir, { recursive: true });
+  if (!fs.existsSync(storePath)) {
+    fs.writeFileSync(storePath, JSON.stringify({ version: 1, runs: [] }, null, 2), "utf8");
+  }
+}
+
+function readManualRunsStore(storePath) {
+  ensureManualRunsStore(storePath);
+  try {
+    const raw = fs.readFileSync(storePath, "utf8");
+    const parsed = JSON.parse(raw);
+    return {
+      version: 1,
+      runs: Array.isArray(parsed && parsed.runs) ? parsed.runs : []
+    };
+  } catch (_) {
+    return { version: 1, runs: [] };
+  }
+}
+
+function writeManualRunsStore(storePath, payload) {
+  ensureManualRunsStore(storePath);
+  const next = {
+    version: 1,
+    runs: Array.isArray(payload && payload.runs) ? payload.runs : []
+  };
+  fs.writeFileSync(storePath, JSON.stringify(next, null, 2), "utf8");
+}
+
+function makeManualRunId() {
+  return `mlr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 async function handleLayoutRoutes(req, res, reqUrl, deps) {
   const {
     jsonReply,
@@ -851,8 +889,13 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
     assignInventoryDirect,
     rankCandidatesForFragment,
     createGridSpec,
-    emitLayoutProgress
+    emitLayoutProgress,
+    tmpDir
   } = deps;
+  const manualRunsStorePath = path.join(
+    String(tmpDir || path.resolve(__dirname, "..", "..", "tmp")),
+    "manual_layout_runs.json"
+  );
   const modeRegistry = createModeRegistry({
     assignInventoryDirect,
     generateRegularFragments,
@@ -911,6 +954,94 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
     }
     const out = await mode.applyWrapper(body && typeof body === "object" ? body : {});
     return jsonReply(res, 200, out);
+  }
+
+  if (req.method === "GET" && reqUrl.pathname === "/api/layout/manual/runs") {
+    const store = readManualRunsStore(manualRunsStorePath);
+    const items = store.runs
+      .map((x) => ({
+        id: String(x && x.id || ""),
+        name: String(x && x.name || "Ручная выкладка"),
+        mode: String(x && x.mode || "inventory_manual"),
+        selectedZoneId: Number(x && x.selectedZoneId || 0) || null,
+        createdAt: Number(x && x.createdAt || 0) || null,
+        updatedAt: Number(x && x.updatedAt || 0) || null,
+        snapshot: x && x.snapshot && typeof x.snapshot === "object" ? x.snapshot : {}
+      }))
+      .filter((x) => x.id)
+      .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+    return jsonReply(res, 200, { ok: true, items });
+  }
+
+  if (req.method === "POST" && reqUrl.pathname === "/api/layout/manual/runs/save") {
+    const body = await readBodyJson(req);
+    const input = body && typeof body === "object" ? body : {};
+    const mode = String(input.mode || "inventory_manual");
+    if (mode !== "inventory_manual") return jsonReply(res, 400, { ok: false, error: "manual_mode_only" });
+    const snapshot = input.snapshot && typeof input.snapshot === "object" ? input.snapshot : null;
+    if (!snapshot) return jsonReply(res, 400, { ok: false, error: "snapshot_required" });
+
+    const now = Date.now();
+    const store = readManualRunsStore(manualRunsStorePath);
+    const runId = String(input.id || makeManualRunId());
+    const index = store.runs.findIndex((x) => String(x && x.id || "") === runId);
+    const createdAtPrev = index >= 0 ? Number(store.runs[index] && store.runs[index].createdAt || 0) : 0;
+    const item = {
+      id: runId,
+      name: String(input.name || "Ручная выкладка"),
+      mode,
+      selectedZoneId: Number(input.selectedZoneId || 0) || null,
+      createdAt: createdAtPrev > 0 ? createdAtPrev : now,
+      updatedAt: now,
+      snapshot
+    };
+    if (index >= 0) store.runs[index] = item;
+    else store.runs.push(item);
+    writeManualRunsStore(manualRunsStorePath, store);
+    return jsonReply(res, 200, {
+      ok: true,
+      item: {
+        id: item.id,
+        name: item.name,
+        mode: item.mode,
+        selectedZoneId: item.selectedZoneId,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt
+      }
+    });
+  }
+
+  if (req.method === "POST" && reqUrl.pathname === "/api/layout/manual/runs/load") {
+    const body = await readBodyJson(req);
+    const runId = String(body && body.id || "").trim();
+    if (!runId) return jsonReply(res, 400, { ok: false, error: "id_required" });
+    const store = readManualRunsStore(manualRunsStorePath);
+    const found = store.runs.find((x) => String(x && x.id || "") === runId) || null;
+    if (!found) return jsonReply(res, 404, { ok: false, error: "not_found" });
+    return jsonReply(res, 200, {
+      ok: true,
+      item: {
+        id: String(found.id || ""),
+        name: String(found.name || "Ручная выкладка"),
+        mode: String(found.mode || "inventory_manual"),
+        selectedZoneId: Number(found.selectedZoneId || 0) || null,
+        createdAt: Number(found.createdAt || 0) || null,
+        updatedAt: Number(found.updatedAt || 0) || null,
+        snapshot: found.snapshot && typeof found.snapshot === "object" ? found.snapshot : {}
+      }
+    });
+  }
+
+  if (req.method === "POST" && reqUrl.pathname === "/api/layout/manual/runs/delete") {
+    const body = await readBodyJson(req);
+    const runId = String(body && body.id || "").trim();
+    if (!runId) return jsonReply(res, 400, { ok: false, error: "id_required" });
+    const store = readManualRunsStore(manualRunsStorePath);
+    const before = store.runs.length;
+    store.runs = store.runs.filter((x) => String(x && x.id || "") !== runId);
+    if (store.runs.length === before) return jsonReply(res, 404, { ok: false, error: "not_found" });
+    writeManualRunsStore(manualRunsStorePath, store);
+    return jsonReply(res, 200, { ok: true, id: runId });
   }
 
   if (req.method === "POST" && reqUrl.pathname === "/api/layout/fill/preview") {

@@ -15,6 +15,145 @@
     const contourThumbSvg = deps && deps.contourThumbSvg;
     const fitPointsToView = deps && deps.fitPointsToView;
     const findPlacementForFragment = deps && deps.findPlacementForFragment;
+    const saveLayoutEntry = deps && deps.saveLayoutEntry;
+    const openLayoutEntry = deps && deps.openLayoutEntry;
+    const deleteLayoutEntry = deps && deps.deleteLayoutEntry;
+
+    function iconSpan(name) {
+      const map = {
+        chevronRight: "chevron_right",
+        chevronDown: "expand_more",
+        delete: "delete"
+      };
+      const glyph = map[name] || "";
+      return glyph ? `<span class="material-symbols-outlined" aria-hidden="true">${glyph}</span>` : "";
+    }
+
+    function getLayoutSnapshotForTree(entry) {
+      const e = entry && typeof entry === "object" ? entry : null;
+      if (!e) return null;
+      if (Number(state.selectedLayoutId || 0) === Number(e.id || 0) && state.layoutRun && typeof state.layoutRun === "object") {
+        return {
+          selectedZoneId: Number(e.boundZoneId || state.layoutRun.selectedZoneId || 0) || null,
+          selectedDetailId: Number(e.boundDetailId || state.selectedDetailId || 0) || null,
+          layoutRun: state.layoutRun
+        };
+      }
+      if (e.runtimeSnapshot && typeof e.runtimeSnapshot === "object" && e.runtimeSnapshot.layoutRun) {
+        return e.runtimeSnapshot;
+      }
+      return null;
+    }
+
+    function getSnapshotPlacementForFragment(snapshot, fragmentOrId) {
+      const snap = snapshot && typeof snapshot === "object" ? snapshot : null;
+      const frag = (fragmentOrId && typeof fragmentOrId === "object")
+        ? fragmentOrId
+        : (snap && snap.layoutRun && Array.isArray(snap.layoutRun.fragments)
+          ? snap.layoutRun.fragments.find((f) => Number(f && f.id || 0) === Number(fragmentOrId || 0))
+          : null);
+      if (!frag || !snap || !snap.layoutRun || !Array.isArray(snap.layoutRun.placements)) return null;
+      const placements = snap.layoutRun.placements;
+      const fragId = Number(frag && frag.id || 0);
+      const ownerPlacementId = Number(frag && frag.ownerPlacementId || 0);
+      if (ownerPlacementId) {
+        const byOwner = placements.find((p) => Number(p && p.fragmentId || 0) === ownerPlacementId);
+        if (byOwner) return byOwner;
+      }
+      return placements.find((p) => Number(p && p.fragmentId || 0) === fragId) || null;
+    }
+
+    function normalizeContourForTree(raw) {
+      if (!raw) return [];
+      const out = [];
+      const pushPoint = (x, y) => {
+        const xn = Number(x);
+        const yn = Number(y);
+        if (!Number.isFinite(xn) || !Number.isFinite(yn)) return;
+        out.push({ x: xn, y: yn });
+      };
+      const walk = (node) => {
+        if (!node) return;
+        if (Array.isArray(node)) {
+          if (node.length >= 2 && Number.isFinite(Number(node[0])) && Number.isFinite(Number(node[1]))) {
+            pushPoint(node[0], node[1]);
+            return;
+          }
+          for (const child of node) walk(child);
+          return;
+        }
+        if (typeof node === "object" && node.x !== undefined && node.y !== undefined) {
+          pushPoint(node.x, node.y);
+        }
+      };
+      walk(raw);
+      return out.length >= 3 ? out : [];
+    }
+
+    function buildFragmentsFromPlacements(snapshot, boundZoneId) {
+      const placements = Array.isArray(snapshot && snapshot.layoutRun && snapshot.layoutRun.placements)
+        ? snapshot.layoutRun.placements
+        : [];
+      let nextId = 1;
+      return placements
+        .map((p, idx) => {
+          const placementZoneId = Number(p && p.zoneId || boundZoneId || 0) || 0;
+          const pts =
+            normalizeContourForTree(p && p.inZoneCoreContour).length >= 3 ? normalizeContourForTree(p && p.inZoneCoreContour)
+            : normalizeContourForTree(p && p.inZoneContour).length >= 3 ? normalizeContourForTree(p && p.inZoneContour)
+            : normalizeContourForTree(p && p.alignedCoreContour).length >= 3 ? normalizeContourForTree(p && p.alignedCoreContour)
+            : normalizeContourForTree(p && p.alignedContour);
+          if (!Array.isArray(pts) || pts.length < 3) return null;
+          return {
+            id: Number(p && p.fragmentId || nextId++),
+            points: pts,
+            ownerPlacementIndex: idx,
+            ownerPlacementId: Number(p && p.fragmentId || 0),
+            zoneId: placementZoneId
+          };
+        })
+        .filter(Boolean);
+    }
+
+    function collectZoneFragments(zoneId) {
+      const zid = Number(zoneId || 0);
+      const out = [];
+      const layouts = Array.isArray(state.layouts) ? state.layouts : [];
+      for (const entry of layouts) {
+        const snapshot = getLayoutSnapshotForTree(entry);
+        if (!snapshot || !snapshot.layoutRun) continue;
+        const boundZoneId = Number(
+          entry && entry.boundZoneId
+          || snapshot.selectedZoneId
+          || snapshot.layoutRun.selectedZoneId
+          || 0
+        ) || 0;
+        if (boundZoneId !== zid) continue;
+        const frags = Array.isArray(snapshot.layoutRun.fragments) && snapshot.layoutRun.fragments.length > 0
+          ? snapshot.layoutRun.fragments.slice()
+          : buildFragmentsFromPlacements(snapshot, boundZoneId);
+        for (const frag of frags) {
+          const placement = getSnapshotPlacementForFragment(snapshot, frag);
+          const fragZoneId = Number(frag && frag.zoneId || placement && placement.zoneId || boundZoneId || 0) || 0;
+          if (fragZoneId !== zid) continue;
+          out.push({
+            entry,
+            snapshot,
+            fragment: frag,
+            placement
+          });
+        }
+      }
+      out.sort((a, b) => {
+        const la = String(a && a.entry && a.entry.name || "");
+        const lb = String(b && b.entry && b.entry.name || "");
+        if (la !== lb) return la.localeCompare(lb, "ru");
+        const fa = Number(a && a.fragment && a.fragment.id || 0);
+        const fb = Number(b && b.fragment && b.fragment.id || 0);
+        return fa - fb;
+      });
+      return out;
+    }
 
     function ensureTreeUiState() {
       if (!state.treeUi || typeof state.treeUi !== "object") {
@@ -37,7 +176,7 @@
       btn.type = "button";
       btn.className = "tree-toggle-btn";
       btn.title = collapsed ? expandTitle : collapseTitle;
-      btn.textContent = collapsed ? "▸" : "▾";
+      btn.innerHTML = collapsed ? iconSpan("chevronRight") : iconSpan("chevronDown");
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
         onToggle();
@@ -57,7 +196,8 @@
         addWrap.style.marginBottom = "8px";
 
         const addBtn = document.createElement("button");
-        addBtn.textContent = "+ Добавить выкладку";
+        addBtn.className = "layout-add-btn";
+        addBtn.innerHTML = '<span class="material-symbols-outlined" aria-hidden="true">add</span><span>Добавить выкладку</span>';
         addBtn.addEventListener("click", () => {
           openLayoutTypePicker();
         });
@@ -80,6 +220,10 @@
           openBtn.type = "button";
           openBtn.className = "layout-list-main";
           openBtn.addEventListener("click", () => {
+            if (typeof openLayoutEntry === "function") {
+              void openLayoutEntry(entry);
+              return;
+            }
             state.selectedLayoutId = entry.id;
             applyLayoutMode(entry.mode);
             const zone = state.zones.find((z) => Number(z.id || 0) === Number(state.selectedZoneId || 0));
@@ -106,48 +250,35 @@
           title.className = "layout-list-title";
           title.textContent = entry.name || `(Layout ${entry.id})`;
 
-          const subtitle = document.createElement("div");
-          subtitle.className = "layout-list-subtitle";
-          subtitle.textContent = typeof getLayoutModeTitle === "function"
-            ? getLayoutModeTitle(entry.mode)
-            : String(entry.mode || "");
-
           textWrap.appendChild(title);
-          textWrap.appendChild(subtitle);
           openBtn.appendChild(textWrap);
 
           const actions = document.createElement("div");
           actions.className = "layout-list-actions";
 
-          const focusBtn = document.createElement("button");
-          focusBtn.type = "button";
-          focusBtn.className = "layout-list-action-btn";
-          focusBtn.textContent = "Open";
-          focusBtn.title = "Open layout";
-          focusBtn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            openBtn.click();
-          });
-
           const delBtn = document.createElement("button");
           delBtn.type = "button";
-          delBtn.className = "layout-list-action-btn danger";
-          delBtn.textContent = "Delete";
-          delBtn.title = "Delete layout";
-          delBtn.addEventListener("click", (e) => {
+          delBtn.className = "layout-list-action-btn danger icon-only";
+          delBtn.title = "Удалить выкладку";
+          delBtn.setAttribute("aria-label", "Удалить выкладку");
+          delBtn.innerHTML = iconSpan("delete");
+          delBtn.addEventListener("click", async (e) => {
             e.stopPropagation();
-            state.layouts = state.layouts.filter((x) => Number(x.id) !== Number(entry.id));
-            if (Number(state.selectedLayoutId || 0) === Number(entry.id)) {
-              const next = state.layouts[0] || null;
-              state.selectedLayoutId = next ? next.id : null;
-              if (next) applyLayoutMode(next.mode);
+            if (typeof deleteLayoutEntry === "function") {
+              await deleteLayoutEntry(entry);
+            } else {
+              state.layouts = state.layouts.filter((x) => Number(x.id) !== Number(entry.id));
+              if (Number(state.selectedLayoutId || 0) === Number(entry.id)) {
+                const next = state.layouts[0] || null;
+                state.selectedLayoutId = next ? next.id : null;
+                if (next) applyLayoutMode(next.mode);
+              }
+              renderLayoutModeSwitch();
+              renderDetailZoneTree();
+              renderPropertyEditor();
             }
-            renderLayoutModeSwitch();
-            renderDetailZoneTree();
-            renderPropertyEditor();
           });
 
-          actions.appendChild(focusBtn);
           actions.appendChild(delBtn);
           card.appendChild(openBtn);
           card.appendChild(actions);
@@ -253,32 +384,25 @@
 
             zonesWrap.appendChild(zi);
 
-            const zoneHasLayout = state.layoutRun.active && Number(state.layoutRun.selectedZoneId || 0) === zoneId;
-            if (zoneHasLayout) {
+            const zoneFragments = collectZoneFragments(zoneId);
+            if (zoneFragments.length > 0) {
               const frWrap = document.createElement("div");
               frWrap.className = "tree-fragments";
               frWrap.style.display = zoneCollapsed ? "none" : "";
 
-              const frags = Array.isArray(state.layoutRun.fragments) ? state.layoutRun.fragments.slice() : [];
-              frags.sort((a, b) => {
-                const pa = findPlacementForFragment(a);
-                const pb = findPlacementForFragment(b);
-                const ma = pa && pa.status === "matched" ? 1 : 0;
-                const mb = pb && pb.status === "matched" ? 1 : 0;
-                if (ma !== mb) return ma - mb;
-                const sa = Number(pa && pa.fitScore || -1);
-                const sb = Number(pb && pb.fitScore || -1);
-                return sa - sb;
-              });
-
-              for (const frag of frags) {
+              for (const rec of zoneFragments) {
+                const frag = rec.fragment || {};
+                const p = rec.placement || null;
+                const entry = rec.entry || null;
                 const fragId = Number(frag.id || 0);
-                const p = findPlacementForFragment(frag);
                 const item = document.createElement("div");
-                item.className = "tree-fragment" + (state.selectedFragmentId === fragId ? " active" : "");
+                const isActive = state.selectedFragmentId === fragId
+                  && Number(state.selectedLayoutId || 0) === Number(entry && entry.id || 0);
+                item.className = "tree-fragment" + (isActive ? " active" : "");
 
                 const left = document.createElement("span");
-                left.textContent = `- ${zoneId}-${fragId}`;
+                left.className = "tree-fragment-label";
+                left.innerHTML = `<span class="tree-fragment-bullet"></span><span>${zoneId}-${fragId}</span>`;
 
                 const right = document.createElement("span");
                 right.className = "tree-frag-tag";
@@ -296,8 +420,11 @@
 
                 item.appendChild(left);
                 item.appendChild(right);
-                item.addEventListener("click", (e) => {
+                item.addEventListener("click", async (e) => {
                   e.stopPropagation();
+                  if (entry && Number(state.selectedLayoutId || 0) !== Number(entry.id || 0) && typeof openLayoutEntry === "function") {
+                    await openLayoutEntry(entry);
+                  }
                   state.selectedDetailId = Number(z.detailId || detailId);
                   state.selectedZoneId = zoneId;
                   state.selectedFragmentId = fragId;
@@ -309,13 +436,6 @@
                   renderScene();
                 });
                 frWrap.appendChild(item);
-              }
-
-              if (!frags.length) {
-                const emptyFrag = document.createElement("div");
-                emptyFrag.className = "tree-empty";
-                emptyFrag.textContent = "фрагментов нет";
-                frWrap.appendChild(emptyFrag);
               }
 
               zonesWrap.appendChild(frWrap);

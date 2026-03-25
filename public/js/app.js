@@ -138,49 +138,327 @@
         .replace(/\"/g, "&quot;")
         .replace(/'/g, "&#39;");
     }
+    const reportsState = {
+      model: null,
+      selectedDetailId: null
+    };
+    const REPORT_MIN_FRAGMENT_AREA_MM2 = 50;
+    function getLayoutSnapshotForReports(entry) {
+      const e = entry && typeof entry === "object" ? entry : null;
+      if (!e) return null;
+      if (Number(state.selectedLayoutId || 0) === Number(e.id || 0) && state.layoutRun && typeof state.layoutRun === "object") {
+        return {
+          selectedZoneId: Number(e.boundZoneId || state.layoutRun.selectedZoneId || state.selectedZoneId || 0) || null,
+          selectedDetailId: Number(e.boundDetailId || state.selectedDetailId || 0) || null,
+          layoutRun: state.layoutRun
+        };
+      }
+      if (e.runtimeSnapshot && typeof e.runtimeSnapshot === "object" && e.runtimeSnapshot.layoutRun) {
+        return e.runtimeSnapshot;
+      }
+      return null;
+    }
+    function findPlacementForFragmentInSnapshot(snapshot, fragmentOrId) {
+      const snap = snapshot && typeof snapshot === "object" ? snapshot : null;
+      const placements = Array.isArray(snap && snap.layoutRun && snap.layoutRun.placements) ? snap.layoutRun.placements : [];
+      const fragments = Array.isArray(snap && snap.layoutRun && snap.layoutRun.fragments) ? snap.layoutRun.fragments : [];
+      const frag = (fragmentOrId && typeof fragmentOrId === "object")
+        ? fragmentOrId
+        : fragments.find((f) => Number(f && f.id || 0) === Number(fragmentOrId || 0));
+      if (!frag) return null;
+      const ownerPlacementIndex = Number(frag.ownerPlacementIndex);
+      if (Number.isFinite(ownerPlacementIndex) && ownerPlacementIndex >= 0 && ownerPlacementIndex < placements.length) {
+        return placements[ownerPlacementIndex] || null;
+      }
+      const ownerPlacementId = Number(frag.ownerPlacementId || 0);
+      if (ownerPlacementId) {
+        return placements.find((p) => Number(p && p.fragmentId || 0) === ownerPlacementId) || null;
+      }
+      const fragId = Number(frag.id || 0);
+      return placements.find((p) => Number(p && p.fragmentId || 0) === fragId) || null;
+    }
     function canOpenReports() {
-      const isApplied = String(state && state.layoutRun && state.layoutRun.status || "") === "applied";
-      if (!isApplied) return false;
+      const layouts = Array.isArray(state && state.layouts) ? state.layouts : [];
+      for (const entry of layouts) {
+        const snapshot = getLayoutSnapshotForReports(entry);
+        const frags = Array.isArray(snapshot && snapshot.layoutRun && snapshot.layoutRun.fragments) ? snapshot.layoutRun.fragments : [];
+        const placements = Array.isArray(snapshot && snapshot.layoutRun && snapshot.layoutRun.placements) ? snapshot.layoutRun.placements : [];
+        if (frags.length > 0 || placements.some((p) => String(p && p.status || "") === "matched")) return true;
+      }
       const frags = Array.isArray(state && state.layoutRun && state.layoutRun.fragments) ? state.layoutRun.fragments : [];
       const placements = Array.isArray(state && state.layoutRun && state.layoutRun.placements) ? state.layoutRun.placements : [];
-      return frags.length > 0 || placements.length > 0;
+      return frags.length > 0 || placements.some((p) => String(p && p.status || "") === "matched");
     }
     function escapeCsv(value) {
       const s = String(value === null || value === undefined ? "" : value);
       if (/[",;\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
       return s;
     }
-    function buildReportsRows() {
-      const placements = Array.isArray(state && state.layoutRun && state.layoutRun.placements) ? state.layoutRun.placements : [];
-      if (!placements.length) return [];
-      const zoneId = Number(state && state.layoutRun && state.layoutRun.selectedZoneId || state.selectedZoneId || 0);
-      return placements.map((p, idx) => {
-        const fragId = Number(p && p.fragmentId || 0);
-        const area = Number(
-          (p && p.gainAreaMm2) ||
-          (p && p.inZoneAreaMm2) ||
-          (p && p.areaInZoneMm2) ||
-          0
-        );
-        const napDeg = Number.isFinite(Number(p && p.napEffectiveDeg))
-          ? Number(p.napEffectiveDeg)
-          : (Number.isFinite(Number(p && p.napDirectionDeg)) ? Number(p.napDirectionDeg) : DEFAULT_NAP_DIRECTION_DEG);
-        return {
-          index: idx + 1,
-          fragment: fragId > 0 ? `${zoneId || "-"}-${fragId}` : `${zoneId || "-"}-${idx + 1}`,
-          inventoryTag: String((p && (p.inventoryTag || p.candidateTag || p.scrapPieceId || p.id)) || "-"),
-          nap: `${Math.round(((napDeg % 360) + 360) % 360)}°`,
-          areaMm2: area,
-          status: String((p && p.status) || "applied")
-        };
-      });
+    function napSymbolByDeg(deg) {
+      const d = (((Number(deg) || 0) % 360) + 360) % 360;
+      if (d >= 337.5 || d < 22.5) return "→";
+      if (d < 67.5) return "↘";
+      if (d < 112.5) return "↓";
+      if (d < 157.5) return "↙";
+      if (d < 202.5) return "←";
+      if (d < 247.5) return "↖";
+      if (d < 292.5) return "↑";
+      return "↗";
+    }
+    function normalizeContourArrayForReports(raw) {
+      if (typeof normalizeContourArray === "function") return normalizeContourArray(raw);
+      if (!raw) return null;
+      const pts = [];
+      const push = (x, y) => {
+        const xn = Number(x);
+        const yn = Number(y);
+        if (!Number.isFinite(xn) || !Number.isFinite(yn)) return;
+        pts.push({ x: xn, y: yn });
+      };
+      const walk = (node) => {
+        if (!node) return;
+        if (Array.isArray(node)) {
+          if (node.length >= 2 && Number.isFinite(Number(node[0])) && Number.isFinite(Number(node[1]))) {
+            push(node[0], node[1]);
+            return;
+          }
+          for (const child of node) walk(child);
+          return;
+        }
+        if (typeof node === "object" && node.x !== undefined && node.y !== undefined) {
+          push(node.x, node.y);
+        }
+      };
+      walk(raw);
+      return pts.length >= 3 ? pts : null;
+    }
+    function buildReportsModel() {
+      const zones = Array.isArray(state && state.zones) ? state.zones : [];
+      const zoneById = new Map(zones.map((z) => [Number(z && z.id || 0), z]));
+      const rows = [];
+      let hiddenSmallCount = 0;
+      let hiddenSmallAreaMm2 = 0;
+      const layouts = Array.isArray(state && state.layouts) ? state.layouts : [];
+      for (const entry of layouts) {
+        const snapshot = getLayoutSnapshotForReports(entry);
+        if (!snapshot || !snapshot.layoutRun) continue;
+        const placements = Array.isArray(snapshot.layoutRun.placements) ? snapshot.layoutRun.placements : [];
+        const fragments = Array.isArray(snapshot.layoutRun.fragments) ? snapshot.layoutRun.fragments : [];
+        const boundZoneId = Number(entry && entry.boundZoneId || snapshot.selectedZoneId || snapshot.layoutRun.selectedZoneId || 0) || 0;
+        const zone = zoneById.get(boundZoneId) || null;
+        const detailId = Number(entry && entry.boundDetailId || zone && zone.detailId || snapshot.selectedDetailId || 0) || 0;
+        const fragmentsSrc = fragments.length
+          ? fragments
+          : placements
+            .map((p, i) => {
+              const pts = normalizeContourArrayForReports(p && p.inZoneCoreContour) || normalizeContourArrayForReports(p && p.inZoneContour) || [];
+              if (pts.length < 3) return null;
+              return {
+                id: i + 1,
+                points: pts,
+                ownerPlacementIndex: i,
+                ownerPlacementId: Number(p && p.fragmentId || 0)
+              };
+            })
+            .filter(Boolean);
+        for (let i = 0; i < fragmentsSrc.length; i += 1) {
+          const frag = fragmentsSrc[i] || {};
+          const pl = findPlacementForFragmentInSnapshot(snapshot, frag);
+          const zoneId = Number(pl && pl.zoneId || boundZoneId || 0);
+          const zoneForRow = zoneById.get(zoneId) || zone || null;
+          const detailForRow = Number(zoneForRow && zoneForRow.detailId || detailId || 0) || 0;
+          const pts = normalizeContourArrayForReports(frag.points) || normalizeContourArrayForReports(pl && pl.inZoneCoreContour) || normalizeContourArrayForReports(pl && pl.inZoneContour) || [];
+          if (pts.length < 3) continue;
+          const baseNap = Number.isFinite(Number(pl && pl.napDirectionDeg))
+            ? Number(pl.napDirectionDeg)
+            : (Number.isFinite(Number(pl && pl.candidate && pl.candidate.napDirectionDeg))
+                ? Number(pl.candidate.napDirectionDeg)
+                : DEFAULT_NAP_DIRECTION_DEG);
+          const alignRot = Number.isFinite(Number(pl && pl.alignRotationDeg))
+            ? Number(pl.alignRotationDeg)
+            : (Number.isFinite(Number(pl && pl.rotationDeg))
+                ? Number(pl.rotationDeg)
+                : (Number.isFinite(Number(pl && pl.rotation))
+                    ? Number(pl.rotation)
+                    : 0));
+          const napDeg = Number.isFinite(Number(pl && pl.napEffectiveDeg))
+            ? Number(pl.napEffectiveDeg)
+            : (baseNap + alignRot);
+          const napDegNorm = ((napDeg % 360) + 360) % 360;
+          const areaMm2 = Math.max(0, Number(frag.areaMm2 || polygonArea(pts) || 0));
+          if (areaMm2 > 0 && areaMm2 < REPORT_MIN_FRAGMENT_AREA_MM2) {
+            hiddenSmallCount += 1;
+            hiddenSmallAreaMm2 += areaMm2;
+            continue;
+          }
+          const fragNo = i + 1;
+          rows.push({
+            index: rows.length + 1,
+            detailId: detailForRow,
+            zoneId,
+            fragmentNo: fragNo,
+            fragmentCode: `${detailForRow}-${zoneId}-${fragNo}`,
+            napSymbol: napSymbolByDeg(napDegNorm),
+            napLabel: `${napSymbolByDeg(napDegNorm)} ${Math.round(napDegNorm)}°`,
+            napDeg: Math.round(napDegNorm),
+            qty: 1,
+            areaMm2,
+            inventoryTag: String((pl && (pl.inventoryTag || pl.scrapPieceId || pl.id)) || "-"),
+            points: pts,
+            zonePoints: Array.isArray(zoneForRow && zoneForRow.points) ? zoneForRow.points : []
+          });
+        }
+      }
+      const detailIds = Array.from(new Set(rows.map((r) => Number(r.detailId || 0)).filter((n) => Number.isFinite(n) && n > 0))).sort((a, b) => a - b);
+      const selectedLayout = getSelectedLayoutEntry();
+      const selectedZoneId = Number(
+        selectedLayout && String(selectedLayout.mode || "") === "inventory_manual" && selectedLayout.boundZoneId
+        || state && state.layoutRun && state.layoutRun.selectedZoneId
+        || state.selectedZoneId
+        || 0
+      );
+      const selectedZone = zones.find((z) => Number(z && z.id || 0) === selectedZoneId) || zones[0] || null;
+      const selectedDetailId = Number(selectedZone && selectedZone.detailId || detailIds[0] || 1);
+      return {
+        rows,
+        detailIds,
+        selectedDetailId: detailIds.includes(selectedDetailId) ? selectedDetailId : (detailIds[0] || null),
+        hiddenSmallCount,
+        hiddenSmallAreaMm2
+      };
+    }
+    function renderReportsThumb(points) {
+      const pts = Array.isArray(points) ? points : [];
+      if (pts.length < 3) return "-";
+      let minX = Number.POSITIVE_INFINITY, minY = Number.POSITIVE_INFINITY;
+      let maxX = Number.NEGATIVE_INFINITY, maxY = Number.NEGATIVE_INFINITY;
+      for (const p of pts) {
+        const x = Number(p && p.x);
+        const y = Number(p && p.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        minX = Math.min(minX, x); minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+      }
+      if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) return "-";
+      const w = Math.max(1, maxX - minX);
+      const h = Math.max(1, maxY - minY);
+      const pad = 2;
+      const vw = 36;
+      const vh = 26;
+      const s = Math.min((vw - pad * 2) / w, (vh - pad * 2) / h);
+      const d = pts.map((p, i) => {
+        const x = ((Number(p.x) - minX) * s + pad).toFixed(2);
+        const y = ((maxY - Number(p.y)) * s + pad).toFixed(2);
+        return `${i === 0 ? "M" : "L"}${x},${y}`;
+      }).join(" ") + " Z";
+      return `<svg class="reports-thumb" viewBox="0 0 36 26" aria-hidden="true"><path d="${d}" fill="none" stroke="#222" stroke-width="1"/></svg>`;
+    }
+    function renderReportsScheme(rows, detailId) {
+      const box = byId("reportsSchemeBox");
+      const title = byId("reportsSchemeTitle");
+      const zone = byId("reportsSchemeZone");
+      if (!box || !title || !zone) return;
+      const list = Array.isArray(rows) ? rows : [];
+      const first = list[0] || null;
+      title.textContent = `Деталь: ${detailId || "-"}`;
+      zone.textContent = `Зона: ${first ? first.zoneId : "-"}`;
+      if (!first || !Array.isArray(first.zonePoints) || first.zonePoints.length < 3) {
+        box.innerHTML = "";
+        return;
+      }
+      box.scrollTop = 0;
+      box.scrollLeft = 0;
+      const zonePts = normalizeContourArrayForReports(first.zonePoints) || [];
+      const allPts = zonePts.concat(...list.map((r) => Array.isArray(r.points) ? r.points : []));
+      let minX = Number.POSITIVE_INFINITY, minY = Number.POSITIVE_INFINITY;
+      let maxX = Number.NEGATIVE_INFINITY, maxY = Number.NEGATIVE_INFINITY;
+      for (const p of allPts) {
+        const x = Number(p && p.x);
+        const y = Number(p && p.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        minX = Math.min(minX, x); minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+      }
+      const w = Math.max(1, maxX - minX);
+      const h = Math.max(1, maxY - minY);
+      const boxW = Math.max(260, Number(box.clientWidth || 300));
+      const boxH = Math.max(360, Number(box.clientHeight || 430));
+      const vw = Math.max(260, Math.floor(boxW - 2));
+      const vh = Math.max(360, Math.floor(boxH - 2));
+      const pad = 12;
+      const s = Math.min((vw - pad * 2) / w, (vh - pad * 2) / h);
+      const mapPt = (p) => ({ x: ((Number(p.x) - minX) * s + pad), y: ((maxY - Number(p.y)) * s + pad) });
+      const pathOf = (pts) => pts.map((p, i) => {
+        const q = mapPt(p);
+        return `${i === 0 ? "M" : "L"}${q.x.toFixed(2)},${q.y.toFixed(2)}`;
+      }).join(" ") + " Z";
+      const zonePath = pathOf(zonePts);
+      const fragPaths = list.map((r) => {
+        const d = pathOf(r.points);
+        const c = centroid(r.points);
+        const cc = mapPt(c);
+        return `<path d="${d}" fill="none" stroke="#222" stroke-width="1"/><text x="${cc.x.toFixed(2)}" y="${cc.y.toFixed(2)}" font-size="10" text-anchor="middle" dominant-baseline="middle">${r.fragmentNo}</text>`;
+      }).join("");
+      box.innerHTML = `<svg class="reports-scheme-svg" viewBox="0 0 ${vw} ${vh}" aria-label="Схема детали"><path d="${zonePath}" fill="none" stroke="#111" stroke-width="1.2"/>${fragPaths}</svg>`;
+    }
+    function renderReportsView(detailId) {
+      const model = reportsState.model;
+      if (!model) return;
+      const tabsWrap = byId("reportsDetailTabs");
+      const select = byId("reportsDetailSelect");
+      const summary = byId("reportsSummary");
+      const detailHeading = byId("reportsDetailHeading");
+      const modelTitle = byId("reportsModelTitle");
+      const body = byId("reportsTableBody");
+      const currentDetailId = Number(detailId || model.selectedDetailId || model.detailIds[0] || 0);
+      reportsState.selectedDetailId = currentDetailId;
+      if (modelTitle) modelTitle.textContent = model.detailIds.length ? `(${model.detailIds.length} деталей)` : "";
+      if (tabsWrap) {
+        tabsWrap.innerHTML = "";
+        for (const id of model.detailIds) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = `reports-tab${Number(id) === currentDetailId ? " active" : ""}`;
+          btn.textContent = `Деталь ${id}`;
+          btn.onclick = () => renderReportsView(id);
+          tabsWrap.appendChild(btn);
+        }
+      }
+      if (select) {
+        select.innerHTML = model.detailIds.map((id) => `<option value="${id}" ${Number(id) === currentDetailId ? "selected" : ""}>${id}</option>`).join("");
+        select.onchange = () => renderReportsView(Number(select.value || 0));
+      }
+      const rows = model.rows.filter((r) => Number(r.detailId) === currentDetailId);
+      const totalArea = rows.reduce((acc, r) => acc + Number(r.areaMm2 || 0), 0);
+      const zoneId = rows[0] ? rows[0].zoneId : "-";
+      if (detailHeading) detailHeading.textContent = `Деталь ${currentDetailId || "-"}`;
+      if (summary) {
+        const hiddenSmallCount = Number(model.hiddenSmallCount || 0);
+        const hiddenSmallAreaMm2 = Number(model.hiddenSmallAreaMm2 || 0);
+        const hiddenPart = hiddenSmallCount > 0
+          ? ` | скрыто мелких: ${hiddenSmallCount} (${hiddenSmallAreaMm2.toFixed(1)} мм²)`
+          : "";
+        summary.textContent = `Зона: ${zoneId} | Кусков: ${rows.length} | Полезная площадь: ${totalArea.toFixed(1)} мм²${hiddenPart}`;
+      }
+      if (body) {
+        body.innerHTML = rows.map((r) => `
+          <tr>
+            <td>${renderReportsThumb(r.points)}</td>
+            <td>${escapeHtml(r.napLabel || r.napSymbol || "↓")}</td>
+            <td>${escapeHtml(r.fragmentCode)}</td>
+            <td>${r.qty}</td>
+            <td>${Number(r.areaMm2 || 0).toFixed(1)}</td>
+            <td>${escapeHtml(r.inventoryTag)}</td>
+          </tr>`).join("");
+      }
+      renderReportsScheme(rows, currentDetailId);
     }
     function updateReportsButtonState() {
       const btn = byId("reportsBtn");
       if (!btn) return;
       const enabled = canOpenReports();
       btn.disabled = !enabled;
-      btn.title = enabled ? "" : "Отчёты доступны после Применить";
+      btn.title = enabled ? "" : "Отчёты доступны после построения выкладки";
     }
     function closeReportsModal() {
       const backdrop = byId("reportsBackdrop");
@@ -192,44 +470,28 @@
         if (workspaceInfo) workspaceInfo.textContent = "Отчёты доступны только после Применить.";
         return;
       }
-      const rows = buildReportsRows();
-      const summary = byId("reportsSummary");
-      const body = byId("reportsTableBody");
-      if (body) body.innerHTML = "";
-      let totalArea = 0;
-      for (const r of rows) totalArea += Number(r.areaMm2 || 0);
-      if (summary) {
-        const zoneId = Number(state && state.layoutRun && state.layoutRun.selectedZoneId || state.selectedZoneId || 0);
-        summary.textContent = `Зона: ${zoneId || "-"} | Кусков: ${rows.length} | Полезная площадь: ${totalArea.toFixed(1)} мм²`;
-      }
-      if (body) {
-        for (const r of rows) {
-          const tr = document.createElement("tr");
-          tr.innerHTML = [
-            `<td>${r.index}</td>`,
-            `<td>${escapeHtml(r.fragment)}</td>`,
-            `<td>${escapeHtml(r.inventoryTag)}</td>`,
-            `<td>${escapeHtml(r.nap)}</td>`,
-            `<td>${Number(r.areaMm2 || 0).toFixed(1)}</td>`,
-            `<td>${escapeHtml(r.status)}</td>`
-          ].join("");
-          body.appendChild(tr);
-        }
-      }
+      reportsState.model = buildReportsModel();
+      renderReportsView(reportsState.model.selectedDetailId);
       const backdrop = byId("reportsBackdrop");
       if (backdrop) backdrop.style.display = "flex";
       const exportBtn = byId("reportsExportCsvBtn");
       if (exportBtn) {
         exportBtn.onclick = () => {
+          const model = reportsState.model;
+          const selected = Number(reportsState.selectedDetailId || 0);
+          const rows = model && Array.isArray(model.rows)
+            ? model.rows.filter((r) => !selected || Number(r.detailId) === selected)
+            : [];
           const lines = [
-            "Index;Fragment;InventoryTag;Nap;AreaMm2;Status",
+            "Detail;Zone;Fragment;Qty;AreaMm2;InventoryTag;NapDeg",
             ...rows.map((r) => [
-              escapeCsv(r.index),
-              escapeCsv(r.fragment),
-              escapeCsv(r.inventoryTag),
-              escapeCsv(r.nap),
+              escapeCsv(r.detailId),
+              escapeCsv(r.zoneId),
+              escapeCsv(r.fragmentCode),
+              escapeCsv(r.qty),
               escapeCsv(Number(r.areaMm2 || 0).toFixed(1)),
-              escapeCsv(r.status)
+              escapeCsv(r.inventoryTag),
+              escapeCsv(r.napDeg)
             ].join(";"))
           ];
           const blob = new Blob([`\uFEFF${lines.join("\n")}`], { type: "text/csv;charset=utf-8;" });
@@ -243,6 +505,8 @@
           URL.revokeObjectURL(url);
         };
       }
+      const printBtn = byId("reportsPrintBtn");
+      if (printBtn) printBtn.onclick = () => window.print();
     }
     function findPlacementForFragment(fragmentOrId) {
       const placements = Array.isArray(state.layoutRun.placements) ? state.layoutRun.placements : [];
@@ -371,7 +635,10 @@
         fitBBoxToView: (bbox) => fitBBoxToView(bbox),
         contourThumbSvg: (points, closed) => contourThumbSvg(points, closed),
         fitPointsToView: (points) => fitPointsToView(points),
-        findPlacementForFragment: (fragmentOrId) => findPlacementForFragment(fragmentOrId)
+        findPlacementForFragment: (fragmentOrId) => findPlacementForFragment(fragmentOrId),
+        saveLayoutEntry: (entry) => saveLayoutEntry(entry),
+        openLayoutEntry: (entry) => openLayoutEntry(entry),
+        deleteLayoutEntry: (entry) => deleteLayoutEntry(entry)
       })
       : null;
     const propertyEditorViewApi = window.FurLabPropertyEditorView || {};
@@ -403,7 +670,8 @@
         renderDetailZoneTree: () => renderDetailZoneTree(),
         renderScene: () => renderScene(),
         openInventoryStep1: () => openInventoryStep1(),
-        renderManualTrayIntoRoot: () => renderManualTrayIntoRoot()
+        renderManualTrayIntoRoot: () => renderManualTrayIntoRoot(),
+        saveLayoutEntry: (entry) => saveLayoutEntry(entry)
       })
       : null;
     const layerLegend = (
@@ -1390,6 +1658,33 @@
       return len;
     }
 
+    function normalizeContourArray(raw) {
+      if (!raw) return null;
+      const pts = [];
+      const push = (x, y) => {
+        const xn = Number(x);
+        const yn = Number(y);
+        if (!Number.isFinite(xn) || !Number.isFinite(yn)) return;
+        pts.push({ x: xn, y: yn });
+      };
+      const walk = (node) => {
+        if (!node) return;
+        if (Array.isArray(node)) {
+          if (node.length >= 2 && Number.isFinite(Number(node[0])) && Number.isFinite(Number(node[1]))) {
+            push(node[0], node[1]);
+            return;
+          }
+          for (const child of node) walk(child);
+          return;
+        }
+        if (typeof node === "object" && node.x !== undefined && node.y !== undefined) {
+          push(node.x, node.y);
+        }
+      };
+      walk(raw);
+      return pts.length >= 3 ? pts : null;
+    }
+
     function clipPolygonByHalfPlane(poly, nx, ny, c) {
       const out = [];
       if (!Array.isArray(poly) || poly.length < 3) return out;
@@ -1493,6 +1788,27 @@
         if (Array.isArray(one) && one.length) mp.push(...one);
       }
       return mp;
+    }
+
+    function computeCoverageHoles(zonePoints, coverContours) {
+      const zonePts = normalizeContourArray(zonePoints);
+      if (!zonePts) return [];
+      const pc = (typeof window !== "undefined" && window.polygonClipping) ? window.polygonClipping : null;
+      if (!pc || typeof pc.difference !== "function") return [];
+      const zoneMp = toBooleanMulti(zonePts);
+      if (!Array.isArray(zoneMp) || !zoneMp.length) return [];
+      const coverList = (Array.isArray(coverContours) ? coverContours : [])
+        .map((poly) => normalizeContourArray(poly))
+        .filter((poly) => Array.isArray(poly) && poly.length >= 3);
+      if (!coverList.length) return [zonePts];
+      const coverMp = toBooleanMultiFromMultiOuter(coverList);
+      if (!Array.isArray(coverMp) || !coverMp.length) return [zonePts];
+      try {
+        const diff = pc.difference(zoneMp, coverMp) || [];
+        return fromBooleanMultiOuter(diff).filter((poly) => polygonArea(poly) > 1);
+      } catch (_) {
+        return [];
+      }
     }
 
     function extractCoreMultiFromPlacement(pl) {
@@ -2835,7 +3151,16 @@ function renderSplitEvents(events) {
         return currentSeq !== recomputeSeq;
       };
       const placements = Array.isArray(state.layoutRun.placements) ? state.layoutRun.placements : [];
-      const selectedZoneId = Number(state.layoutRun && state.layoutRun.selectedZoneId || state.selectedZoneId || 0);
+      const selectedLayout = getSelectedLayoutEntry();
+      const boundZone = selectedLayout && String(selectedLayout.mode || "") === "inventory_manual"
+        ? ensureManualLayoutBinding(selectedLayout)
+        : null;
+      const selectedZoneId = Number(
+        boundZone && boundZone.id
+        || state.layoutRun && state.layoutRun.selectedZoneId
+        || state.selectedZoneId
+        || 0
+      );
       const zoneBySelectedId = (Array.isArray(state.zones) ? state.zones : []).find((z) => Number(z && z.id || 0) === selectedZoneId) || null;
       const zoneByPlacements = getManualZoneForPlacements(placements);
       const refContour = placements.length
@@ -2861,6 +3186,11 @@ function renderSplitEvents(events) {
         renderScene();
         return false;
       }
+      if (selectedLayout && String(selectedLayout.mode || "") === "inventory_manual") {
+        selectedLayout.boundZoneId = Number(zone && zone.id || selectedLayout.boundZoneId || 0) || null;
+        selectedLayout.boundDetailId = Number(zone && zone.detailId || selectedLayout.boundDetailId || 0) || null;
+      }
+      state.layoutRun.selectedZoneId = Number(zone && zone.id || selectedZoneId || 0) || null;
       await ensureManualPlacementsCoreContours();
       const toFlatContour = (raw) => {
         const out = [];
@@ -3034,9 +3364,11 @@ function renderSplitEvents(events) {
         seamDiag.boundaryDropped = Math.max(0, beforeBoundaryDrop - seamSegments.length);
         seamSourceResolved = `applied_fragments:${seamGeometrySource}`;
       }
+      const coverageHoles = computeCoverageHoles(zone && zone.points, visibleContours);
       state.layoutRun.previewLayers = {
         pieceIntersections: [],
         visibleArea: visibleContours,
+        coverageHoles,
         seams: seamSegments
       };
       const vm = res.visibleMetrics || {};
@@ -3171,10 +3503,26 @@ function renderSplitEvents(events) {
       state.layoutRun.manual.statusNote = placements.length
         ? `применено: ${placements.length} кусков`
         : "применено";
+      const selectedManualLayout = Array.isArray(state.layouts)
+        ? state.layouts.find((x) => Number(x && x.id || 0) === Number(state.selectedLayoutId || 0) && String(x && x.mode || "") === "inventory_manual")
+        : null;
+      let autosaveOk = false;
+      if (selectedManualLayout) {
+        try {
+          const saveRes = await saveLayoutEntry(selectedManualLayout);
+          autosaveOk = !!(saveRes && saveRes.ok);
+        } catch (_) {
+          autosaveOk = false;
+        }
+      }
       renderInventoryManualPanel();
       renderManualTrayIntoRoot();
       const workspaceInfo = byId("workspaceInfo");
-      if (workspaceInfo) workspaceInfo.textContent = `Ручная выкладка применена: ${placements.length} кусков`;
+      if (workspaceInfo) {
+        workspaceInfo.textContent = autosaveOk
+          ? `Ручная выкладка применена и сохранена: ${placements.length} кусков`
+          : `Ручная выкладка применена: ${placements.length} кусков`;
+      }
       const step2Backdrop = byId("inventoryStep2Backdrop");
       if (step2Backdrop && step2Backdrop.style.display === "flex") closeInventoryStep2();
       renderScene();
@@ -3199,7 +3547,9 @@ function renderSplitEvents(events) {
 
     async function requestInventoryManualSuggestions() {
       if (!isManualInventoryMode()) return;
-      const zone = state.zones.find((z) => Number(z.id) === Number(state.layoutRun.selectedZoneId || state.selectedZoneId));
+      const selectedLayout = getSelectedLayoutEntry();
+      const boundZoneId = Number(selectedLayout && String(selectedLayout.mode || "") === "inventory_manual" ? selectedLayout.boundZoneId : 0) || 0;
+      const zone = state.zones.find((z) => Number(z.id) === Number(boundZoneId || state.layoutRun.selectedZoneId || state.selectedZoneId));
       if (!zone) return;
       const coveredContours = (state.layoutRun.fragments || [])
         .map((f) => Array.isArray(f && f.points) ? f.points : [])
@@ -3644,6 +3994,7 @@ function renderSplitEvents(events) {
         host.innerHTML = manualTrayView.renderHtml({
           sections,
           trayOpen,
+          debugOpen: !!(state.layoutRun.manual && state.layoutRun.manual.debugOpen),
           selectedTag,
           metricsLine,
           selectedInfoLine,
@@ -3723,6 +4074,13 @@ function renderSplitEvents(events) {
           const key = String(btn.getAttribute("data-manual-toggle") || "");
           if (!key) return;
           trayOpen[key] = !trayOpen[key];
+          renderManualTrayIntoRoot();
+        };
+      });
+      host.querySelectorAll("button[data-manual-debug-toggle]").forEach((btn) => {
+        btn.onclick = () => {
+          state.layoutRun.manual = state.layoutRun.manual || { suggestions: [], lastMetrics: null, selectedCandidateTag: "", activePiece: null, lastEvalContours: null, statusNote: "", selectedPlacementIndex: -1 };
+          state.layoutRun.manual.debugOpen = !state.layoutRun.manual.debugOpen;
           renderManualTrayIntoRoot();
         };
       });
@@ -3900,6 +4258,7 @@ function renderSplitEvents(events) {
       byId("layoutTypeBackdrop").style.display = "none";
     }
     function addLayoutByMode(mode) {
+      saveCurrentManualRuntimeSnapshot();
       const catalog = getLayoutModeCatalog();
       const normalizedMode = String(mode || "").trim();
       const picked = catalog.find((x) => String(x && x.mode || "") === normalizedMode);
@@ -3908,13 +4267,276 @@ function renderSplitEvents(events) {
         return;
       }
       const id = state.nextLayoutId++;
-      const entry = { id, mode: picked.mode, name: `${picked.title} ${id}` };
+      const selectedZone = (Array.isArray(state.zones) ? state.zones : []).find((z) => Number(z && z.id || 0) === Number(state.selectedZoneId || 0))
+        || ((Array.isArray(state.zones) ? state.zones : [])[0] || null);
+      const entry = {
+        id,
+        mode: picked.mode,
+        name: `${picked.title} ${id}`,
+        boundZoneId: Number(selectedZone && selectedZone.id || 0) || null,
+        boundDetailId: Number(selectedZone && selectedZone.detailId || state.selectedDetailId || 0) || null
+      };
       state.layouts.push(entry);
       state.selectedLayoutId = id;
       applyLayoutMode(entry.mode);
       renderLayoutModeSwitch();
       renderDetailZoneTree();
       renderPropertyEditor();
+    }
+    function getSelectedLayoutEntry() {
+      return Array.isArray(state.layouts)
+        ? (state.layouts.find((x) => Number(x && x.id || 0) === Number(state.selectedLayoutId || 0)) || null)
+        : null;
+    }
+    function resolveZoneById(zoneId) {
+      const zid = Number(zoneId || 0);
+      if (!zid) return null;
+      return (Array.isArray(state.zones) ? state.zones : []).find((z) => Number(z && z.id || 0) === zid) || null;
+    }
+    function ensureManualLayoutBinding(entry) {
+      const e = entry && typeof entry === "object" ? entry : null;
+      if (!e || String(e.mode || "") !== "inventory_manual") return null;
+      let zone = resolveZoneById(e.boundZoneId) || resolveZoneById(state.selectedZoneId) || null;
+      if (!zone) zone = (Array.isArray(state.zones) ? state.zones : [])[0] || null;
+      if (!zone) return null;
+      e.boundZoneId = Number(zone.id || 0) || null;
+      e.boundDetailId = Number(zone.detailId || state.selectedDetailId || 0) || null;
+      return zone;
+    }
+    function buildManualLayoutSnapshot() {
+      const lr = state.layoutRun && typeof state.layoutRun === "object" ? state.layoutRun : {};
+      const selectedLayout = getSelectedLayoutEntry();
+      const boundZoneId = Number(selectedLayout && String(selectedLayout.mode || "") === "inventory_manual" ? selectedLayout.boundZoneId : 0) || 0;
+      const boundDetailId = Number(selectedLayout && String(selectedLayout.mode || "") === "inventory_manual" ? selectedLayout.boundDetailId : 0) || 0;
+      const snapshot = {
+        selectedZoneId: Number(boundZoneId || lr.selectedZoneId || state.selectedZoneId || 0) || null,
+        selectedDetailId: Number(boundDetailId || state.selectedDetailId || 0) || null,
+        layoutRun: {
+          active: !!lr.active,
+          status: String(lr.status || "preview"),
+          fillType: String(lr.fillType || "voronoi"),
+          strategy: String(lr.strategy || "inventory_manual"),
+          inventoryScenario: String(lr.inventoryScenario || "A"),
+          selectedZoneId: Number(boundZoneId || lr.selectedZoneId || state.selectedZoneId || 0) || null,
+          allowanceMm: Number(parseLocaleNumber(lr.allowanceMm, 12) || 12),
+          placements: Array.isArray(lr.placements) ? lr.placements : [],
+          fragments: Array.isArray(lr.fragments) ? lr.fragments : [],
+          previewLayers: lr.previewLayers && typeof lr.previewLayers === "object" ? lr.previewLayers : { pieceIntersections: [], visibleArea: [], seams: [] },
+          splitEvents: Array.isArray(lr.splitEvents) ? lr.splitEvents : [],
+          stats: lr.stats && typeof lr.stats === "object" ? lr.stats : { violations: 0, intersections: 0, uncovered: 0 },
+          candidatePool: Array.isArray(lr.candidatePool) ? lr.candidatePool : [],
+          lastFilters: lr.lastFilters && typeof lr.lastFilters === "object" ? lr.lastFilters : {},
+          lastConstraints: lr.lastConstraints && typeof lr.lastConstraints === "object" ? lr.lastConstraints : {},
+          lastAxis: String(lr.lastAxis || "y"),
+          lastNapDirectionDeg: Number(lr.lastNapDirectionDeg || DEFAULT_NAP_DIRECTION_DEG),
+          lastSeed: Number(lr.lastSeed || 0) || null,
+          paramsSnapshot: lr.paramsSnapshot && typeof lr.paramsSnapshot === "object" ? lr.paramsSnapshot : null,
+          resultStatus: String(lr.resultStatus || "ok"),
+          failedReason: lr.failedReason || null,
+          manual: lr.manual && typeof lr.manual === "object" ? lr.manual : {}
+        }
+      };
+      return JSON.parse(JSON.stringify(snapshot));
+    }
+    function buildEmptyManualLayoutSnapshot() {
+      const selectedLayout = getSelectedLayoutEntry();
+      const selectedZoneId = Number(selectedLayout && selectedLayout.boundZoneId || state.selectedZoneId || 0) || null;
+      const selectedDetailId = Number(selectedLayout && selectedLayout.boundDetailId || state.selectedDetailId || 0) || null;
+      return {
+        selectedZoneId,
+        selectedDetailId,
+        layoutRun: {
+          active: true,
+          status: "preview",
+          fillType: "voronoi",
+          strategy: "inventory_manual",
+          inventoryScenario: "A",
+          selectedZoneId,
+          allowanceMm: Number(parseLocaleNumber(getCurrentManualAllowanceMm(), 12) || 12),
+          placements: [],
+          fragments: [],
+          previewLayers: { pieceIntersections: [], visibleArea: [], coverageHoles: [], seams: [] },
+          splitEvents: [],
+          stats: { violations: 0, intersections: 0, uncovered: 1 },
+          candidatePool: [],
+          lastFilters: {},
+          lastConstraints: {},
+          lastAxis: "y",
+          lastNapDirectionDeg: DEFAULT_NAP_DIRECTION_DEG,
+          lastSeed: null,
+          paramsSnapshot: null,
+          resultStatus: "ok",
+          failedReason: null,
+          manual: {
+            suggestions: [],
+            lastMetrics: null,
+            selectedCandidateTag: "",
+            activePiece: null,
+            lastEvalContours: null,
+            statusNote: "нет активного",
+            selectedPlacementIndex: -1
+          }
+        }
+      };
+    }
+    function saveCurrentManualRuntimeSnapshot() {
+      const current = getSelectedLayoutEntry();
+      if (!current || String(current.mode || "") !== "inventory_manual") return;
+      ensureManualLayoutBinding(current);
+      current.runtimeSnapshot = buildManualLayoutSnapshot();
+    }
+    function applyManualLayoutSnapshot(snapshot) {
+      const snap = snapshot && typeof snapshot === "object" ? snapshot : buildEmptyManualLayoutSnapshot();
+      const base = state.layoutRun && typeof state.layoutRun === "object" ? state.layoutRun : {};
+      const nextLayoutRunRaw = snap.layoutRun && typeof snap.layoutRun === "object" ? snap.layoutRun : {};
+      state.layoutRun = {
+        ...base,
+        ...nextLayoutRunRaw,
+        manual: {
+          ...(base.manual && typeof base.manual === "object" ? base.manual : {}),
+          ...(nextLayoutRunRaw.manual && typeof nextLayoutRunRaw.manual === "object" ? nextLayoutRunRaw.manual : {})
+        }
+      };
+      const zoneId = Number(snap.selectedZoneId || state.layoutRun.selectedZoneId || 0);
+      if (zoneId > 0) state.selectedZoneId = zoneId;
+      const detailId = Number(snap.selectedDetailId || 0);
+      if (detailId > 0) state.selectedDetailId = detailId;
+      const selectedLayout = getSelectedLayoutEntry();
+      if (selectedLayout && String(selectedLayout.mode || "") === "inventory_manual") {
+        if (zoneId > 0) selectedLayout.boundZoneId = zoneId;
+        if (detailId > 0) selectedLayout.boundDetailId = detailId;
+      }
+      if (!Array.isArray(state.layoutRun.placements)) state.layoutRun.placements = [];
+      if (!Array.isArray(state.layoutRun.fragments)) state.layoutRun.fragments = [];
+      if (!state.layoutRun.previewLayers || typeof state.layoutRun.previewLayers !== "object") {
+        state.layoutRun.previewLayers = { pieceIntersections: [], visibleArea: [], coverageHoles: [], seams: [] };
+      }
+      if (!Array.isArray(state.layoutRun.previewLayers.seams)) state.layoutRun.previewLayers.seams = [];
+      if (!Array.isArray(state.layoutRun.candidatePool)) state.layoutRun.candidatePool = [];
+      renderPlacementRows(state.layoutRun.placements || []);
+      renderSplitEvents(state.layoutRun.splitEvents || []);
+      renderInventoryManualPanel();
+    }
+    async function saveLayoutEntry(entry) {
+      const e = entry && typeof entry === "object" ? entry : null;
+      if (!e) return { ok: false, error: "layout_entry_required" };
+      if (String(e.mode || "") !== "inventory_manual") return { ok: false, error: "manual_mode_only" };
+      const boundZone = ensureManualLayoutBinding(e);
+      const payload = {
+        id: e.persistedRunId || null,
+        name: String(e.name || "Ручная выкладка"),
+        mode: "inventory_manual",
+        selectedZoneId: Number(boundZone && boundZone.id || state.layoutRun && state.layoutRun.selectedZoneId || state.selectedZoneId || 0) || null,
+        snapshot: buildManualLayoutSnapshot()
+      };
+      const res = await api("/api/layout/manual/runs/save", "POST", payload);
+      if (res && res.ok && res.item) {
+        e.persistedRunId = String(res.item.id || "");
+        e.persistedAt = Number(res.item.updatedAt || Date.now());
+        byId("workspaceInfo").textContent = `Выкладка сохранена (${e.name || "-"})`;
+        renderDetailZoneTree();
+        renderPropertyEditor();
+      } else {
+        byId("workspaceInfo").textContent = `Ошибка сохранения: ${String(res && res.error || "unknown")}`;
+      }
+      return res;
+    }
+    async function openLayoutEntry(entry) {
+      const e = entry && typeof entry === "object" ? entry : null;
+      if (!e) return;
+      saveCurrentManualRuntimeSnapshot();
+      state.selectedLayoutId = e.id;
+      applyLayoutMode(e.mode);
+      if (String(e.mode || "") === "inventory_manual") {
+        const boundZone = ensureManualLayoutBinding(e);
+        if (boundZone) {
+          state.selectedZoneId = Number(boundZone.id || 0) || null;
+          state.selectedDetailId = Number(boundZone.detailId || state.selectedDetailId || 0) || state.selectedDetailId;
+          if (state.layoutRun && typeof state.layoutRun === "object") {
+            state.layoutRun.selectedZoneId = Number(boundZone.id || 0) || null;
+          }
+        }
+      }
+      if (String(e.mode || "") === "inventory_manual" && e.persistedRunId) {
+        const res = await api("/api/layout/manual/runs/load", "POST", { id: e.persistedRunId });
+        if (res && res.ok && res.item && res.item.snapshot && typeof res.item.snapshot === "object") {
+          e.runtimeSnapshot = JSON.parse(JSON.stringify(res.item.snapshot));
+          applyManualLayoutSnapshot(e.runtimeSnapshot);
+          byId("workspaceInfo").textContent = `Выкладка открыта (${e.name || "-"})`;
+        } else {
+          byId("workspaceInfo").textContent = `Ошибка открытия: ${String(res && res.error || "unknown")}`;
+        }
+      } else if (String(e.mode || "") === "inventory_manual") {
+        const snapshot = (e.runtimeSnapshot && typeof e.runtimeSnapshot === "object")
+          ? e.runtimeSnapshot
+          : buildEmptyManualLayoutSnapshot();
+        if (!e.runtimeSnapshot) e.runtimeSnapshot = JSON.parse(JSON.stringify(snapshot));
+        applyManualLayoutSnapshot(snapshot);
+      }
+      renderLayoutModeSwitch();
+      renderDetailZoneTree();
+      renderPropertyEditor();
+      renderScene();
+    }
+    async function deleteLayoutEntry(entry) {
+      const e = entry && typeof entry === "object" ? entry : null;
+      if (!e) return;
+      if (e.persistedRunId) {
+        const res = await api("/api/layout/manual/runs/delete", "POST", { id: e.persistedRunId });
+        if (!res || !res.ok) {
+          byId("workspaceInfo").textContent = `Ошибка удаления: ${String(res && res.error || "unknown")}`;
+          return;
+        }
+      }
+      state.layouts = state.layouts.filter((x) => Number(x.id) !== Number(e.id));
+      if (Number(state.selectedLayoutId || 0) === Number(e.id)) {
+        const next = state.layouts[0] || null;
+        state.selectedLayoutId = next ? next.id : null;
+        if (next) applyLayoutMode(next.mode);
+      }
+      renderLayoutModeSwitch();
+      renderDetailZoneTree();
+      renderPropertyEditor();
+      renderScene();
+    }
+    async function loadSavedManualRuns() {
+      const res = await api("/api/layout/manual/runs", "GET");
+      const items = res && res.ok && Array.isArray(res.items) ? res.items : [];
+      for (const item of items) {
+        let snapshot = item && item.snapshot && typeof item.snapshot === "object"
+          ? JSON.parse(JSON.stringify(item.snapshot))
+          : null;
+        const hasSnapshotData = snapshot
+          && snapshot.layoutRun
+          && (Array.isArray(snapshot.layoutRun.fragments) || Array.isArray(snapshot.layoutRun.placements));
+        if (!hasSnapshotData && item && item.id) {
+          try {
+            const loadRes = await api("/api/layout/manual/runs/load", "POST", { id: String(item.id) });
+            if (loadRes && loadRes.ok && loadRes.item && loadRes.item.snapshot && typeof loadRes.item.snapshot === "object") {
+              snapshot = JSON.parse(JSON.stringify(loadRes.item.snapshot));
+            }
+          } catch (_) {
+            // Keep null snapshot; tree/reports will simply skip this run until backend is available.
+          }
+        }
+        const snapZoneId = Number(snapshot && (snapshot.selectedZoneId || (snapshot.layoutRun && snapshot.layoutRun.selectedZoneId) || 0) || 0) || null;
+        const snapDetailId = Number(snapshot && (snapshot.selectedDetailId || 0) || 0) || null;
+        const id = state.nextLayoutId++;
+        state.layouts.push({
+          id,
+          mode: "inventory_manual",
+          name: String(item && item.name || `Ручная выкладка ${id}`),
+          persistedRunId: String(item && item.id || ""),
+          persistedAt: Number(item && item.updatedAt || 0) || null,
+          boundZoneId: snapZoneId,
+          boundDetailId: snapDetailId,
+          runtimeSnapshot: snapshot
+        });
+      }
+      if (!state.selectedLayoutId && state.layouts.length > 0) {
+        state.selectedLayoutId = state.layouts[0].id;
+      }
+      return items.length;
     }
     function applyLayoutMode(mode) {
       state.layoutMode = String(mode || "inventory");
@@ -3934,7 +4556,30 @@ function renderSplitEvents(events) {
       if (title) title.textContent = state.uiPanel === "layouts" ? "" : "Детали / Зоны";
     }
 
-    function openInventoryStep1() {
+    function syncLayoutModeFromSelectedLayout() {
+      const selectedLayout = Array.isArray(state.layouts)
+        ? state.layouts.find((x) => Number(x && x.id || 0) === Number(state.selectedLayoutId || 0))
+        : null;
+      if (!selectedLayout) return;
+      const selectedMode = String(selectedLayout.mode || "");
+      if (!selectedMode) return;
+      if (String(state.layoutMode || "") === selectedMode) return;
+      state.layoutMode = selectedMode;
+      if (state.layoutRun && typeof state.layoutRun === "object") {
+        state.layoutRun.strategy = selectedMode;
+      }
+    }
+
+    function openInventoryStep1(forcedMode) {
+      const modeOverride = String(forcedMode || "").trim();
+      if (modeOverride) {
+        state.layoutMode = modeOverride;
+        if (state.layoutRun && typeof state.layoutRun === "object") {
+          state.layoutRun.strategy = modeOverride;
+        }
+      } else {
+        syncLayoutModeFromSelectedLayout();
+      }
       if (!state.selectedZoneId) {
         const firstZone = Array.isArray(state.zones) ? state.zones[0] : null;
         if (firstZone && Number.isFinite(Number(firstZone.id))) {
@@ -4218,7 +4863,7 @@ function renderSplitEvents(events) {
               ? Number(nextAllowance)
               : ((Number(prevAllowance) > 0) ? Number(prevAllowance) : 12);
           }
-          state.layoutRun.previewLayers = { pieceIntersections: [], visibleArea: [] };
+          state.layoutRun.previewLayers = { pieceIntersections: [], visibleArea: [], coverageHoles: [] };
           state.layoutRun.splitEvents = [];
           state.layoutRun.stats = { violations: 0, intersections: 0, uncovered: 1 };
           state.layoutRun.manual = {
@@ -4748,7 +5393,7 @@ function renderSplitEvents(events) {
         state.layoutRun.placements = [];
         state.layoutRun.topChoicesByFragment = {};
         state.layoutRun.selectedPlacementFragmentId = null;
-        state.layoutRun.previewLayers = { pieceIntersections: [], visibleArea: [] };
+        state.layoutRun.previewLayers = { pieceIntersections: [], visibleArea: [], coverageHoles: [] };
         state.layoutRun.splitEvents = [];
         state.selectedFragmentId = null;
         renderPlacementRows([]);
@@ -5362,6 +6007,23 @@ function renderSplitEvents(events) {
         }
       }
 
+      if (state.layers.coverageHoles && hasActiveLayoutOnZone) {
+        const holePolys = state.layoutRun.previewLayers && Array.isArray(state.layoutRun.previewLayers.coverageHoles)
+          ? state.layoutRun.previewLayers.coverageHoles
+          : [];
+        for (const poly of holePolys) {
+          const pts = Array.isArray(poly && poly.points) ? poly.points : (Array.isArray(poly) ? poly : []);
+          if (pts.length < 3) continue;
+          layerVisibleArea.add(new Konva.Line({
+            points: linePoints(pts),
+            stroke: ENGINEERING_STYLES.coverageHoles.stroke,
+            strokeWidth: ENGINEERING_STYLES.coverageHoles.strokeWidth,
+            fill: ENGINEERING_STYLES.coverageHoles.fill,
+            closed: true
+          }));
+        }
+      }
+
       if (state.layers.pieceIntersections && hasActiveLayoutOnZone) {
         const interPolys = state.layoutRun.previewLayers && Array.isArray(state.layoutRun.previewLayers.pieceIntersections)
           ? state.layoutRun.previewLayers.pieceIntersections
@@ -5446,14 +6108,8 @@ function renderSplitEvents(events) {
       layerGuides.draw(); layerPattern.draw(); layerFragments.draw(); layerVisibleArea.draw(); layerPreview.draw(); layerZones.draw(); layerSelection.draw();
       updateReportsButtonState();
 
-      const entities = state.patternGeometry ? Number(state.patternGeometry.entityCount || 0) : 0;
-      const shown = renderEntities.length;
-      const fs = state.filterStats || {};
-      if (compactZprj) {
-        byId("workspaceInfo").textContent = `tool=${state.tool} | entities=${shown}/${entities} | scale=${state.viewport.scale.toFixed(3)} | compact=zprj`;
-      } else {
-        byId("workspaceInfo").textContent = `tool=${state.tool} | entities=${shown}/${entities} | zones=${state.zones.length} | selectedZone=${state.selectedZoneId ?? "-"} | scale=${state.viewport.scale.toFixed(3)} | smartClosed=${fs.smartClosed || 0} | filtered(noisy=${fs.noisy || 0},open=${fs.open || 0},minPts=${fs.minPoints || 0},small=${fs.tooSmall || 0},dedup=${fs.dedup || 0},capped=${fs.capped || 0})${fs.fallbackRaw ? " | fallback=raw" : ""}`;
-      }
+      const workspaceInfo = byId("workspaceInfo");
+      if (workspaceInfo) workspaceInfo.textContent = "";
     }
 
     const api = (typeof window.furlabApi === "function")
@@ -5910,4 +6566,13 @@ function refreshSelectionInfo() {
     refreshBuildTag();
     renderScene();
     updateModeUi();
-
+    void loadSavedManualRuns()
+      .then((count) => {
+        if (count > 0) {
+          renderLayoutModeSwitch();
+          renderDetailZoneTree();
+          renderPropertyEditor();
+          renderScene();
+        }
+      })
+      .catch(() => {});

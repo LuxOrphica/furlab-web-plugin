@@ -73,6 +73,16 @@ function inList(x, arr) {
   return false;
 }
 
+function normalizeStatusCode(v) {
+  var s = String(v || "").replace(/^\s+|\s+$/g, "").toLowerCase();
+  if (!s) return "";
+  if (s === "available" || s === "avail" || s === "available_piece" || s === "доступен") return "available";
+  if (s === "reserved" || s === "reserve" || s === "booked" || s === "allocated" || s === "зарезервирован") return "reserved";
+  if (s === "used" || s === "in use" || s === "consumed" || s === "использован") return "used";
+  if (s === "discarded" || s === "disposed" || s === "writeoff" || s === "written_off" || s === "writtenoff" || s === "списан") return "discarded";
+  return s;
+}
+
 function angDiffDeg(a, b) {
   if (a === null || a === undefined || b === null || b === undefined || a === "" || b === "") return null;
   var da = Number(a);
@@ -170,6 +180,16 @@ try {
 
   var dao = new ActiveXObject("DAO.DBEngine.120");
   daoDb = dao.OpenDatabase(dbPath, false, true);
+  var activeReservations = {};
+  try {
+    var rsResv = daoDb.OpenRecordset("SELECT scrapPieceId FROM ScrapReservation WHERE releasedAt Is Null;");
+    while (!rsResv.EOF) {
+      var rid = String(rsResv.Fields("scrapPieceId").Value || "");
+      if (rid) activeReservations[rid.toLowerCase()] = true;
+      rsResv.MoveNext();
+    }
+    rsResv.Close();
+  } catch (_) {}
   var rs = daoDb.OpenRecordset(sql);
 
   var rows = [];
@@ -177,6 +197,7 @@ try {
   var rejectCounts = {
     inventoryTag: 0,
     status: 0,
+    reservation: 0,
     material: 0,
     contour: 0,
     quality: 0,
@@ -202,6 +223,7 @@ try {
       maxSpanMm: asNum(rs.Fields("maxSpanMm").Value),
       napDirectionDeg: asNum(rs.Fields("napDirectionDeg").Value),
       updatedAt: toIso(rs.Fields("updatedAt").Value),
+      hasActiveReservation: false,
       scrapContour: includeScrapContour ? (rs.Fields("scrapContour").Value || "") : ""
     };
     if (!String(row.inventoryTag || "").replace(/^\s+|\s+$/g, "")) {
@@ -211,10 +233,17 @@ try {
       continue;
     }
     var st = String(row.scrapStatus || "");
-    var stNorm = st.toLowerCase();
-    if (onlyAvailable && (stNorm === "used" || stNorm === "disposed" || stNorm === "writeoff")) {
+    var stNorm = normalizeStatusCode(st);
+    row.hasActiveReservation = !!activeReservations[String(row.id || "").toLowerCase()];
+    if (onlyAvailable && stNorm !== "available") {
       rejectCounts.status += 1;
-      addRejectSample(rejectSamples, "status", row, "onlyAvailable");
+      addRejectSample(rejectSamples, "status", row, "onlyAvailable:not_available");
+      rs.MoveNext();
+      continue;
+    }
+    if (onlyAvailable && row.hasActiveReservation) {
+      rejectCounts.reservation += 1;
+      addRejectSample(rejectSamples, "reservation", row, "active_reservation");
       rs.MoveNext();
       continue;
     }
@@ -295,6 +324,7 @@ try {
       '"inventoryTag":"' + esc(row.inventoryTag) + '",' +
       '"materialId":"' + esc(row.materialId) + '",' +
       '"scrapStatus":"' + esc(row.scrapStatus) + '",' +
+      '"hasActiveReservation":' + (row.hasActiveReservation ? "true" : "false") + "," +
       '"scrapQuality":"' + esc(row.scrapQuality) + '",' +
       '"areaMm2":' + (row.areaMm2 === null ? "null" : String(row.areaMm2)) + "," +
       '"bboxWidthMm":' + (row.bboxWidthMm === null ? "null" : String(row.bboxWidthMm)) + "," +
@@ -338,6 +368,7 @@ try {
       '"rejected":{' +
         '"inventoryTag":' + String(rejectCounts.inventoryTag) + "," +
         '"status":' + String(rejectCounts.status) + "," +
+        '"reservation":' + String(rejectCounts.reservation) + "," +
         '"material":' + String(rejectCounts.material) + "," +
         '"contour":' + String(rejectCounts.contour) + "," +
         '"quality":' + String(rejectCounts.quality) + "," +
@@ -347,6 +378,7 @@ try {
       '"examples":{' +
         '"inventoryTag":[' + stringifySampleList(rejectSamples.inventoryTag || []) + "]," +
         '"status":[' + stringifySampleList(rejectSamples.status || []) + "]," +
+        '"reservation":[' + stringifySampleList(rejectSamples.reservation || []) + "]," +
         '"material":[' + stringifySampleList(rejectSamples.material || []) + "]," +
         '"contour":[' + stringifySampleList(rejectSamples.contour || []) + "]," +
         '"quality":[' + stringifySampleList(rejectSamples.quality || []) + "]," +

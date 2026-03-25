@@ -2,35 +2,26 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "FurLab: Start DXF Server",
+      "label": "FurLab Web Plugin: start DXF server (5600)",
       "type": "shell",
-      "command": "node src/server.js",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "tools/start_furlab_web_plugin_server.ps1"
+      ],
       "options": {
-        "cwd": "f:/FURLAB/dev/furlab-web-plugin",
-        "env": {
-          "HOST": "127.0.0.1",
-          "PORT": "5600",
-          "FURLAB_DB_PATH": "F:/FURLAB/dev/furlab-access/БД/Furlab 1.accdb"
-        }
+        "cwd": "${workspaceFolder}"
       },
       "isBackground": true,
-      "problemMatcher": {
-        "owner": "custom",
-        "pattern": {
-          "regexp": "^(.*)$",
-          "message": 1
-        },
-        "background": {
-          "activeOnStart": true,
-          "beginsPattern": "^\\[furlab-web-plugin\\]",
-          "endsPattern": "^\\[furlab-web-plugin\\] db="
-        }
-      },
       "presentation": {
-        "reveal": "always",
+        "reveal": "never",
         "panel": "dedicated",
-        "clear": false
-      }
+        "focus": false
+      },
+      "problemMatcher": []
     }
   ]
 }
