@@ -12,6 +12,8 @@
     "test:split": "node scripts/test_split_return.js --api http://127.0.0.1:5610",
     "test:manual-zone-lock": "node scripts/test_manual_selected_zone_lock.js",
     "test:manual-e2e": "node scripts/selftest_inventory_manual_e2e.js",
+    "test:inventory-e2e": "node scripts/selftest_inventory_direct_e2e.js",
+    "test:intarsia-e2e": "node scripts/selftest_intarsia_e2e.js",
     "encoding:check": "node scripts/encoding-check.js",
     "mojibake:check": "node scripts/mojibake-check.js",
     "i18n:check": "node scripts/i18n-structure-check.js",

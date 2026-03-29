@@ -190,7 +190,7 @@ function mmRect(x0, y0, x1, y1) {
       state.view.showDetailLabels = false;
       renderScene();
     });
-    await page.click("#inventoryManualEvalBtn");
+    await page.click('[data-manual-toolbar="recompute"]');
     await page.waitForTimeout(500);
 
     await page.click("#workspace");

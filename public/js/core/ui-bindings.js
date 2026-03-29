@@ -3,6 +3,7 @@
   function createUiBindings(options) {
     const opts = options && typeof options === "object" ? options : {};
     const byId = typeof opts.byId === "function" ? opts.byId : () => null;
+    const api = typeof opts.api === "function" ? opts.api : async () => ({ ok: false, error: "api_unavailable" });
     const state = opts.state || {};
     const renderScene = typeof opts.renderScene === "function" ? opts.renderScene : () => {};
     const clampInputNumber = typeof opts.clampInputNumber === "function" ? opts.clampInputNumber : () => {};
@@ -26,6 +27,14 @@
     const renderDetailZoneTree = typeof opts.renderDetailZoneTree === "function" ? opts.renderDetailZoneTree : () => {};
     const renderPropertyEditor = typeof opts.renderPropertyEditor === "function" ? opts.renderPropertyEditor : () => {};
     const syncFillTypeUi = typeof opts.syncFillTypeUi === "function" ? opts.syncFillTypeUi : () => {};
+    const getPreviewToken = typeof opts.getPreviewToken === "function" ? opts.getPreviewToken : () => "";
+
+    function mapLayoutModeToApplyType(mode) {
+      const m = String(mode || "");
+      if (m === "inventory") return "inventory_direct";
+      if (m === "inventory_split_return") return "inventory_split_return";
+      return m;
+    }
 
     let intarsiaDraftPreviewTimer = null;
     const scheduleIntarsiaDraftPreview = (delayMs) => {
@@ -188,10 +197,32 @@
           renderScene();
           return;
         }
+        const layoutType = mapLayoutModeToApplyType(state.layoutMode);
+        const selectedZoneId = Number(state.layoutRun && state.layoutRun.selectedZoneId || state.selectedZoneId || 0) || null;
+        const applyRes = await api("/api/layout/modes/apply", "POST", {
+          layoutType,
+          previewToken: String(getPreviewToken() || ""),
+          selectedZoneId,
+          resultStatus: String(state.layoutRun && state.layoutRun.resultStatus || "ok"),
+          stats: state.layoutRun && state.layoutRun.stats ? state.layoutRun.stats : {},
+          placements: Array.isArray(state.layoutRun && state.layoutRun.placements) ? state.layoutRun.placements : [],
+          fragments: Array.isArray(state.layoutRun && state.layoutRun.fragments) ? state.layoutRun.fragments : [],
+          candidatePool: Array.isArray(state.layoutRun && state.layoutRun.candidatePool) ? state.layoutRun.candidatePool : [],
+          strategy: String(state.layoutRun && state.layoutRun.strategy || state.layoutMode || ""),
+          inventoryScenario: String(state.layoutRun && state.layoutRun.inventoryScenario || "A"),
+          paramsSnapshot: state.layoutRun && state.layoutRun.paramsSnapshot ? state.layoutRun.paramsSnapshot : null,
+          zone: selectedZoneId ? { id: selectedZoneId } : null
+        });
+        if (!applyRes || applyRes.ok !== true) {
+          const workspaceInfo = byId("workspaceInfo");
+          if (workspaceInfo) workspaceInfo.textContent = `Apply failed: ${String(applyRes && (applyRes.message || applyRes.error) || "unknown")}`;
+          return;
+        }
+        state.layoutRun.serverApply = applyRes;
         state.layoutRun.status = "applied";
         closeInventoryStep2();
         const workspaceInfo = byId("workspaceInfo");
-        if (workspaceInfo) workspaceInfo.textContent = `Выкладка применена: ${state.layoutRun.fragments.length} фрагментов`;
+        if (workspaceInfo) workspaceInfo.textContent = `???????? ?????????: ${state.layoutRun.fragments.length} ??????????`;
         renderScene();
       };
       byId("layoutModeSwitch").querySelectorAll("button[data-panel]").forEach((btn) => {

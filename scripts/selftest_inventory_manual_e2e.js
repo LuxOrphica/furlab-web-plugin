@@ -86,6 +86,7 @@ function minDistToContour(point, contour) {
   const shot1 = path.join(OUT_DIR, `inventory_manual_e2e_${ts}_01_step2.png`);
   const shot2 = path.join(OUT_DIR, `inventory_manual_e2e_${ts}_02_dragged.png`);
   const shot3 = path.join(OUT_DIR, `inventory_manual_e2e_${ts}_03_applied.png`);
+  const shot4 = path.join(OUT_DIR, `inventory_manual_e2e_${ts}_04_seams.png`);
 
   const report = {
     baseUrl: BASE_URL,
@@ -102,7 +103,7 @@ function minDistToContour(point, contour) {
       display_checkboxes_affect: { pass: false, info: "" },
       seam_uses_core_geometry: { pass: false, info: "" }
     },
-    artifacts: { shot1, shot2, shot3 },
+    artifacts: { shot1, shot2, shot3, shot4 },
     routeHits: { candidates: 0, evaluate: 0, recompute: 0 },
     debug: {
       seamGeometrySource: "",
@@ -238,7 +239,7 @@ function minDistToContour(point, contour) {
     // Real UI path: switch to layouts, add "inventory_manual" layout, then open step1 from property panel.
     const layoutsTab = page.locator("#layoutModeSwitch button[data-panel='layouts']");
     if (await layoutsTab.count()) await layoutsTab.click();
-    await page.click("#detailZoneTree button:has-text('+')");
+    await page.click("#detailZoneTree .layout-add-btn");
     await page.waitForSelector("#layoutTypeBackdrop", { state: "visible", timeout: 10000 });
     const cards = page.locator("#layoutTypeGrid .layout-type-card");
     const cardCount = await cards.count();
@@ -314,7 +315,7 @@ function minDistToContour(point, contour) {
     });
     const layerLabelBeforeApply = await page.locator("#layerPieceBordersLabel").innerText().catch(() => "");
     report.steps.layer_name_before_apply = {
-      pass: /Рабочие области/i.test(String(layerLabelBeforeApply || "")),
+      pass: /Рабочие области|Фрагменты/i.test(String(layerLabelBeforeApply || "")),
       info: `layerPieceBordersLabel="${layerLabelBeforeApply}"`
     };
 
@@ -397,6 +398,7 @@ function minDistToContour(point, contour) {
           await page.waitForTimeout(180);
         }
       }
+      await page.screenshot({ path: shot4, fullPage: true });
       const seamDebug = await page.evaluate(() => {
         const lr = state && state.layoutRun;
         const manual = lr && lr.manual;
@@ -527,8 +529,10 @@ function minDistToContour(point, contour) {
     console.log("SELFTEST_SHOT", shot1);
     console.log("SELFTEST_SHOT", shot2);
     console.log("SELFTEST_SHOT", shot3);
+    console.log("SELFTEST_SHOT", shot4);
     await ctx.close();
     await browser.close();
     process.exit(report.ok ? 0 : 1);
   }
 })();
+

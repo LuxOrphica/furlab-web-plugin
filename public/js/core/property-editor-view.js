@@ -1,4 +1,4 @@
-(function registerFurLabPropertyEditorView(globalObj) {
+﻿(function registerFurLabPropertyEditorView(globalObj) {
   const root = globalObj || (typeof window !== "undefined" ? window : globalThis);
 
   function createPropertyEditorView(deps) {
@@ -11,7 +11,6 @@
     const getZoneNapDirectionDeg = deps && deps.getZoneNapDirectionDeg;
     const setZoneNapDirectionDeg = deps && deps.setZoneNapDirectionDeg;
     const getLayoutModeTitle = deps && deps.getLayoutModeTitle;
-    const isManualInventoryMode = deps && deps.isManualInventoryMode;
     const api = deps && deps.api;
     const closeReplaceCandidateModal = deps && deps.closeReplaceCandidateModal;
     const openReplaceCandidateModal = deps && deps.openReplaceCandidateModal;
@@ -21,6 +20,53 @@
     const openInventoryStep1 = deps && deps.openInventoryStep1;
     const renderManualTrayIntoRoot = deps && deps.renderManualTrayIntoRoot;
     const saveLayoutEntry = deps && deps.saveLayoutEntry;
+
+    function ensurePropertyEditorUi() {
+      if (!state.propertyEditorUi || typeof state.propertyEditorUi !== "object") {
+        state.propertyEditorUi = {};
+      }
+      if (!state.propertyEditorUi.sections || typeof state.propertyEditorUi.sections !== "object") {
+        state.propertyEditorUi.sections = {};
+      }
+      return state.propertyEditorUi;
+    }
+
+    function isSectionOpen(key, defaultOpen) {
+      const ui = ensurePropertyEditorUi();
+      if (Object.prototype.hasOwnProperty.call(ui.sections, key)) {
+        return !!ui.sections[key];
+      }
+      return !!defaultOpen;
+    }
+
+    function renderEditorSection(key, title, bodyHtml, defaultOpen = true) {
+      const open = isSectionOpen(key, defaultOpen);
+      return `
+        <section class="prop-section">
+          <button type="button" class="prop-section-toggle" data-prop-section="${key}" aria-expanded="${open ? "true" : "false"}">
+            <span class="prop-section-toggle-icon">${open ? "▾" : "▸"}</span>
+            <span>${title}</span>
+          </button>
+          <div class="prop-section-body${open ? " open" : ""}">
+            ${bodyHtml}
+          </div>
+        </section>
+      `;
+    }
+
+    function bindSectionToggles(rootEl) {
+      if (!rootEl) return;
+      const ui = ensurePropertyEditorUi();
+      rootEl.querySelectorAll("[data-prop-section]").forEach((btn) => {
+        btn.onclick = () => {
+          const key = String(btn.getAttribute("data-prop-section") || "");
+          if (!key) return;
+          ui.sections[key] = !isSectionOpen(key, true);
+          renderPropertyEditor();
+        };
+      });
+    }
+
     function parseLocaleNumber(v, fallback = null) {
       if (v === null || v === undefined) return fallback;
       if (typeof v === "number") return Number.isFinite(v) ? v : fallback;
@@ -118,14 +164,19 @@
             ? Number(getZoneNapDirectionDeg(zone))
             : Number(DEFAULT_NAP_DIRECTION_DEG || 90);
           root.innerHTML = `
-            <div style="font-weight:600; margin-bottom:6px;">Зона</div>
-            <div class="prop-row"><div class="prop-label">Название</div><div>${String(zone.name || `Зона ${zone.id}`)}</div></div>
-            <div class="prop-row"><div class="prop-label">Detail ID</div><div>${detail ? detail.id : "-"}</div></div>
-            <div class="prop-row"><div class="prop-label">Zone ID</div><div>${zone.id}</div></div>
-            <div class="prop-row"><div class="prop-label">Направление ворса, °</div><div><input id="zoneNapDirectionInput" type="number" min="0" max="359.9" step="1" style="width:100%; min-width:0; box-sizing:border-box; padding:4px 6px;" value="${zoneNapDeg.toFixed(1)}"></div></div>
-            <div class="prop-row"><div class="prop-label">Площадь зоны</div><div>${zoneAreaValue}</div></div>
-            <div class="prop-row"><div class="prop-label">Периметр зоны</div><div>${zonePerimeterValue}</div></div>
+            <div class="prop-title">Зона</div>
+            ${renderEditorSection("zone_info", "Информация", `
+              <div class="prop-row"><div class="prop-label">Название</div><div>${String(zone.name || `Зона ${zone.id}`)}</div></div>
+              <div class="prop-row"><div class="prop-label">Detail ID</div><div>${detail ? detail.id : "-"}</div></div>
+              <div class="prop-row"><div class="prop-label">Zone ID</div><div>${zone.id}</div></div>
+              <div class="prop-row"><div class="prop-label">Направление ворса, °</div><div><input id="zoneNapDirectionInput" class="prop-input" type="number" min="0" max="359.9" step="1" value="${zoneNapDeg.toFixed(1)}"></div></div>
+            `, true)}
+            ${renderEditorSection("zone_geometry", "Геометрия", `
+              <div class="prop-row"><div class="prop-label">Площадь зоны</div><div>${zoneAreaValue}</div></div>
+              <div class="prop-row"><div class="prop-label">Периметр зоны</div><div>${zonePerimeterValue}</div></div>
+            `, true)}
           `;
+          bindSectionToggles(root);
           const zoneNapInput = byId("zoneNapDirectionInput");
           if (zoneNapInput && typeof setZoneNapDirectionDeg === "function") {
             const applyNap = () => {
@@ -142,10 +193,13 @@
         }
         if (detail) {
           root.innerHTML = `
-            <div style="font-weight:600; margin-bottom:6px;">Деталь</div>
-            <div class="prop-row"><div class="prop-label">Detail ID</div><div>${detail.id}</div></div>
+            <div class="prop-title">Деталь</div>
+            ${renderEditorSection("detail_info", "Информация", `
+              <div class="prop-row"><div class="prop-label">Detail ID</div><div>${detail.id}</div></div>
+            `, true)}
             <div class="tree-empty" style="margin-top:6px;">Выберите зону, чтобы увидеть её параметры.</div>
           `;
+          bindSectionToggles(root);
           return;
         }
         root.innerHTML = '<div class="tree-empty">Нет выбранного объекта</div>';
@@ -159,34 +213,39 @@
 
       if (selectedFragId > 0) {
         root.innerHTML = `
-          <div style="font-weight:600; margin-bottom:6px;">Фрагмент</div>
-          <div style="margin:8px 0 6px; font-weight:600;">Информация</div>
-          <div class="prop-row"><div class="prop-label">ID фрагмента</div><div>${selectedFragId}</div></div>
-          <div class="prop-row"><div class="prop-label">Площадь, мм²</div><div>${fragArea.toFixed(1)}</div></div>
-          <div class="prop-row"><div class="prop-label">Периметр, мм</div><div>${fragPerim.toFixed(1)}</div></div>
-          <div style="margin:8px 0 6px; font-weight:600;">Инвентарь</div>
-          <div class="prop-row"><div class="prop-label">Инвентарный номер</div><div>${selectedPlacement && selectedPlacement.inventoryTag ? selectedPlacement.inventoryTag : "-"}</div></div>
-          <div class="prop-row"><div class="prop-label">Статус</div><div>${selectedPlacement && selectedPlacement.status ? selectedPlacement.status : "-"}</div></div>
-          <div style="display:flex; gap:8px; margin:6px 0;">
-            <button id="fragReplaceBtn" ${selectedPlacement ? "" : "disabled"}>Заменить</button>
-            <button id="fragClearBtn" ${selectedPlacement ? "" : "disabled"}>Снять подбор</button>
-          </div>
-          <div style="margin:8px 0 6px; font-weight:600;">Параметры</div>
-          <div class="prop-row"><div class="prop-label">Резерв под припуск, мм</div><div>${allowance.toFixed(1)}</div></div>
-          <div class="prop-row"><div class="prop-label">Направление ворса</div><div>${nap}</div></div>
-          <div class="prop-row"><div class="prop-label">Цель ворса</div><div>${napTargetText}</div></div>
-          <div class="prop-row"><div class="prop-label">Допуск ворса</div><div>${napTolText}</div></div>
-          <div class="prop-row"><div class="prop-label">Δ к цели</div><div>${napDeltaToTargetText}</div></div>
-          <div class="prop-row"><div class="prop-label">Проверка ворса</div><div style="font-weight:600; color:${napCheckOk === null ? "#666" : (napCheckOk ? "#0a7d2e" : "#b42318")};">${napCheckText}</div></div>
-          <div style="margin:8px 0 6px; font-weight:600;">Качество подбора</div>
-          <div class="prop-row"><div class="prop-label">Fit score</div><div>${fitScore}</div></div>
-          <div class="prop-row"><div class="prop-label">Совпадение площади</div><div>${fitAreaRatio}</div></div>
-          <div class="prop-row"><div class="prop-label">Overlap</div><div>${fitOverlap}</div></div>
-          <div class="prop-row"><div class="prop-label">Внутри фрагмента</div><div>${fitInside}</div></div>
-          <div class="prop-row"><div class="prop-label">Chamfer</div><div>${fitChamfer}</div></div>
-          <div class="prop-row"><div class="prop-label">Δ ворса</div><div>${napDelta}</div></div>
-          <div class="prop-row"><div class="prop-label">Поворот совмещения</div><div>${alignRot}</div></div>
+          <div class="prop-title">Фрагмент</div>
+          ${renderEditorSection("fragment_info", "Информация", `
+            <div class="prop-row"><div class="prop-label">ID фрагмента</div><div>${selectedFragId}</div></div>
+            <div class="prop-row"><div class="prop-label">Площадь, мм²</div><div>${fragArea.toFixed(1)}</div></div>
+            <div class="prop-row"><div class="prop-label">Периметр, мм</div><div>${fragPerim.toFixed(1)}</div></div>
+          `, true)}
+          ${renderEditorSection("fragment_inventory", "Инвентарь", `
+            <div class="prop-row"><div class="prop-label">Инвентарный номер</div><div>${selectedPlacement && selectedPlacement.inventoryTag ? selectedPlacement.inventoryTag : "-"}</div></div>
+            <div class="prop-row"><div class="prop-label">Статус</div><div>${selectedPlacement && selectedPlacement.status ? selectedPlacement.status : "-"}</div></div>
+            <div class="prop-actions">
+              <button class="prop-btn" id="fragReplaceBtn" ${selectedPlacement ? "" : "disabled"}>Заменить</button>
+              <button class="prop-btn" id="fragClearBtn" ${selectedPlacement ? "" : "disabled"}>Снять подбор</button>
+            </div>
+          `, true)}
+          ${renderEditorSection("fragment_params", "Параметры", `
+            <div class="prop-row"><div class="prop-label">Резерв под припуск, мм</div><div>${allowance.toFixed(1)}</div></div>
+            <div class="prop-row"><div class="prop-label">Направление ворса</div><div>${nap}</div></div>
+            <div class="prop-row"><div class="prop-label">Цель ворса</div><div>${napTargetText}</div></div>
+            <div class="prop-row"><div class="prop-label">Допуск ворса</div><div>${napTolText}</div></div>
+            <div class="prop-row"><div class="prop-label">Δ к цели</div><div>${napDeltaToTargetText}</div></div>
+            <div class="prop-row"><div class="prop-label">Проверка ворса</div><div style="font-weight:600; color:${napCheckOk === null ? "#666" : (napCheckOk ? "#0a7d2e" : "#b42318")};">${napCheckText}</div></div>
+          `, true)}
+          ${renderEditorSection("fragment_quality", "Качество подбора", `
+            <div class="prop-row"><div class="prop-label">Fit score</div><div>${fitScore}</div></div>
+            <div class="prop-row"><div class="prop-label">Совпадение площади</div><div>${fitAreaRatio}</div></div>
+            <div class="prop-row"><div class="prop-label">Overlap</div><div>${fitOverlap}</div></div>
+            <div class="prop-row"><div class="prop-label">Внутри фрагмента</div><div>${fitInside}</div></div>
+            <div class="prop-row"><div class="prop-label">Chamfer</div><div>${fitChamfer}</div></div>
+            <div class="prop-row"><div class="prop-label">Δ ворса</div><div>${napDelta}</div></div>
+            <div class="prop-row"><div class="prop-label">Поворот совмещения</div><div>${alignRot}</div></div>
+          `, false)}
         `;
+        bindSectionToggles(root);
         const clearBtn = byId("fragClearBtn");
         if (clearBtn && selectedPlacement) {
           clearBtn.onclick = () => {
@@ -297,16 +356,23 @@
       const typeValue = selectedLayout ? selectedLayoutModeTitle : "-";
 
       root.innerHTML = `
-        <div style="font-weight:600; margin-bottom:6px;">Выкладка</div>
-        <div class="prop-row"><div class="prop-label">Название</div><div><input id="layoutNameInput" type="text" placeholder="(Пусто)" style="width:100%; min-width:0; box-sizing:border-box; padding:4px 6px; background:#fff; opacity:1;" ${nameInputReadonly}></div></div>
-        <div class="prop-row"><div class="prop-label">Тип</div><div>${typeValue}</div></div>
-        <div style="margin:8px 0 6px; font-weight:600;">Инвентарь</div>
-        <div><button id="inventoryPickBtn" style="width:100%;">${actionTitle}</button></div>
-        ${isManualLayoutSelected && selectedLayout ? `<div style="margin-top:6px;"><button id="manualSaveNowBtn" style="width:100%;">Сохранить сейчас</button></div>` : ""}
-        <div class="tree-empty" style="margin-top:6px;">${isManualLayoutSelected ? "" : "Настройки подбора, preview и применение"}</div>
-        <div style="margin:8px 0 6px; font-weight:600;">Параметры</div>
-        <div class="prop-row"><div class="prop-label">Резерв припуска, мм</div><div><input id="layoutAllowanceInput" type="number" min="0" max="200" step="0.5" style="width:100%; min-width:0; box-sizing:border-box; padding:4px 6px;" value="${Number(allowanceValue).toFixed(1)}"></div></div>
+        <div class="prop-title">Выкладка</div>
+        ${renderEditorSection("layout_info", "Информация", `
+          <div class="prop-row"><div class="prop-label">Название</div><div><input id="layoutNameInput" class="prop-input" type="text" placeholder="(Пусто)" ${nameInputReadonly}></div></div>
+          <div class="prop-row"><div class="prop-label">Тип</div><div>${typeValue}</div></div>
+        `, true)}
+        ${renderEditorSection("layout_inventory", "Инвентарь", `
+          <div class="prop-actions prop-actions-stack">
+            <button class="prop-btn" id="inventoryPickBtn">${actionTitle}</button>
+            ${isManualLayoutSelected && selectedLayout ? `<button class="prop-btn" id="manualSaveNowBtn">Сохранить сейчас</button>` : ""}
+          </div>
+          ${isManualLayoutSelected ? "" : `<div class="tree-empty" style="margin-top:6px;">Настройки подбора, preview и применение</div>`}
+        `, true)}
+        ${renderEditorSection("layout_params", "Параметры", `
+          <div class="prop-row"><div class="prop-label">Резерв припуска, мм</div><div><input id="layoutAllowanceInput" class="prop-input" type="number" min="0" max="200" step="0.5" value="${Number(allowanceValue).toFixed(1)}"></div></div>
+        `, true)}
       `;
+      bindSectionToggles(root);
       const btn = byId("inventoryPickBtn");
       if (btn) {
         const hasAnyZone = Array.isArray(state.zones) && state.zones.length > 0;

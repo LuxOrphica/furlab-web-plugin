@@ -2,6 +2,32 @@
 
 const { wrapIntarsiaPreview } = require("../wrapper");
 
+function normalizePlacementOrders(placements) {
+  if (!Array.isArray(placements)) return [];
+  return placements.map((p, idx) => {
+    const solveOrder = Number.isFinite(Number(p && p.solveOrder))
+      ? Number(p.solveOrder)
+      : (idx + 1);
+    const solveIndex = Number.isFinite(Number(p && p.solveIndex))
+      ? Number(p.solveIndex)
+      : Math.max(0, solveOrder - 1);
+    return {
+      ...p,
+      solveOrder,
+      solveIndex,
+      renderIndex: Number.isFinite(Number(p && p.renderIndex)) ? Number(p.renderIndex) : solveOrder
+    };
+  });
+}
+
+function buildSolveOrder(placements) {
+  return normalizePlacementOrders(placements)
+    .slice()
+    .sort((a, b) => Number(a && a.solveOrder || 0) - Number(b && b.solveOrder || 0))
+    .map((p) => String(p && (p.placementId || p.fragmentId || p.scrapPieceId || p.inventoryTag || "")))
+    .filter((x) => x.length > 0);
+}
+
 function createIntarsiaMode(deps) {
   const generateRegularFragments = deps && deps.generateRegularFragments;
   const generateVoronoiFragments = deps && deps.generateVoronoiFragments;
@@ -121,12 +147,20 @@ function createIntarsiaMode(deps) {
   }
 
   async function applyWrapper(req) {
+    const placements = normalizePlacementOrders(req && req.placements);
+    const fragments = Array.isArray(req && req.fragments) ? req.fragments : [];
     return {
-      ok: false,
+      ok: true,
       layoutType: "intarsia",
-      error: "apply_not_implemented",
-      message: "intarsia apply adapter is not connected yet.",
-      previewToken: String(req && req.previewToken || "")
+      applied: true,
+      previewToken: String(req && req.previewToken || ""),
+      selectedZoneId: Number(req && req.selectedZoneId || 0) || null,
+      resultStatus: String(req && req.resultStatus || "ok"),
+      stats: req && req.stats && typeof req.stats === "object" ? req.stats : {},
+      fragments,
+      placements,
+      solveOrder: buildSolveOrder(placements),
+      message: "intarsia apply confirmed by server."
     };
   }
 

@@ -239,9 +239,46 @@
       let hiddenSmallCount = 0;
       let hiddenSmallAreaMm2 = 0;
       const layouts = Array.isArray(state && state.layouts) ? state.layouts : [];
+      const selectedLayoutId = Number(state && state.selectedLayoutId || 0) || 0;
+      const latestEntryByZone = new Map();
+      const rankLayoutForReports = (entry, snapshot, zoneId) => {
+        const isSelected = Number(entry && entry.id || 0) === selectedLayoutId;
+        const isPersisted = !!(entry && entry.persistedRunId);
+        const updatedAt = Number(
+          entry && entry.persistedAt
+          || snapshot && snapshot.updatedAt
+          || snapshot && snapshot.layoutRun && snapshot.layoutRun.updatedAt
+          || 0
+        ) || 0;
+        return [
+          Number(isSelected),
+          Number(isPersisted),
+          updatedAt,
+          Number(entry && entry.id || 0),
+          Number(zoneId || 0)
+        ];
+      };
+      const isRankGreater = (a, b) => {
+        for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+          const av = Number(a[i] || 0);
+          const bv = Number(b[i] || 0);
+          if (av > bv) return true;
+          if (av < bv) return false;
+        }
+        return false;
+      };
       for (const entry of layouts) {
         const snapshot = getLayoutSnapshotForReports(entry);
         if (!snapshot || !snapshot.layoutRun) continue;
+        const boundZoneId = Number(entry && entry.boundZoneId || snapshot.selectedZoneId || snapshot.layoutRun.selectedZoneId || 0) || 0;
+        if (!boundZoneId) continue;
+        const nextRank = rankLayoutForReports(entry, snapshot, boundZoneId);
+        const prev = latestEntryByZone.get(boundZoneId);
+        if (!prev || isRankGreater(nextRank, prev.rank)) {
+          latestEntryByZone.set(boundZoneId, { entry, snapshot, rank: nextRank });
+        }
+      }
+      for (const { entry, snapshot } of latestEntryByZone.values()) {
         const placements = Array.isArray(snapshot.layoutRun.placements) ? snapshot.layoutRun.placements : [];
         const fragments = Array.isArray(snapshot.layoutRun.fragments) ? snapshot.layoutRun.fragments : [];
         const boundZoneId = Number(entry && entry.boundZoneId || snapshot.selectedZoneId || snapshot.layoutRun.selectedZoneId || 0) || 0;
@@ -3238,7 +3275,7 @@ function renderSplitEvents(events) {
       const callRecomputeForZone = async (z) => {
         return api("/api/layout/manual/recompute", "POST", {
           zone: { id: z.id, points: z.points || [] },
-          selectedZoneId,
+          selectedZoneId: Number(z && z.id || selectedZoneId || 0) || null,
           placements: placementsForEval,
           pieceSeamReserveMm: getCurrentManualAllowanceMm(),
           layerPolicy: "first_on_top",
@@ -3255,42 +3292,42 @@ function renderSplitEvents(events) {
       }
       if (isStale()) return false;
       const looksImpossibleZero = !!(res && res.ok && placementsForEval.length > 0 && Number(res.visibleMetrics && res.visibleMetrics.usefulAreaMm2 || 0) <= 1e-9 && Number(res.visibleMetrics && res.visibleMetrics.selectedPiecesAreaMm2 || 0) <= 1e-9);
-      // Production-safe guard: impossible all-zero metrics with non-empty placements
-      // must trigger zone sanity fallback. This is explicitly logged and reflected in debug.
-      const allowZoneFallbackDiagnostics = false;
+      // Manual layouts are bound to a zone, but saved bindings can drift after reopening
+      // or switching between multiple manual layouts. If a recompute returns impossible all-zero
+      // metrics while pieces are visibly placed, retry against the zone inferred from placements.
+      const allowZoneFallbackDiagnostics = !!zoneByPlacements && Number(zoneByPlacements && zoneByPlacements.id || 0) > 0;
       let usedZoneFallback = false;
       let recomputeDebug = null;
       if (looksImpossibleZero && allowZoneFallbackDiagnostics) {
-        const zones = (Array.isArray(state.zones) ? state.zones : []).filter((z) => Array.isArray(z && z.points) && z.points.length >= 3);
-        let bestRes = res;
-        let bestZone = zone;
-        let bestScore = Number(res.visibleMetrics && res.visibleMetrics.usefulAreaMm2 || 0);
-        for (const z of zones) {
-          if (isStale()) return false;
-          if (Number(z && z.id || 0) === Number(zone && zone.id || 0)) continue;
+        const placementZoneId = Number(zoneByPlacements && zoneByPlacements.id || 0);
+        const selectedZoneNumericId = Number(zone && zone.id || 0);
+        if (placementZoneId > 0 && placementZoneId !== selectedZoneNumericId) {
           try {
-            const zz = await callRecomputeForZone(z);
+            const zz = await callRecomputeForZone(zoneByPlacements);
             if (isStale()) return false;
-            if (!zz || !zz.ok) continue;
-            const useful = Number(zz.visibleMetrics && zz.visibleMetrics.usefulAreaMm2 || 0);
-            const inZone = Number(zz.visibleMetrics && zz.visibleMetrics.selectedInZoneAreaMm2 || 0);
-            const score = useful > 1e-9 ? useful : inZone;
-            if (score > bestScore + 1e-6) {
-              bestScore = score;
-              bestRes = zz;
-              bestZone = z;
+            const useful = Number(zz && zz.visibleMetrics && zz.visibleMetrics.usefulAreaMm2 || 0);
+            const inZone = Number(zz && zz.visibleMetrics && zz.visibleMetrics.selectedInZoneAreaMm2 || 0);
+            if (zz && zz.ok && (useful > 1e-9 || inZone > 1e-9 || (Array.isArray(zz.fragments) && zz.fragments.length > 0))) {
+              res = zz;
+              zone = zoneByPlacements;
+              state.layoutRun.selectedZoneId = placementZoneId;
+              state.selectedZoneId = placementZoneId;
+              if (selectedLayout && String(selectedLayout.mode || "") === "inventory_manual") {
+                selectedLayout.boundZoneId = placementZoneId;
+                selectedLayout.boundDetailId = Number(zoneByPlacements && zoneByPlacements.detailId || selectedLayout.boundDetailId || 0) || null;
+              }
+              state.layoutRun.manual.statusNote = `ручная выкладка перепривязана к зоне ${placementZoneId}`;
+              usedZoneFallback = true;
             }
           } catch (_) {}
         }
-        if (bestRes && bestRes.ok && bestRes !== res) {
-          res = bestRes;
-          zone = bestZone;
+        if (usedZoneFallback) {
           usedZoneFallback = true;
           console.warn("[manual/recompute][front] impossible zero fixed by zone fallback", {
             originalSelectedZoneId: selectedZoneId,
-            selectedZoneId: Number(bestZone && bestZone.id || 0),
-            usefulAreaMm2: Number(bestRes.visibleMetrics && bestRes.visibleMetrics.usefulAreaMm2 || 0),
-            selectedInZoneAreaMm2: Number(bestRes.visibleMetrics && bestRes.visibleMetrics.selectedInZoneAreaMm2 || 0),
+            selectedZoneId: Number(zone && zone.id || 0),
+            usefulAreaMm2: Number(res.visibleMetrics && res.visibleMetrics.usefulAreaMm2 || 0),
+            selectedInZoneAreaMm2: Number(res.visibleMetrics && res.visibleMetrics.selectedInZoneAreaMm2 || 0),
             placements: placementsForEval.length
           });
         }
@@ -3364,7 +3401,14 @@ function renderSplitEvents(events) {
         seamDiag.boundaryDropped = Math.max(0, beforeBoundaryDrop - seamSegments.length);
         seamSourceResolved = `applied_fragments:${seamGeometrySource}`;
       }
-      const coverageHoles = computeCoverageHoles(zone && zone.points, visibleContours);
+      const coverageContours = manualApplied
+        ? (Array.isArray(res.fragments)
+          ? res.fragments
+              .map((f) => normalizeContourArray((f && (f.points || f.cleanPoints || f.seamPoints)) || []))
+              .filter((poly) => Array.isArray(poly) && poly.length >= 3)
+          : [])
+        : visibleContours;
+      const coverageHoles = computeCoverageHoles(zone && zone.points, coverageContours);
       state.layoutRun.previewLayers = {
         pieceIntersections: [],
         visibleArea: visibleContours,
@@ -3439,6 +3483,7 @@ function renderSplitEvents(events) {
         usedZoneFallback: !!usedZoneFallback,
         selectedZoneId: Number(selectedZoneId || 0),
         recomputeZoneId: Number(zone && zone.id || 0),
+        zoneByPlacementsId: Number(zoneByPlacements && zoneByPlacements.id || 0),
         layerEnabled: !!(state.layers && state.layers.visibleCore),
         renderedSeams: 0
       };
@@ -3939,7 +3984,7 @@ function renderSplitEvents(events) {
         return parts.length ? ` | reject=${parts.join(",")}` : "";
       })();
       const seamDebugLine = seamDbg
-        ? `Швы: built=${Number(seamDbg.seamsCount || 0)} | rendered=${Number(seamDbg.renderedSeams || 0)} | seamContours=${Number(seamDbg.seamContoursCount || 0)} | frags=${Number(seamDbg.fragmentsCount || 0)} | pairs=${Number(seamDbg.candidatePairs || 0)} | source=${String(seamDbg.source || "unknown")} | layer=${(state.layers && state.layers.visibleCore) ? "on" : "off"}${seamRejectSummary}${(Number(seamDbg.fragmentsCount||0)<2 || Number(seamDbg.candidatePairs||0)<1) ? " | no_seams_reason=not_enough_fragments_or_pairs" : ""}`
+        ? `Швы: built=${Number(seamDbg.seamsCount || 0)} | rendered=${Number(seamDbg.renderedSeams || 0)} | seamContours=${Number(seamDbg.seamContoursCount || 0)} | frags=${Number(seamDbg.fragmentsCount || 0)} | pairs=${Number(seamDbg.candidatePairs || 0)} | source=${String(seamDbg.source || "unknown")} | layer=${(state.layers && state.layers.visibleCore) ? "on" : "off"} | selectedZone=${Number(seamDbg.selectedZoneId || 0)} | recomputeZone=${Number(seamDbg.recomputeZoneId || 0)} | zoneByPlacements=${Number(seamDbg.zoneByPlacementsId || 0)}${seamDbg.usedZoneFallback ? " | rebind=1" : ""}${seamRejectSummary}${(Number(seamDbg.fragmentsCount||0)<2 || Number(seamDbg.candidatePairs||0)<1) ? " | no_seams_reason=not_enough_fragments_or_pairs" : ""}`
         : "";
       const seamFlowSummary = (() => {
         const s = seamDbg && seamDbg.fragmentFlowSummary && typeof seamDbg.fragmentFlowSummary === "object"
@@ -4269,12 +4314,30 @@ function renderSplitEvents(events) {
       const id = state.nextLayoutId++;
       const selectedZone = (Array.isArray(state.zones) ? state.zones : []).find((z) => Number(z && z.id || 0) === Number(state.selectedZoneId || 0))
         || ((Array.isArray(state.zones) ? state.zones : [])[0] || null);
+      const selectedZoneId = Number(selectedZone && selectedZone.id || 0) || null;
+      const selectedDetailId = Number(selectedZone && selectedZone.detailId || state.selectedDetailId || 0) || null;
+      const existingDraft = (Array.isArray(state.layouts) ? state.layouts : []).find((x) =>
+        x
+        && !x.persistedRunId
+        && String(x.mode || "") === normalizedMode
+        && Number(x.boundZoneId || 0) === Number(selectedZoneId || 0)
+        && Number(x.boundDetailId || 0) === Number(selectedDetailId || 0)
+      );
+      if (existingDraft) {
+        state.selectedLayoutId = existingDraft.id;
+        applyLayoutMode(existingDraft.mode);
+        renderLayoutModeSwitch();
+        renderDetailZoneTree();
+        renderPropertyEditor();
+        byId("workspaceInfo").textContent = "Используем существующий черновик выкладки для выбранной зоны.";
+        return existingDraft;
+      }
       const entry = {
         id,
         mode: picked.mode,
         name: `${picked.title} ${id}`,
-        boundZoneId: Number(selectedZone && selectedZone.id || 0) || null,
-        boundDetailId: Number(selectedZone && selectedZone.detailId || state.selectedDetailId || 0) || null
+        boundZoneId: selectedZoneId,
+        boundDetailId: selectedDetailId
       };
       state.layouts.push(entry);
       state.selectedLayoutId = id;
@@ -4483,9 +4546,13 @@ function renderSplitEvents(events) {
       if (!e) return;
       if (e.persistedRunId) {
         const res = await api("/api/layout/manual/runs/delete", "POST", { id: e.persistedRunId });
-        if (!res || !res.ok) {
+        const notFound = String(res && res.error || "") === "not_found";
+        if ((!res || !res.ok) && !notFound) {
           byId("workspaceInfo").textContent = `Ошибка удаления: ${String(res && res.error || "unknown")}`;
           return;
+        }
+        if (notFound) {
+          byId("workspaceInfo").textContent = "Сохранённая выкладка уже отсутствовала в хранилище. Удаляем локальную карточку.";
         }
       }
       state.layouts = state.layouts.filter((x) => Number(x.id) !== Number(e.id));
@@ -6377,6 +6444,7 @@ function refreshSelectionInfo() {
     const uiBindings = (typeof uiBindingsApi.createUiBindings === "function")
       ? uiBindingsApi.createUiBindings({
         byId,
+        api: (url, method, body, timeoutMs) => api(url, method, body, timeoutMs),
         state,
         renderScene: () => renderScene(),
         clampInputNumber: (id, min, max, fallback) => clampInputNumber(id, min, max, fallback),
@@ -6399,7 +6467,8 @@ function refreshSelectionInfo() {
         renderLayoutModeSwitch: () => renderLayoutModeSwitch(),
         renderDetailZoneTree: () => renderDetailZoneTree(),
         renderPropertyEditor: () => renderPropertyEditor(),
-        syncFillTypeUi: () => syncFillTypeUi()
+        syncFillTypeUi: () => syncFillTypeUi(),
+        getPreviewToken: () => previewToken
       })
       : null;
     if (uiBindings && typeof uiBindings.bindMainControls === "function") {

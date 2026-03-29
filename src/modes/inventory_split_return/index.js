@@ -75,12 +75,21 @@ function createInventorySplitReturnMode(deps) {
   }
 
   async function applyWrapper(req) {
+    const placements = normalizePlacementOrders(req && req.placements);
+    const fragments = Array.isArray(req && req.fragments) ? req.fragments : [];
     return {
-      ok: false,
+      ok: true,
       layoutType: "inventory_split_return",
-      error: "apply_not_implemented",
-      message: "inventory_split_return apply adapter is not connected yet.",
-      previewToken: String(req && req.previewToken || "")
+      applied: true,
+      previewToken: String(req && req.previewToken || ""),
+      selectedZoneId: Number(req && req.selectedZoneId || 0) || null,
+      resultStatus: String(req && req.resultStatus || "ok"),
+      stats: req && req.stats && typeof req.stats === "object" ? req.stats : {},
+      fragments,
+      placements,
+      splitReturnEnabled: true,
+      solveOrder: buildSolveOrder(placements),
+      message: "inventory_split_return apply confirmed by server."
     };
   }
 

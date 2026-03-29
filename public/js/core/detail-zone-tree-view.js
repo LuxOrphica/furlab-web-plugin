@@ -207,7 +207,7 @@
         if (!state.layouts.length) {
           const empty = document.createElement("div");
           empty.className = "tree-empty";
-          empty.textContent = "Пока нет выкладок. Нажмите '+ Добавить выкладку'.";
+          empty.textContent = "Пока нет выкладок. Нажмите 'Добавить выкладку'.";
           treeRoot.appendChild(empty);
           return;
         }
@@ -378,7 +378,16 @@
               state.selectedZoneId = zoneId;
               state.selectedFragmentId = null;
               state.selectedDetailId = Number(z.detailId || detailId);
+              const zoneLayouts = (Array.isArray(state.layouts) ? state.layouts : []).filter((entry) => Number(entry && entry.boundZoneId || 0) === zoneId);
+              const currentMatchesZone = zoneLayouts.some((entry) => Number(entry && entry.id || 0) === Number(state.selectedLayoutId || 0));
+              const entryToOpen = currentMatchesZone
+                ? zoneLayouts.find((entry) => Number(entry && entry.id || 0) === Number(state.selectedLayoutId || 0)) || null
+                : (zoneLayouts[0] || null);
+              if (entryToOpen && typeof openLayoutEntry === "function") {
+                void openLayoutEntry(entryToOpen);
+              }
               fitPointsToView(z.points);
+              renderDetailZoneTree();
               renderScene();
             });
 
@@ -428,11 +437,7 @@
                   state.selectedDetailId = Number(z.detailId || detailId);
                   state.selectedZoneId = zoneId;
                   state.selectedFragmentId = fragId;
-                  const fragPts =
-                    (Array.isArray(frag && frag.points) && frag.points.length >= 2) ? frag.points :
-                    ((Array.isArray(frag && frag.fragmentContour) && frag.fragmentContour.length >= 2) ? frag.fragmentContour :
-                    ((Array.isArray(p && p.alignedContour) && p.alignedContour.length >= 2) ? p.alignedContour : []));
-                  fitPointsToView(fragPts);
+                  fitPointsToView(z.points);
                   renderScene();
                 });
                 frWrap.appendChild(item);

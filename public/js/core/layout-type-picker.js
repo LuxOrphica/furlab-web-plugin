@@ -30,10 +30,14 @@
 
       for (const item of filtered) {
         const mode = String(item && item.mode || "");
+        const isPlaceholder = !!(item && item.placeholder);
         const card = global.document.createElement("div");
-        card.className = "layout-type-card" + (selectedMode === mode ? " active" : "");
+        card.className = "layout-type-card" + (selectedMode === mode ? " active" : "") + (isPlaceholder ? " placeholder" : "");
+        card.setAttribute("data-mode", mode);
+        if (isPlaceholder) card.setAttribute("data-placeholder", "1");
         card.innerHTML = `${getThumbSvg(mode)}<div class="layout-type-title">${String(item && item.title || mode)}</div>`;
         card.addEventListener("click", () => {
+          if (isPlaceholder) return;
           selectedMode = mode;
           render();
         });
@@ -44,16 +48,12 @@
       if (addBtn) {
         const selectedVisible = filtered.some((x) => String(x && x.mode || "") === String(selectedMode || ""));
         addBtn.disabled = !selectedMode || !selectedVisible;
-        const picked = catalog.find((x) => String(x && x.mode || "") === String(selectedMode || ""));
-        addBtn.textContent = picked ? `Добавить: ${picked.title}` : "Добавить";
+        addBtn.textContent = "Выбрать";
       }
     }
 
     function open() {
-      const catalog = getCatalog();
-      const preferredMode = String(getPreferredMode() || "");
-      const preferred = catalog.find((x) => String(x && x.mode || "") === preferredMode);
-      selectedMode = preferred ? preferredMode : (catalog.length ? String(catalog[0].mode || "") : "");
+      selectedMode = "";
 
       const searchEl = byId("layoutTypeSearch");
       if (searchEl) {
