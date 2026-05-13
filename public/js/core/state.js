@@ -13,7 +13,7 @@
         visibleArea: false,
         pieceIntersections: false,
         pieceBorders: true,
-        assignedPieces: false,
+        assignedPieces: true,
         pfullZ: false,
         usedGain: true,
         pcoreZ: false,

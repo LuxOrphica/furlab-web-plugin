@@ -127,7 +127,8 @@
       const layouts = Array.isArray(state.layouts) ? state.layouts : [];
       for (const entry of layouts) {
         const persistedRunId = String(entry && entry.persistedRunId || "").trim();
-        if (!persistedRunId) continue;
+        const isCurrentlySelected = Number(state.selectedLayoutId || 0) === Number(entry && entry.id || 0);
+        if (!persistedRunId && !isCurrentlySelected) continue;
         const snapshot = getLayoutSnapshotForTree(entry);
         if (!snapshot || !snapshot.layoutRun) continue;
         const boundZoneId = Number(
@@ -192,10 +193,15 @@
       return btn;
     }
 
+    let _scrollToSelectedOnNextRender = false;
+    function scrollSelectedZoneIntoView() { _scrollToSelectedOnNextRender = true; renderDetailZoneTree(); }
+
     function renderDetailZoneTree() {
       const treeRoot = byId("detailZoneTree");
       if (!treeRoot) return;
       const treeUi = ensureTreeUiState();
+      const doScroll = _scrollToSelectedOnNextRender;
+      _scrollToSelectedOnNextRender = false;
       treeRoot.innerHTML = "";
 
       if (state.uiPanel === "materials") {
@@ -480,7 +486,7 @@
           for (const z of zones) {
             const zoneId = Number(z && z.id || 0);
             const zoneKey = String(zoneId);
-            const zoneCollapsed = !!treeUi.zonesCollapsed[zoneKey];
+            const zoneCollapsed = zoneKey in treeUi.zonesCollapsed ? !!treeUi.zonesCollapsed[zoneKey] : true;
 
             const zi = document.createElement("div");
             zi.className = "tree-zone" + (state.selectedZoneId === zoneId ? " active" : "");
@@ -607,9 +613,14 @@
         detailBox.appendChild(zonesWrap);
         treeRoot.appendChild(detailBox);
       }
+      // Scroll active zone into view only when triggered from canvas selection
+      if (doScroll) {
+        const activeEl = treeRoot.querySelector(".tree-zone.active");
+        if (activeEl) activeEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
     }
 
-    return { renderDetailZoneTree };
+    return { renderDetailZoneTree, scrollSelectedZoneIntoView };
   }
 
   root.FurLabDetailZoneTreeView = { createDetailZoneTreeView };

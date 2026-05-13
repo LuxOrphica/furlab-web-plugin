@@ -56,6 +56,9 @@
     const openZoneContextMenuAt = typeof opts.openZoneContextMenuAt === "function"
       ? opts.openZoneContextMenuAt
       : () => {};
+    const openIntarsiaFragmentContextMenuAt = typeof opts.openIntarsiaFragmentContextMenuAt === "function"
+      ? opts.openIntarsiaFragmentContextMenuAt
+      : () => {};
     const setWorkspaceInfo = typeof opts.setWorkspaceInfo === "function"
       ? opts.setWorkspaceInfo
       : () => {};
@@ -326,6 +329,25 @@
         const p = getPointerFromEvent(e);
         if (!p) return;
         const world = screenToWorld(p.x, p.y);
+
+        // In intarsia mode — check fragment hit first
+        const isIntarsiaSvgInteractive = state.layoutMode === "intarsia" && state.layoutRun && state.layoutRun.fillType === "import_svg";
+        if (isIntarsiaSvgInteractive) {
+          const fragHit = findLayoutFragmentAt(world);
+          if (fragHit && Number(fragHit.fragmentId || 0) > 0) {
+            state.selectedFragmentId = fragHit.fragmentId;
+            state.selectedZoneId = fragHit.zoneId;
+            renderScene();
+            openIntarsiaFragmentContextMenuAt({
+              x: Number(e.evt.clientX || 0),
+              y: Number(e.evt.clientY || 0),
+              fragmentId: fragHit.fragmentId,
+              zoneId: fragHit.zoneId
+            });
+            return;
+          }
+        }
+
         const hitZone = findZoneAt(world);
         if (hitZone && Number(hitZone.id || 0) > 0) {
           state.selectedZoneId = Number(hitZone.id || 0) || null;

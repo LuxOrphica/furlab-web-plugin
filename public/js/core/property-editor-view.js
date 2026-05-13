@@ -25,6 +25,9 @@
     const getFurMaterialById = deps && deps.getFurMaterialById;
     const ensureFurMaterialLoaded = deps && deps.ensureFurMaterialLoaded;
     const importSvgContours = deps && deps.importSvgContours;
+    const applyIntarsiaFragmentsToZone = deps && deps.applyIntarsiaFragmentsToZone;
+    const applyIntarsiaFragmentToZone = deps && deps.applyIntarsiaFragmentToZone;
+    const previewIntarsiaFragmentsDraft = deps && deps.previewIntarsiaFragmentsDraft;
       let regularLayoutPreviewTimer = null;
 
     function ensurePropertyEditorUi() {
@@ -330,6 +333,31 @@
       if (selectedFragId > 0) {
         const regularFragmentMode = isFragmentOnlyRegularLayoutSelected;
         const allowanceText = Number.isFinite(Number(allowance)) ? Number(allowance).toFixed(1) : "-";
+        if (isIntarsiaMode) {
+          root.innerHTML = `
+          <div class="prop-title">Фрагмент</div>
+          ${renderEditorSection("fragment_info", "Информация", `
+            <div class="prop-row"><div class="prop-label">ID фрагмента</div><div>${selectedFragId}</div></div>
+            <div class="prop-row"><div class="prop-label">Площадь, мм²</div><div>${fragArea.toFixed(1)}</div></div>
+            <div class="prop-row"><div class="prop-label">Периметр, мм</div><div>${fragPerim.toFixed(1)}</div></div>
+          `, true)}
+          ${renderEditorSection("fragment_params", "Параметры", `
+            <div class="prop-row"><div class="prop-label">Резерв под припуск, мм</div><div>${allowanceText}</div></div>
+          `, true)}
+          <div class="prop-actions prop-actions-stack" style="padding:8px 12px;">
+            <button class="prop-btn" id="intarsiaFragToZoneBtn" type="button">Преобразовать в зону</button>
+          </div>
+          `;
+          bindSectionToggles(root);
+          const toZoneBtn = byId("intarsiaFragToZoneBtn");
+          if (toZoneBtn) {
+            toZoneBtn.onclick = () => {
+              const zoneId = Number(state.selectedZoneId || state.layoutRun && state.layoutRun.selectedZoneId || 0);
+              if (zoneId > 0 && applyIntarsiaFragmentToZone) applyIntarsiaFragmentToZone(selectedFragId, zoneId);
+            };
+          }
+          return;
+        }
         root.innerHTML = regularFragmentMode
           ? `
           <div class="prop-title">Фрагмент</div>
@@ -610,21 +638,23 @@
       ` : `<div class="prop-title">Выкладка</div>`;
 
       const svgImportedFrags = Array.isArray(state.intarsiaSvgFragments) ? state.intarsiaSvgFragments : [];
-      const svgFileName = state.intarsiaSvgFileName || "";
-      const hasSvg = svgImportedFrags.length > 0 && svgFileName;
-      const intarsiaImportSection = isIntarsiaMode ? renderEditorSection("layout_intarsia_import", "Импорт контуров", `
-        <input id="intarsiaSvgFileInputProp" type="file" accept=".svg,image/svg+xml" style="display:none"/>
-        ${hasSvg ? `
-        <div class="layout-list-card" style="margin:0;">
+      const hasSvg = svgImportedFrags.length > 0;
+      const fragRows = svgImportedFrags.map((f) => `
+        <div class="layout-list-card intarsia-frag-row" style="margin:0 0 4px 0;" data-frag-id="${Number(f && f.id || 0)}">
           <div class="layout-list-text" style="min-width:0;overflow:hidden;">
-            <div class="layout-list-title" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${svgFileName.replace(/"/g,'&quot;')}">${svgFileName.replace(/</g,'&lt;')}</div>
+            <div class="layout-list-title" style="font-size:12px;">Фрагмент ${Number(f && f.id || 0)}</div>
           </div>
           <div class="layout-list-actions">
-            <button class="layout-list-action-btn" id="intarsiaSvgPickBtnProp" type="button" title="Заменить файл"><span class="material-symbols-outlined" aria-hidden="true">grid_view</span></button>
-            <button class="layout-list-action-btn danger" id="intarsiaSvgClearBtnProp" type="button" title="Удалить"><span class="material-symbols-outlined" aria-hidden="true">delete</span></button>
+            <button class="layout-list-action-btn danger intarsia-frag-del-btn" type="button" data-frag-id="${Number(f && f.id || 0)}" title="Удалить фрагмент"><span class="material-symbols-outlined" aria-hidden="true">delete</span></button>
           </div>
         </div>
-        ` : `<div class="prop-actions prop-actions-stack"><button class="prop-btn" id="intarsiaSvgPickBtnProp" type="button">+ Выбрать</button></div>`}
+      `).join("");
+      const intarsiaImportSection = isIntarsiaMode ? renderEditorSection("layout_intarsia_import", "Импорт контуров", `
+        <input id="intarsiaSvgAddFileInputProp" type="file" accept=".svg,image/svg+xml" style="display:none"/>
+        ${fragRows}
+        <div class="prop-actions prop-actions-stack" style="margin-top:${hasSvg ? "4px" : "0"};">
+          <button class="prop-btn" id="intarsiaSvgAddBtnProp" type="button">+ Добавить SVG</button>
+        </div>
       `, true) : "";
 
       root.innerHTML = `
@@ -643,23 +673,33 @@
       bindSectionToggles(root);
 
       // Intarsia SVG import buttons in property editor
-      const svgPickBtnProp = byId("intarsiaSvgPickBtnProp");
-      const svgFileInputProp = byId("intarsiaSvgFileInputProp");
-      const svgClearBtnProp = byId("intarsiaSvgClearBtnProp");
-      if (svgPickBtnProp && svgFileInputProp && typeof importSvgContours === "function") {
-        svgPickBtnProp.onclick = () => svgFileInputProp.click();
-        svgFileInputProp.onchange = () => {
-          const file = svgFileInputProp.files && svgFileInputProp.files[0];
+      const svgAddBtnProp = byId("intarsiaSvgAddBtnProp");
+      const svgAddFileInputProp = byId("intarsiaSvgAddFileInputProp");
+      if (svgAddBtnProp && svgAddFileInputProp && typeof importSvgContours === "function") {
+        svgAddBtnProp.onclick = () => svgAddFileInputProp.click();
+        svgAddFileInputProp.onchange = () => {
+          const file = svgAddFileInputProp.files && svgAddFileInputProp.files[0];
           if (!file) return;
-          state.intarsiaSvgFileName = file.name;
           importSvgContours(file, 1);
-          svgFileInputProp.value = "";
+          svgAddFileInputProp.value = "";
         };
       }
-      if (svgClearBtnProp && typeof importSvgContours === "function") {
-        svgClearBtnProp.onclick = () => {
-          state.intarsiaSvgFileName = null;
-          importSvgContours(null, 1);
+      // Per-fragment delete buttons
+      const fragDelBtns = (byId("propertyEditor") || document).querySelectorAll(".intarsia-frag-del-btn");
+      for (const btn of fragDelBtns) {
+        btn.onclick = () => {
+          const fragId = Number(btn.dataset.fragId || 0);
+          if (!fragId) return;
+          state.intarsiaSvgFragments = (Array.isArray(state.intarsiaSvgFragments) ? state.intarsiaSvgFragments : [])
+            .filter((f) => Number(f && f.id || 0) !== fragId);
+          state.layoutRun.fragments = (Array.isArray(state.layoutRun.fragments) ? state.layoutRun.fragments : [])
+            .filter((f) => Number(f && f.id || 0) !== fragId);
+          if (state.intarsiaSvgFragments.length === 0) {
+            state.layoutRun.fillType = null;
+            state.layoutRun.active = false;
+          }
+          renderPropertyEditor();
+          if (typeof previewIntarsiaFragmentsDraft === "function") previewIntarsiaFragmentsDraft();
         };
       }
 

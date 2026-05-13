@@ -1273,7 +1273,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
     const body = await readBodyJson(req);
     const input = body && typeof body === "object" ? body : {};
     const mode = String(input.mode || "inventory_manual");
-    if (mode !== "inventory_manual" && mode !== "longitudinal" && mode !== "shifted" && mode !== "transverse" && mode !== "radial") return jsonReply(res, 400, { ok: false, error: "unsupported_layout_mode" });
+    if (mode !== "inventory_manual" && mode !== "longitudinal" && mode !== "shifted" && mode !== "transverse" && mode !== "radial" && mode !== "intarsia") return jsonReply(res, 400, { ok: false, error: "unsupported_layout_mode" });
     const snapshot = input.snapshot && typeof input.snapshot === "object" ? input.snapshot : null;
     if (!snapshot) return jsonReply(res, 400, { ok: false, error: "snapshot_required" });
 
@@ -2750,6 +2750,53 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
       ok: true,
       suggestions
     });
+  }
+
+  if (req.method === "POST" && reqUrl.pathname === "/api/intarsia/apply-fragments") {
+    const body = await readBodyJson(req);
+    const input = body && typeof body === "object" ? body : {};
+    const zonePoints = Array.isArray(input.zonePoints) ? input.zonePoints : [];
+    const fragments = Array.isArray(input.fragments) ? input.fragments : [];
+    if (zonePoints.length < 3) return jsonReply(res, 400, { ok: false, error: "zone_required" });
+    if (fragments.length === 0) return jsonReply(res, 400, { ok: false, error: "fragments_required" });
+
+    const zoneMp = pointsToMultiPolygon(zonePoints);
+
+    function mpToPointsArray(mp) {
+      const result = [];
+      if (!Array.isArray(mp)) return result;
+      for (const poly of mp) {
+        const ring = Array.isArray(poly) && Array.isArray(poly[0]) ? poly[0] : (Array.isArray(poly) ? poly : []);
+        const flat = ring.map((p) => Array.isArray(p) ? { x: p[0], y: p[1] } : p).filter((p) => Number.isFinite(Number(p.x)) && Number.isFinite(Number(p.y)));
+        if (flat.length >= 3) result.push(flat);
+      }
+      return result;
+    }
+
+    // Clip each fragment to zone → subZones
+    const subZones = [];
+    let allFragsMp = null;
+    for (let i = 0; i < fragments.length; i++) {
+      const fragPoints = Array.isArray(fragments[i] && fragments[i].points) ? fragments[i].points : [];
+      if (fragPoints.length < 3) continue;
+      const fragMp = pointsToMultiPolygon(fragPoints);
+      const clipped = intersectMulti(fragMp, zoneMp);
+      for (const pts of mpToPointsArray(clipped)) {
+        subZones.push({ points: pts, label: `Фрагмент ${i + 1}` });
+      }
+      allFragsMp = allFragsMp ? unionMulti(allFragsMp, fragMp) : fragMp;
+    }
+
+    // Remainder: zone minus union of all fragments
+    const remainderZones = [];
+    if (allFragsMp) {
+      const rem = diffMulti(zoneMp, allFragsMp);
+      for (const pts of mpToPointsArray(rem)) {
+        remainderZones.push({ points: pts, label: "Остаток" });
+      }
+    }
+
+    return jsonReply(res, 200, { ok: true, subZones, remainderZones });
   }
 
   return false;
