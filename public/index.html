@@ -149,8 +149,8 @@
                 <ul class="display-list">
                   <li><label><input id="layerPieceBorders" type="checkbox" checked /><span id="layerPieceBordersLabel">Фрагменты</span></label></li>
                   <li><label><input id="layerVisibleCore" type="checkbox" /><span>Швы</span></label></li>
-                  <li><label><input id="layerPcoreZ" type="checkbox" /><span>Припуск куска</span></label></li>
                   <li><label><input id="layerPfullZ" type="checkbox" /><span>Контуры кусков</span></label></li>
+                  <li><label><input id="layerPcoreZ" type="checkbox" /><span>Припуск куска</span></label></li>
                   <li style="display:none;"><label><input id="layerAssignedPieces" type="checkbox" checked /><span id="layerAssignedPiecesLabel"></span></label></li>
                 </ul>
               </div>
@@ -513,19 +513,19 @@
           <span id="reportsTitle" data-i18n="reports_title" data-i18n-fallback="Specification">Specification</span>
           <span id="reportsModelTitle" class="reports-model-title"></span>
         </div>
+        <div class="reports-actions-top">
+          <label class="reports-detail-picker">
+            <span data-i18n="reports_detail_label" data-i18n-fallback="Detail">Detail</span>
+            <select id="reportsDetailSelect"></select>
+          </label>
+          <button id="reportsExportCsvBtn" data-i18n="reports_export_csv" data-i18n-fallback="Export CSV">Export CSV</button>
+          <button id="reportsPrintBtn" data-i18n="reports_print" data-i18n-fallback="Print">Print</button>
+        </div>
       <button id="reportsCloseBtn" class="icon-close-btn" aria-label="Закрыть"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
     </div>
     <div class="modal-body reports-modal-body">
       <div class="reports-topbar">
         <div id="reportsDetailTabs" class="reports-detail-tabs"></div>
-        <div class="reports-actions-top">
-            <label class="reports-detail-picker">
-              <span data-i18n="reports_detail_label" data-i18n-fallback="Detail">Detail</span>
-              <select id="reportsDetailSelect"></select>
-            </label>
-            <button id="reportsExportCsvBtn" data-i18n="reports_export_csv" data-i18n-fallback="Export CSV">Export CSV</button>
-            <button id="reportsPrintBtn" data-i18n="reports_print" data-i18n-fallback="Print">Print</button>
-          </div>
         </div>
         <div id="reportsDetailHeading" class="reports-detail-heading" data-i18n="reports_detail_heading_empty" data-i18n-fallback="Detail -">Detail -</div>
         <div id="reportsSummary" class="reports-summary" data-i18n="reports_no_data" data-i18n-fallback="No data">No data</div>
@@ -554,6 +554,7 @@
           </div>
         </div>
       </div>
+      <div id="reportsPrintAll" class="reports-print-all"></div>
       <div class="modal-actions reports-modal-actions">
         <button id="reportsCloseFooterBtn" data-i18n="reports_close" data-i18n-fallback="Close">Close</button>
       </div>

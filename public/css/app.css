@@ -1,4 +1,4 @@
-body { font-family: "Iosevka", "Iosevka Fixed", monospace; margin: 10px; color: #111; padding-bottom: 0; overflow: hidden; }
+﻿body { font-family: "Iosevka", "Iosevka Fixed", monospace; margin: 10px; color: #111; padding-bottom: 0; overflow: hidden; }
     .row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; align-items: center; }
     input[type="text"] { padding: 8px; }
     button, select { padding: 6px 8px; cursor: pointer; }
@@ -699,7 +699,7 @@ body { font-family: "Iosevka", "Iosevka Fixed", monospace; margin: 10px; color: 
       min-height: 20px;
       border-bottom: 1px dashed #e7e7e7;
     }
-    .tree-detail-title { font-size: 12px; line-height: 1.1; }
+    .tree-detail-title { font-size: 10px; line-height: 1.1; }
     .tree-detail-head.active { background: #ededed; color: #111; }
     .tree-zones { border-top: 0; padding: 1px 0 2px 0; }
     .tree-zone { padding: 2px 4px 2px 10px; cursor: pointer; font-size: 12px; }
@@ -1167,14 +1167,18 @@ body { font-family: "Iosevka", "Iosevka Fixed", monospace; margin: 10px; color: 
       border: 1px solid #3a3a3a;
     }
     .reports-modal-head {
-      padding: 12px 16px;
+      padding: 8px 12px;
       border-bottom: 1px solid #c7c7c7;
       background: #f7f7f3;
+      display: flex;
+      align-items: center;
+      gap: 12px;
     }
     .reports-modal-title-wrap {
       display: flex;
       align-items: baseline;
-      gap: 14px;
+      gap: 10px;
+      flex-shrink: 0;
     }
     .reports-model-title {
       font-size: 18px;
@@ -1198,7 +1202,7 @@ body { font-family: "Iosevka", "Iosevka Fixed", monospace; margin: 10px; color: 
     }
     .reports-detail-tabs {
       display: flex;
-      gap: 14px;
+      gap: 6px;
       flex-wrap: nowrap;
       align-items: center;
       overflow-x: auto;
@@ -1213,8 +1217,8 @@ body { font-family: "Iosevka", "Iosevka Fixed", monospace; margin: 10px; color: 
       border: 0;
       border-bottom: 2px solid transparent;
       background: transparent;
-      padding: 0 2px 6px 2px;
-      font-size: 18px;
+      padding: 0 2px 4px 2px;
+      font-size: 12px;
       line-height: 1.1;
       cursor: pointer;
       color: #222;
@@ -1225,22 +1229,24 @@ body { font-family: "Iosevka", "Iosevka Fixed", monospace; margin: 10px; color: 
     }
     .reports-actions-top {
       display: inline-flex;
-      gap: 10px;
+      gap: 8px;
       align-items: center;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
+      margin-left: auto;
+      margin-right: 16px;
     }
     .reports-detail-picker {
-      font-size: 16px;
+      font-size: 13px;
       display: inline-flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       white-space: nowrap;
     }
     .reports-detail-picker select {
-      min-width: 70px;
-      height: 34px;
-      padding: 0 8px;
-      font-size: 15px;
+      min-width: 60px;
+      height: 28px;
+      padding: 0 6px;
+      font-size: 13px;
     }
     .reports-detail-heading {
       font-size: 24px;
@@ -1780,3 +1786,20 @@ body { font-family: "Iosevka", "Iosevka Fixed", monospace; margin: 10px; color: 
     .project-list-item-delete { padding: 3px 8px; font-size: 12px; background: #f5f5f5; border: 1px solid #ccc; cursor: pointer; border-radius: 2px; color: #555; }
     .project-list-item-delete:hover { background: #e8e8e8; }
     #activeProjectName { font-style: italic; }
+
+
+    .reports-print-all { display: none; }
+    .reports-print-section { margin-bottom: 32px; }
+
+    @media print {
+      body > *:not(#reportsBackdrop) { display: none !important; }
+      #reportsBackdrop { display: block !important; position: static !important; background: none !important; }
+      .reports-modal { width: 100% !important; max-height: none !important; border: none !important; box-shadow: none !important; }
+      .reports-modal-head, .reports-modal-actions, .reports-topbar, .reports-scheme-wrap, .reports-content, .reports-detail-heading, .reports-summary { display: none !important; }
+      .reports-modal-body { overflow: visible !important; max-height: none !important; padding: 0 !important; }
+      .reports-print-all { display: block !important; }
+      .reports-print-section { page-break-after: always; }
+      .reports-print-section:last-child { page-break-after: avoid; }
+      .reports-detail-heading { display: block !important; margin: 8px 0 4px !important; }
+      .reports-summary { display: block !important; margin-bottom: 8px !important; }
+    }
