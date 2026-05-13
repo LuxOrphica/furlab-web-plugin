@@ -18,6 +18,12 @@
     const saveLayoutEntry = deps && deps.saveLayoutEntry;
     const openLayoutEntry = deps && deps.openLayoutEntry;
     const deleteLayoutEntry = deps && deps.deleteLayoutEntry;
+    const openZoneContextMenu = deps && deps.openZoneContextMenu;
+    const openMaterialLibrary = deps && deps.openMaterialLibrary;
+    const buildMaterialPreviewSvgMarkup = deps && deps.buildMaterialPreviewSvgMarkup;
+    const getFurMaterialById = deps && deps.getFurMaterialById;
+    const removeProjectMaterialById = deps && deps.removeProjectMaterialById;
+    const assignMaterialToZone = deps && deps.assignMaterialToZone;
 
     function iconSpan(name) {
       const map = {
@@ -120,6 +126,8 @@
       const out = [];
       const layouts = Array.isArray(state.layouts) ? state.layouts : [];
       for (const entry of layouts) {
+        const persistedRunId = String(entry && entry.persistedRunId || "").trim();
+        if (!persistedRunId) continue;
         const snapshot = getLayoutSnapshotForTree(entry);
         if (!snapshot || !snapshot.layoutRun) continue;
         const boundZoneId = Number(
@@ -189,6 +197,136 @@
       if (!treeRoot) return;
       const treeUi = ensureTreeUiState();
       treeRoot.innerHTML = "";
+
+      if (state.uiPanel === "materials") {
+        const addWrap = document.createElement("div");
+        addWrap.className = "row";
+        addWrap.style.marginBottom = "8px";
+
+        const addBtn = document.createElement("button");
+        addBtn.className = "layout-add-btn";
+        addBtn.innerHTML = '<span class="material-symbols-outlined" aria-hidden="true">add</span><span>Добавить</span>';
+        addBtn.addEventListener("click", () => {
+          if (typeof openMaterialLibrary === "function") {
+            openMaterialLibrary(null);
+          }
+        });
+        addWrap.appendChild(addBtn);
+        treeRoot.appendChild(addWrap);
+
+        const zoneMaterials = new Map();
+        const projectMaterials = Array.isArray(state.projectMaterials) ? state.projectMaterials : [];
+        for (const item of projectMaterials) {
+          const materialId = String(item && item.id || "").trim();
+          if (!materialId) continue;
+          zoneMaterials.set(materialId, {
+            id: materialId,
+            name: String(item && item.name || materialId),
+            zoneCount: 0
+          });
+        }
+        for (const zone of Array.isArray(state.zones) ? state.zones : []) {
+          const materialId = String(zone && zone.materialId || "").trim();
+          if (!materialId) continue;
+          const existing = zoneMaterials.get(materialId);
+          if (existing) {
+            existing.zoneCount += 1;
+            continue;
+          }
+          zoneMaterials.set(materialId, {
+            id: materialId,
+            name: String(zone && zone.materialName || materialId),
+            zoneCount: 1
+          });
+        }
+        const items = Array.from(zoneMaterials.values()).sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "ru"));
+        if (!items.length) {
+          const empty = document.createElement("div");
+          empty.className = "tree-empty";
+          empty.textContent = "Пока нет материалов. Назначьте мех зоне.";
+          treeRoot.appendChild(empty);
+          return;
+        }
+        if (!items.some((item) => String(item.id || "") === String(state.selectedMaterialId || ""))) {
+          state.selectedMaterialId = String(items[0].id || "");
+        }
+        const selectedZone = Array.isArray(state.zones)
+          ? (state.zones.find((z) => Number(z && z.id || 0) === Number(state.selectedZoneId || 0)) || null)
+          : null;
+        const highlightedMaterialId = String(
+          selectedZone && selectedZone.materialId
+            ? selectedZone.materialId
+            : (state.selectedMaterialId || "")
+        );
+        for (const item of items) {
+          const card = document.createElement("div");
+          card.className = "layout-list-card" + (highlightedMaterialId === String(item.id) ? " active" : "");
+          const openBtn = document.createElement("button");
+          openBtn.type = "button";
+          openBtn.className = "layout-list-main";
+          openBtn.draggable = true;
+          openBtn.addEventListener("click", async () => {
+            state.selectedMaterialId = String(item.id || "");
+            const zone = Array.isArray(state.zones)
+              ? (state.zones.find((z) => Number(z && z.id || 0) === Number(state.selectedZoneId || 0)) || null)
+              : null;
+            if (zone && typeof assignMaterialToZone === "function") {
+              await assignMaterialToZone(zone, { id: item.id, name: item.name });
+            }
+            renderDetailZoneTree();
+            renderPropertyEditor();
+            renderScene();
+          });
+          openBtn.addEventListener("dragstart", (e) => {
+            const dt = e && e.dataTransfer ? e.dataTransfer : null;
+            if (!dt) return;
+            dt.setData("text/fur-material-id", String(item.id || ""));
+            dt.setData("text/fur-material-name", String(item.name || item.id || ""));
+            dt.effectAllowed = "copy";
+            state.selectedMaterialId = String(item.id || "");
+          });
+
+          const thumb = document.createElement("div");
+          thumb.className = "layout-list-thumb material-list-thumb";
+          const materialForPreview = typeof getFurMaterialById === "function" ? getFurMaterialById(item.id) : null;
+          if (materialForPreview && typeof buildMaterialPreviewSvgMarkup === "function") {
+            thumb.classList.add("material-list-thumb-inline");
+            thumb.innerHTML = buildMaterialPreviewSvgMarkup(materialForPreview);
+          }
+          openBtn.appendChild(thumb);
+
+          const textWrap = document.createElement("div");
+          textWrap.className = "layout-list-text";
+          const title = document.createElement("div");
+          title.className = "layout-list-title";
+          title.textContent = item.name || item.id;
+          textWrap.appendChild(title);
+          const meta = document.createElement("div");
+          meta.className = "layout-list-meta";
+          meta.textContent = `Зон: ${Number(item.zoneCount || 0)}`;
+          textWrap.appendChild(meta);
+          openBtn.appendChild(textWrap);
+          card.appendChild(openBtn);
+          const actions = document.createElement("div");
+          actions.className = "layout-list-actions";
+          const deleteBtn = document.createElement("button");
+          deleteBtn.type = "button";
+          deleteBtn.className = "layout-list-action-btn danger icon-only";
+          deleteBtn.title = "Удалить мех";
+          deleteBtn.setAttribute("aria-label", "Удалить мех");
+          deleteBtn.innerHTML = iconSpan("delete");
+          deleteBtn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            if (typeof removeProjectMaterialById === "function") {
+              await removeProjectMaterialById(item.id);
+            }
+          });
+          actions.appendChild(deleteBtn);
+          card.appendChild(actions);
+          treeRoot.appendChild(card);
+        }
+        return;
+      }
 
       if (state.uiPanel === "layouts") {
         const addWrap = document.createElement("div");
@@ -389,6 +527,23 @@
               fitPointsToView(z.points);
               renderDetailZoneTree();
               renderScene();
+            });
+
+            zi.addEventListener("contextmenu", (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              state.selectedZoneId = zoneId;
+              state.selectedFragmentId = null;
+              state.selectedDetailId = Number(z.detailId || detailId);
+              renderDetailZoneTree();
+              renderScene();
+              if (typeof openZoneContextMenu === "function") {
+                openZoneContextMenu({
+                  x: Number(e.clientX || 0),
+                  y: Number(e.clientY || 0),
+                  zone: z
+                });
+              }
             });
 
             zonesWrap.appendChild(zi);

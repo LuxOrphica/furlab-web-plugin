@@ -74,6 +74,78 @@ function createInventorySplitReturnMode(deps) {
     };
   }
 
+  async function previewWrapper(wrapReq) {
+    const axis = String((wrapReq.inputs && wrapReq.inputs.axis) || (wrapReq.options && wrapReq.options.axis) || "y")
+      .toLowerCase() === "x" ? "x" : "y";
+    const filters = wrapReq.inputs && typeof wrapReq.inputs.filters === "object" ? wrapReq.inputs.filters : {};
+    const constraints = wrapReq.inputs && typeof wrapReq.inputs.constraints === "object"
+      ? wrapReq.inputs.constraints
+      : { requireScrapContour: true };
+    const candidates = Array.isArray(wrapReq.inputs && wrapReq.inputs.candidates) ? wrapReq.inputs.candidates : [];
+    const options = {
+      ...(wrapReq.options || {}),
+      ...(Number.isFinite(Number(wrapReq.seed)) ? { seed: Number(wrapReq.seed) } : {})
+    };
+    const direct = await preview({
+      zonePoints: wrapReq.zonePoints,
+      candidates,
+      axis,
+      filters,
+      constraints,
+      options
+    });
+    const strictCoverage = !!(direct && direct.strictCoverage === true);
+    const fullCoverageOk = !!(direct && direct.fullCoverageOk === true);
+    const resultStatus = strictCoverage && !fullCoverageOk ? "failed" : "ok";
+    const solveOrder = Array.isArray(direct && direct.solveOrder) ? direct.solveOrder : [];
+    const placements = Array.isArray(direct && direct.placements) ? direct.placements : [];
+    const renderItems = placements.map((p, idx) => ({
+      placementId: p && p.placementId != null ? p.placementId : idx,
+      candidateKey: String(p && p.candidateKey || ""),
+      inventoryTag: String(p && p.inventoryTag || ""),
+      solveOrder: Number(p && p.solveOrder || idx + 1),
+      solveIndex: Number(p && p.solveIndex != null ? p.solveIndex : idx),
+      renderIndex: Number(p && p.renderIndex != null ? p.renderIndex : -(idx + 1)),
+      alignedContour: Array.isArray(p && p.alignedContour) ? p.alignedContour : [],
+      usedVisibleContour: Array.isArray(p && p.usedVisibleContour) ? p.usedVisibleContour : [],
+      inZoneContour: Array.isArray(p && p.inZoneContour) ? p.inZoneContour : [],
+      gainAreaMm2: Number(p && p.gainAreaMm2 || 0),
+      overlapAreaMm2: Number(p && p.overlapAreaMm2 || 0),
+      outsideAreaMm2: Number(p && p.outsideAreaMm2 || 0),
+      phase: String(p && p.phase || ""),
+      candidateType: String(p && p.candidateType || "original")
+    }));
+    return {
+      ok: true,
+      layoutType: "inventory_split_return",
+      modeVersion: "v0.3",
+      resultStatus,
+      splitReturnEnabled: true,
+      warnings: [],
+      failedReason: resultStatus === "failed"
+        ? String((direct && direct.failedReason) || "zone_not_fully_covered")
+        : null,
+      stats: {
+        coveredRatio: Number(direct && direct.coveredRatio || 0),
+        coveragePercent: Number(direct && direct.coveragePercent || 0),
+        residualAreaMm2: Number(direct && direct.residualAreaMm2 || 0),
+        fullCoverageOk,
+        piecesCount: placements.length,
+        splitEvents: Array.isArray(direct && direct.splitEvents) ? direct.splitEvents.length : 0
+      },
+      render: {
+        renderOrderPolicy: "first_on_top",
+        stackOrderPolicy: "first_on_top",
+        solveOrder,
+        items: renderItems
+      },
+      splitEvents: Array.isArray(direct && direct.splitEvents) ? direct.splitEvents : [],
+      debug: {
+        algorithmTrace: direct && direct.algorithmTrace ? direct.algorithmTrace : null
+      }
+    };
+  }
+
   async function applyWrapper(req) {
     const placements = normalizePlacementOrders(req && req.placements);
     const fragments = Array.isArray(req && req.fragments) ? req.fragments : [];
@@ -98,6 +170,7 @@ function createInventorySplitReturnMode(deps) {
     getDescriptor,
     validatePreview,
     preview,
+    previewWrapper,
     applyWrapper
   };
 }

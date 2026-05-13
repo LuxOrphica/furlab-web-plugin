@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 const fs = require("fs");
 const path = require("path");
@@ -199,14 +199,28 @@ function polygonsIntersect(polyA, polyB, bbA, bbB) {
   return false;
 }
 
-function countPlacementIntersections(placements) {
+function placementPrimaryContour(p, opts) {
+  const cfg = opts && typeof opts === "object" ? opts : {};
+  const preferInZone = !!cfg.preferInZoneContours;
+  const candidates = preferInZone
+    ? [p && p.inZoneCoreContour, p && p.inZoneContour, p && p.alignedCoreContour, p && p.alignedContour]
+    : [p && p.alignedContour, p && p.alignedCoreContour, p && p.inZoneContour, p && p.inZoneCoreContour];
+  for (const raw of candidates) {
+    if (!Array.isArray(raw)) continue;
+    const poly = raw
+      .map((q) => ({ x: Number(q && q.x), y: Number(q && q.y) }))
+      .filter((q) => Number.isFinite(q.x) && Number.isFinite(q.y));
+    if (poly.length >= 3) return poly;
+  }
+  return [];
+}
+
+function countPlacementIntersections(placements, options) {
+  const cfg = options && typeof options === "object" ? options : {};
   const polys = (Array.isArray(placements) ? placements : [])
     .filter((p) => p && String(p.status || "") === "matched")
     .map((p) => {
-      const raw = Array.isArray(p.alignedContour) ? p.alignedContour : [];
-      const poly = raw
-        .map((q) => ({ x: Number(q && q.x), y: Number(q && q.y) }))
-        .filter((q) => Number.isFinite(q.x) && Number.isFinite(q.y));
+      const poly = placementPrimaryContour(p, cfg);
       if (poly.length < 3) return null;
       const bb = polygonBBox(poly);
       if (!bb) return null;
@@ -216,7 +230,16 @@ function countPlacementIntersections(placements) {
   let count = 0;
   for (let i = 0; i < polys.length; i++) {
     for (let j = i + 1; j < polys.length; j++) {
-      if (polygonsIntersect(polys[i].poly, polys[j].poly, polys[i].bb, polys[j].bb)) count += 1;
+      if (!polygonsIntersect(polys[i].poly, polys[j].poly, polys[i].bb, polys[j].bb)) continue;
+      if (cfg.preferInZoneContours) {
+        try {
+          const inter = intersectMulti(pointsToMultiPolygon(polys[i].poly), pointsToMultiPolygon(polys[j].poly));
+          const area = Math.max(0, multiPolygonArea(inter));
+          if (area > Math.max(0.01, Number(cfg.minOverlapAreaMm2 || 1))) count += 1;
+        } catch (_) {}
+      } else {
+        count += 1;
+      }
     }
   }
   return count;
@@ -277,10 +300,7 @@ function buildPieceIntersectionsLayer(placements, options) {
     .filter((p) => p && String(p.status || "") === "matched")
     .map((p) => {
       const id = Number(p.fragmentId || 0);
-      const raw = Array.isArray(p.alignedContour) ? p.alignedContour : [];
-      const points = raw
-        .map((q) => ({ x: Number(q && q.x), y: Number(q && q.y) }))
-        .filter((q) => Number.isFinite(q.x) && Number.isFinite(q.y));
+      const points = placementPrimaryContour(p, cfg);
       if (points.length < 3) return null;
       const bbox = polygonBBox(points);
       if (!bbox) return null;
@@ -364,6 +384,61 @@ function buildPieceIntersectionsLayer(placements, options) {
   };
 }
 
+function fragmentCentroid(pts) {
+  let sx = 0, sy = 0, n = 0;
+  for (const p of (Array.isArray(pts) ? pts : [])) {
+    const x = Number(p && p.x), y = Number(p && p.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    sx += x; sy += y; n++;
+  }
+  return n > 0 ? { x: sx / n, y: sy / n } : { x: 0, y: 0 };
+}
+
+// Merge fragments below the size threshold into the nearest large neighbor.
+// Small clipping slivers are the result of piece-overlap boolean ops and should not appear in the cut list.
+function mergeSmallVisibleFragments(fragments, minW, minL, axis) {
+  if ((!minW || minW <= 0) && (!minL || minL <= 0)) return fragments;
+  function isSmall(f) {
+    const bb = polygonBBox(f.points);
+    if (!bb) return true;
+    const along = axis === "x" ? bb.width : bb.height;
+    const across = axis === "x" ? bb.height : bb.width;
+    if (minL > 0 && along < minL) return true;
+    if (minW > 0 && across < minW) return true;
+    return false;
+  }
+  const large = [];
+  const small = [];
+  for (const f of fragments) {
+    if (!Array.isArray(f.points) || f.points.length < 3) continue;
+    (isSmall(f) ? small : large).push(f);
+  }
+  if (!small.length) return fragments;
+  for (const sf of small) {
+    if (!large.length) { large.push(sf); continue; }
+    const sc = fragmentCentroid(sf.points);
+    let bestIdx = 0, bestDist = Infinity;
+    for (let i = 0; i < large.length; i++) {
+      const lc = fragmentCentroid(large[i].points);
+      const dx = sc.x - lc.x, dy = sc.y - lc.y;
+      const d = dx * dx + dy * dy;
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    }
+    const sfMp = pointsToMultiPolygon(sf.points);
+    const lfMp = pointsToMultiPolygon(large[bestIdx].points);
+    if (sfMp && lfMp) {
+      const merged = unionMulti(sfMp, lfMp);
+      const ring = largestOuterRingPointsLocal(merged);
+      if (ring && ring.length >= 3) {
+        large[bestIdx] = { ...large[bestIdx], points: ring, areaMm2: polygonArea(ring) };
+        continue;
+      }
+    }
+    large.push(sf); // union failed — keep as-is
+  }
+  return large;
+}
+
 function buildVisibleMosaicModel(placements, zonePoints, options) {
   const cfg = options && typeof options === "object" ? options : {};
   const layerPolicyRaw = String(cfg.layerPolicy || "priority_on_top").toLowerCase();
@@ -374,6 +449,7 @@ function buildVisibleMosaicModel(placements, zonePoints, options) {
   const minAreaMm2 = Math.max(0.01, Number(cfg.minAreaMm2 || 1));
   const maxFragments = Math.max(50, Math.min(4000, Number(cfg.maxFragments || 2000)));
   const maxPolygons = Math.max(20, Math.min(1200, Number(cfg.maxPolygons || 500)));
+  const preferPlacementInZoneContours = !!cfg.preferPlacementInZoneContours;
   const contourCleanCfg = {
     minEdgeMm: Math.max(2, Number(cfg.minEdgeMm || 6)),
     spikeEdgeMm: Math.max(4, Number(cfg.spikeEdgeMm || 14)),
@@ -403,44 +479,58 @@ function buildVisibleMosaicModel(placements, zonePoints, options) {
       let pieceMp = [];
       let inZoneMp = [];
 
-      // Always clip by current aligned contour first.
-      // Cached inZoneContours can become stale after manual drag/rotate.
-      const raw = Array.isArray(useCoreGeometry ? p.alignedCoreContour : p.alignedContour)
-        ? (useCoreGeometry ? p.alignedCoreContour : p.alignedContour)
-        : [];
-      const points = normalizeContour(raw);
-      const alignedMulti = Array.isArray(useCoreGeometry ? p.alignedCoreContours : p.alignedContours)
-        ? (useCoreGeometry ? p.alignedCoreContours : p.alignedContours)
-        : [];
-      if (Array.isArray(alignedMulti) && alignedMulti.length > 0) {
-        pieceMp = alignedMulti;
-      } else if (points.length >= 3) {
-        pieceMp = pointsToMultiPolygon(points);
-      }
-      if (Array.isArray(pieceMp) && pieceMp.length) {
-        inZoneMp = intersectMulti(pieceMp, zoneMp);
-        // Robust fallback for manual mode: boolean kernel may fail on noisy contours
-        // and return empty intersection even when piece is visually inside zone.
-        if (!Array.isArray(inZoneMp) || !inZoneMp.length) {
-          const insideCount = points.reduce((acc, q) => acc + (pointInPolygon(q, zonePoints) ? 1 : 0), 0);
-          const center = (() => {
-            let sx = 0;
-            let sy = 0;
-            let n = 0;
-            for (const q of points) {
-              const x = Number(q && q.x);
-              const y = Number(q && q.y);
-              if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-              sx += x;
-              sy += y;
-              n++;
+      if (preferPlacementInZoneContours) {
+        const fromPlacementMulti = Array.isArray(useCoreGeometry ? p.inZoneCoreContours : p.inZoneContours)
+          ? (useCoreGeometry ? p.inZoneCoreContours : p.inZoneContours)
+          : [];
+        if (Array.isArray(fromPlacementMulti) && fromPlacementMulti.length > 0) {
+          inZoneMp = fromPlacementMulti;
+        } else {
+          const fromPlacementSingle = Array.isArray(useCoreGeometry ? p.inZoneCoreContour : p.inZoneContour)
+            ? (useCoreGeometry ? p.inZoneCoreContour : p.inZoneContour)
+            : [];
+          inZoneMp = fromPlacementSingle.length >= 3 ? pointsToMultiPolygon(fromPlacementSingle) : [];
+        }
+      } else {
+        // Always clip by current aligned contour first.
+        // Cached inZoneContours can become stale after manual drag/rotate.
+        const raw = Array.isArray(useCoreGeometry ? p.alignedCoreContour : p.alignedContour)
+          ? (useCoreGeometry ? p.alignedCoreContour : p.alignedContour)
+          : [];
+        const points = normalizeContour(raw);
+        const alignedMulti = Array.isArray(useCoreGeometry ? p.alignedCoreContours : p.alignedContours)
+          ? (useCoreGeometry ? p.alignedCoreContours : p.alignedContours)
+          : [];
+        if (Array.isArray(alignedMulti) && alignedMulti.length > 0) {
+          pieceMp = alignedMulti;
+        } else if (points.length >= 3) {
+          pieceMp = pointsToMultiPolygon(points);
+        }
+        if (Array.isArray(pieceMp) && pieceMp.length) {
+          inZoneMp = intersectMulti(pieceMp, zoneMp);
+          // Robust fallback for manual mode: boolean kernel may fail on noisy contours
+          // and return empty intersection even when piece is visually inside zone.
+          if (!Array.isArray(inZoneMp) || !inZoneMp.length) {
+            const insideCount = points.reduce((acc, q) => acc + (pointInPolygon(q, zonePoints) ? 1 : 0), 0);
+            const center = (() => {
+              let sx = 0;
+              let sy = 0;
+              let n = 0;
+              for (const q of points) {
+                const x = Number(q && q.x);
+                const y = Number(q && q.y);
+                if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+                sx += x;
+                sy += y;
+                n++;
+              }
+              return n > 0 ? { x: sx / n, y: sy / n } : null;
+            })();
+            const centerInside = center ? pointInPolygon(center, zonePoints) : false;
+            // Use full piece as in-zone only when geometry strongly indicates piece is inside.
+            if ((insideCount >= Math.max(3, Math.floor(points.length * 0.6))) || centerInside) {
+              inZoneMp = pieceMp;
             }
-            return n > 0 ? { x: sx / n, y: sy / n } : null;
-          })();
-          const centerInside = center ? pointInPolygon(center, zonePoints) : false;
-          // Use full piece as in-zone only when geometry strongly indicates piece is inside.
-          if ((insideCount >= Math.max(3, Math.floor(points.length * 0.6))) || centerInside) {
-            inZoneMp = pieceMp;
           }
         }
       }
@@ -742,6 +832,38 @@ function largestOuterRingPointsLocal(mp) {
   return best;
 }
 
+function fillGainCoreContours(placements, zonePoints) {
+  const list = Array.isArray(placements) ? placements : [];
+  if (list.length === 0) return list;
+  const zonePts = normalizeContour(zonePoints);
+  if (zonePts.length < 3) return list;
+  let zoneRes = [];
+  try { zoneRes = pointsToMultiPolygon(zonePts); } catch (_) { return list; }
+  const sorted = list.slice().sort((a, b) => Number(a && a.solveOrder || 0) - Number(b && b.solveOrder || 0));
+  const gainMap = new Map();
+  for (const p of sorted) {
+    const coreMp = Array.isArray(p.inZoneCoreContours) && p.inZoneCoreContours.length > 0 ? p.inZoneCoreContours : [];
+    if (Array.isArray(p.gainCoreContours) && p.gainCoreContours.length > 0) {
+      if (coreMp.length > 0) try { zoneRes = diffMulti(zoneRes, coreMp); } catch (_) {}
+      continue;
+    }
+    if (coreMp.length > 0) {
+      let gcc = [];
+      try { gcc = intersectMulti(coreMp, zoneRes); } catch (_) {}
+      gainMap.set(p, gcc);
+      try { zoneRes = diffMulti(zoneRes, coreMp); } catch (_) {}
+    } else {
+      gainMap.set(p, []);
+    }
+  }
+  return list.map((p) => {
+    if (Array.isArray(p.gainCoreContours) && p.gainCoreContours.length > 0) return p;
+    const gcc = gainMap.get(p);
+    if (gcc === undefined) return p;
+    return { ...p, gainCoreContours: gcc };
+  });
+}
+
 function enrichPlacementContoursForZone(placements, zonePoints) {
   const list = Array.isArray(placements) ? placements : [];
   const zonePts = normalizeContour(zonePoints);
@@ -753,14 +875,15 @@ function enrichPlacementContoursForZone(placements, zonePoints) {
     return list;
   }
 
-  return list.map((pl) => {
+  const outList = list.map((pl) => {
     const p = pl && typeof pl === "object" ? pl : {};
     const out = { ...p };
 
     const hasInZoneContours = Array.isArray(out.inZoneContours) && out.inZoneContours.length > 0;
     const hasInZoneContour = Array.isArray(out.inZoneContour) && out.inZoneContour.length >= 3;
     if (!hasInZoneContours || !hasInZoneContour) {
-      const aligned = normalizeContour(out.alignedContour);
+      // Prefer alignedFullContour (original with seam) over alignedContour (may be eroded)
+      const aligned = normalizeContour(out.alignedFullContour || out.alignedContour);
       if (aligned.length >= 3) {
         try {
           const inZoneMp = intersectMulti(pointsToMultiPolygon(aligned), zoneMp);
@@ -797,6 +920,161 @@ function enrichPlacementContoursForZone(placements, zonePoints) {
 
     return out;
   });
+
+  const byFragment = new Map();
+  for (let idx = 0; idx < outList.length; idx++) {
+    const fragId = Number(outList[idx] && outList[idx].fragmentId || 0);
+    if (!fragId) continue;
+    if (!byFragment.has(fragId)) byFragment.set(fragId, []);
+    byFragment.get(fragId).push({ idx, placement: outList[idx] });
+  }
+  for (const [, items] of byFragment) {
+    if (!Array.isArray(items) || items.length < 2) continue;
+    items.sort((a, b) => {
+      const ai = Number(a && a.placement && a.placement.fragmentPieceIndex || 0);
+      const bi = Number(b && b.placement && b.placement.fragmentPieceIndex || 0);
+      if (ai !== bi) return ai - bi;
+      return Number(a.idx || 0) - Number(b.idx || 0);
+    });
+    let coveredFullMp = [];
+    let coveredCoreMp = [];
+    for (const item of items) {
+      const out = item.placement;
+      if (!out || String(out.status || "") !== "matched") continue;
+      const fullBaseMp = Array.isArray(out.inZoneContours) ? out.inZoneContours : [];
+      if (fullBaseMp.length) {
+        let visibleFullMp = fullBaseMp;
+        try {
+          visibleFullMp = coveredFullMp.length ? diffMulti(fullBaseMp, coveredFullMp) : fullBaseMp;
+        } catch (_) {}
+        out.inZoneContours = visibleFullMp;
+        const outer = largestOuterRingPointsLocal(visibleFullMp);
+        out.inZoneContour = outer.length >= 3 ? outer : [];
+        try {
+          coveredFullMp = coveredFullMp.length ? unionMulti(coveredFullMp, visibleFullMp) : visibleFullMp;
+        } catch (_) {}
+      }
+      const coreBaseMp = Array.isArray(out.inZoneCoreContours) ? out.inZoneCoreContours : [];
+      if (coreBaseMp.length) {
+        let visibleCoreMp = coreBaseMp;
+        try {
+          visibleCoreMp = coveredCoreMp.length ? diffMulti(coreBaseMp, coveredCoreMp) : coreBaseMp;
+        } catch (_) {}
+        out.inZoneCoreContours = visibleCoreMp;
+        const outerCore = largestOuterRingPointsLocal(visibleCoreMp);
+        out.inZoneCoreContour = outerCore.length >= 3 ? outerCore : [];
+        out.inZoneCoreAreaMm2 = Math.max(0, multiPolygonArea(visibleCoreMp));
+        try {
+          coveredCoreMp = coveredCoreMp.length ? unionMulti(coveredCoreMp, visibleCoreMp) : visibleCoreMp;
+        } catch (_) {}
+      }
+    }
+  }
+  return outList;
+}
+
+function enrichPlacementContoursForFragments(placements, fragments, zonePoints) {
+  const list = Array.isArray(placements) ? placements : [];
+  const frags = Array.isArray(fragments) ? fragments : [];
+  const zonePts = normalizeContour(zonePoints);
+  const fragMap = new Map();
+  for (const frag of frags) {
+    const fragId = Number(frag && frag.id || 0);
+    const pts = normalizeContour(frag && frag.points);
+    if (!fragId || pts.length < 3) continue;
+    try {
+      fragMap.set(fragId, { points: pts, mp: pointsToMultiPolygon(pts) });
+    } catch (_) {}
+  }
+  if (fragMap.size === 0) return enrichPlacementContoursForZone(list, zonePts);
+
+  const outList = list.map((pl) => {
+    const p = pl && typeof pl === "object" ? pl : {};
+    const out = { ...p };
+    const fragId = Number(out && out.fragmentId || 0);
+    const fragRec = fragMap.get(fragId);
+    if (!fragRec || !Array.isArray(fragRec.mp) || !fragRec.mp.length) return out;
+
+    const aligned = normalizeContour(out.alignedContour);
+    if (aligned.length >= 3) {
+      try {
+        const inFragMp = intersectMulti(pointsToMultiPolygon(aligned), fragRec.mp);
+        out.inZoneContours = inFragMp;
+        const outer = largestOuterRingPointsLocal(inFragMp);
+        out.inZoneContour = outer.length >= 3 ? outer : [];
+      } catch (_) {}
+    }
+
+    const coreAligned = normalizeContour(out.alignedCoreContour);
+    if (coreAligned.length >= 3) {
+      try {
+        const coreInFragMp = intersectMulti(pointsToMultiPolygon(coreAligned), fragRec.mp);
+        out.inZoneCoreContours = coreInFragMp;
+        const outerCore = largestOuterRingPointsLocal(coreInFragMp);
+        out.inZoneCoreContour = outerCore.length >= 3 ? outerCore : [];
+        out.inZoneCoreAreaMm2 = Math.max(0, multiPolygonArea(coreInFragMp));
+      } catch (_) {}
+    } else {
+      out.inZoneCoreContours = [];
+      out.inZoneCoreContour = [];
+    }
+
+    return out;
+  });
+
+  const byFragment = new Map();
+  for (let idx = 0; idx < outList.length; idx++) {
+    const fragId = Number(outList[idx] && outList[idx].fragmentId || 0);
+    if (!fragId) continue;
+    if (!byFragment.has(fragId)) byFragment.set(fragId, []);
+    byFragment.get(fragId).push({ idx, placement: outList[idx] });
+  }
+  for (const [, items] of byFragment) {
+    if (!Array.isArray(items) || items.length < 2) continue;
+    items.sort((a, b) => {
+      const ai = Number(a && a.placement && a.placement.fragmentPieceIndex || 0);
+      const bi = Number(b && b.placement && b.placement.fragmentPieceIndex || 0);
+      if (ai !== bi) return ai - bi;
+      return Number(a.idx || 0) - Number(b.idx || 0);
+    });
+    let coveredFullMp = [];
+    let coveredCoreMp = [];
+    for (const item of items) {
+      const out = item.placement;
+      if (!out || String(out.status || "") !== "matched") continue;
+
+      const fullBaseMp = Array.isArray(out.inZoneContours) ? out.inZoneContours : [];
+      if (fullBaseMp.length) {
+        let visibleFullMp = fullBaseMp;
+        try {
+          visibleFullMp = coveredFullMp.length ? diffMulti(fullBaseMp, coveredFullMp) : fullBaseMp;
+        } catch (_) {}
+        out.inZoneContours = visibleFullMp;
+        const outer = largestOuterRingPointsLocal(visibleFullMp);
+        out.inZoneContour = outer.length >= 3 ? outer : [];
+        try {
+          coveredFullMp = coveredFullMp.length ? unionMulti(coveredFullMp, visibleFullMp) : visibleFullMp;
+        } catch (_) {}
+      }
+
+      const coreBaseMp = Array.isArray(out.inZoneCoreContours) ? out.inZoneCoreContours : [];
+      if (coreBaseMp.length) {
+        let visibleCoreMp = coreBaseMp;
+        try {
+          visibleCoreMp = coveredCoreMp.length ? diffMulti(coreBaseMp, coveredCoreMp) : coreBaseMp;
+        } catch (_) {}
+        out.inZoneCoreContours = visibleCoreMp;
+        const outerCore = largestOuterRingPointsLocal(visibleCoreMp);
+        out.inZoneCoreContour = outerCore.length >= 3 ? outerCore : [];
+        out.inZoneCoreAreaMm2 = Math.max(0, multiPolygonArea(visibleCoreMp));
+        try {
+          coveredCoreMp = coveredCoreMp.length ? unionMulti(coveredCoreMp, visibleCoreMp) : visibleCoreMp;
+        } catch (_) {}
+      }
+    }
+  }
+
+  return outList;
 }
 
 function buildSplitReturnPreviewArtifacts(placements, visibleContours, options) {
@@ -878,6 +1156,15 @@ function makeManualRunId() {
   return `mlr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function getStoredLayoutDefaultName(mode) {
+  const normalized = String(mode || "").trim();
+  if (normalized === "longitudinal") return "Продольно-поперечная";
+  if (normalized === "shifted") return "Со смещением";
+  if (normalized === "radial") return "Радиальная";
+  if (normalized === "transverse") return "Ёлочка";
+  return "Ручная выкладка";
+}
+
 async function handleLayoutRoutes(req, res, reqUrl, deps) {
   const {
     jsonReply,
@@ -886,6 +1173,9 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
     polygonArea,
     safeNum,
     generateRegularFragments,
+    generateShiftedFragments,
+    generateDiagonalFragments,
+    generateRadialFragments,
     generateVoronoiFragments,
     applyNormalizeRules,
     assignCandidatesToFragments,
@@ -902,6 +1192,9 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
   const modeRegistry = createModeRegistry({
     assignInventoryDirect,
     generateRegularFragments,
+    generateShiftedFragments,
+    generateDiagonalFragments,
+    generateRadialFragments,
     generateVoronoiFragments,
     applyNormalizeRules,
     assignCandidatesToFragments,
@@ -964,7 +1257,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
     const items = store.runs
       .map((x) => ({
         id: String(x && x.id || ""),
-        name: String(x && x.name || "Ручная выкладка"),
+        name: String(x && x.name || getStoredLayoutDefaultName(x && x.mode || "inventory_manual")),
         mode: String(x && x.mode || "inventory_manual"),
         selectedZoneId: Number(x && x.selectedZoneId || 0) || null,
         createdAt: Number(x && x.createdAt || 0) || null,
@@ -980,7 +1273,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
     const body = await readBodyJson(req);
     const input = body && typeof body === "object" ? body : {};
     const mode = String(input.mode || "inventory_manual");
-    if (mode !== "inventory_manual") return jsonReply(res, 400, { ok: false, error: "manual_mode_only" });
+    if (mode !== "inventory_manual" && mode !== "longitudinal" && mode !== "shifted" && mode !== "transverse" && mode !== "radial") return jsonReply(res, 400, { ok: false, error: "unsupported_layout_mode" });
     const snapshot = input.snapshot && typeof input.snapshot === "object" ? input.snapshot : null;
     if (!snapshot) return jsonReply(res, 400, { ok: false, error: "snapshot_required" });
 
@@ -991,7 +1284,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
     const createdAtPrev = index >= 0 ? Number(store.runs[index] && store.runs[index].createdAt || 0) : 0;
     const item = {
       id: runId,
-      name: String(input.name || "Ручная выкладка"),
+      name: String(input.name || getStoredLayoutDefaultName(mode)),
       mode,
       selectedZoneId: Number(input.selectedZoneId || 0) || null,
       createdAt: createdAtPrev > 0 ? createdAtPrev : now,
@@ -1025,7 +1318,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
       ok: true,
       item: {
         id: String(found.id || ""),
-        name: String(found.name || "Ручная выкладка"),
+        name: String(found.name || getStoredLayoutDefaultName(found.mode || "inventory_manual")),
         mode: String(found.mode || "inventory_manual"),
         selectedZoneId: Number(found.selectedZoneId || 0) || null,
         createdAt: Number(found.createdAt || 0) || null,
@@ -1054,7 +1347,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
       if (!progressToken || typeof emitLayoutProgress !== "function") return;
       try { emitLayoutProgress(progressToken, payload); } catch (_) {}
     };
-    pushProgress({ type: "phase", phase: "server_prepare", percent: 69, title: "Сервер / подготовка данных" });
+    pushProgress({ type: "phase", phase: "server_prepare", percent: 69, title: "РЎРµСЂРІРµСЂ / РїРѕРґРіРѕС‚РѕРІРєР° РґР°РЅРЅС‹С…" });
     const zone = body.zone || {};
     const zonePoints = normalizePolygonInput(zone.points);
     if (zonePoints.length < 3) return jsonReply(res, 400, { ok: false, error: "zone_points_required" });
@@ -1062,7 +1355,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
     if (areaMm2 <= 0) return jsonReply(res, 400, { ok: false, error: "invalid_zone_polygon" });
     const zBBox = polygonBBox(zonePoints);
     if (!zBBox) return jsonReply(res, 400, { ok: false, error: "zone_bbox_invalid" });
-    pushProgress({ type: "phase", phase: "server_zone_geometry", percent: 72, title: "Сервер / геометрия зоны" });
+    pushProgress({ type: "phase", phase: "server_zone_geometry", percent: 72, title: "РЎРµСЂРІРµСЂ / РіРµРѕРјРµС‚СЂРёСЏ Р·РѕРЅС‹" });
 
     const fillType = String(body.fillType || "voronoi").toLowerCase();
     if (fillType !== "voronoi" && fillType !== "regular") {
@@ -1208,7 +1501,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
       type: "phase",
       phase: "server_candidate_filter",
       percent: 76,
-      title: "Сервер / фильтрация кандидатов",
+      title: "РЎРµСЂРІРµСЂ / С„РёР»СЊС‚СЂР°С†РёСЏ РєР°РЅРґРёРґР°С‚РѕРІ",
       candidatesInput: candidates.length
     });
     const looksLikeInventoryFlow =
@@ -1252,7 +1545,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
           ? String(body.solverMode || "phasedV1")
           : "gridcoverv1";
         options.cleanLayoutMode = splitReturnEnabled ? false : true;
-        options.maxPieces = Math.max(220, Number(options.maxPieces || 0));
+        if (safeNum(body.maxPieces) === null) options.maxPieces = 220;
         options.maxSolveMs = Math.max(240000, Number(options.maxSolveMs || 0));
         options.hardMaxSolveMs = Math.max(480000, Number(options.hardMaxSolveMs || 0));
         if (safeNum(body.cleanOverlapRatioMaxAB) === null) options.cleanOverlapRatioMaxAB = 0.32;
@@ -1264,23 +1557,28 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
       options.directSoftProfileApplied = !!directSoftProfile;
       if (splitReturnEnabled) options.layerPolicy = "first_on_top";
       if (splitReturnEnabled) {
-        // Split&Return needs softer gates so derived leftovers can re-enter search.
-        if (safeNum(body.minEfficiencyBase) === null) options.minEfficiencyBase = 0.03;
-        if (safeNum(body.phaseBEfficiencyMin) === null) options.phaseBEfficiencyMin = 0.15;
-        if (safeNum(body.tailMinEfficiency) === null) options.tailMinEfficiency = 0.08;
-        if (safeNum(body.tailMinEfficiencyLoose) === null) options.tailMinEfficiencyLoose = 0.02;
-        if (safeNum(body.phaseAMinGainMm2) === null) options.phaseAMinGainMm2 = 500;
-        if (safeNum(body.minGainAreaMm2) === null) options.minGainAreaMm2 = 1;
-        if (safeNum(body.minGainVisibleMm2) === null) options.minGainVisibleMm2 = 40;
-        if (safeNum(body.minSpanMm) === null) options.minSpanMm = 10;
-        if (safeNum(body.maxPieceOverlap) === null) options.maxPieceOverlap = 0.995;
-        if (safeNum(body.cleanPiecePenalty) === null) options.cleanPiecePenalty = 0;
-        if (body.coverageFirst === undefined) options.coverageFirst = true;
+        // Split&Return: always force soft gates — UI direct-mode profile is too strict.
+        options.minGainVisibleMm2 = 40;
+        options.minSpanMm = 10;
+        options.phaseAMinGainMm2 = 500;
+        options.phaseAInsideMin = 0.55;       // pieces may extend outside zone boundaries
+        options.phaseAMaxOverlap = 0.6;       // heavy overlap is ok — first_on_top stack handles it
+        options.phaseAMinGainShare = 0.005;
+        options.phaseBEfficiencyMin = 0.10;
+        options.minEfficiencyBase = 0.02;
+        options.tailMinEfficiency = 0.05;
+        options.tailMinEfficiencyLoose = 0.01;
+        options.minGainAreaMm2 = 1;
+        options.objectiveMode = "oneGood";
+        options.objectiveMinEfficiency = 0.25; // lower than direct-mode default (0.82) since pieces partially extend outside zone
+        options.maxPieceOverlap = 0.995;
+        options.cleanPiecePenalty = 0;
+        options.coverageFirst = true;
       }
     }
 
     if (assignOnly) {
-      pushProgress({ type: "phase", phase: "server_assign_prepare", percent: 80, title: "Сервер / подготовка подбора по фрагментам" });
+      pushProgress({ type: "phase", phase: "server_assign_prepare", percent: 80, title: "РЎРµСЂРІРµСЂ / РїРѕРґРіРѕС‚РѕРІРєР° РїРѕРґР±РѕСЂР° РїРѕ С„СЂР°РіРјРµРЅС‚Р°Рј" });
       const inFrags = Array.isArray(body.fragments) ? body.fragments : [];
       const fragments = inFrags
         .map((f, i) => {
@@ -1301,7 +1599,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
         iter: 0,
         fragmentsTotal: fragments.length,
         candidatesInput: Array.isArray(candidates) ? candidates.length : 0,
-        title: "Интарсия / подбор по фрагментам"
+        title: "РРЅС‚Р°СЂСЃРёСЏ / РїРѕРґР±РѕСЂ РїРѕ С„СЂР°РіРјРµРЅС‚Р°Рј"
       });
       const tAssign0 = Date.now();
       const effectivePlacementStrategy = (fillType === "regular")
@@ -1330,15 +1628,24 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
         assignConstraints.minAcrossMm = null;
         assignConstraints.minAreaMm2 = null;
         assignConstraints.regularCompatibility = true;
+        assignConstraints.enforceRegularQuality = true;
+        assignConstraints.maxPiecesPerFragment = 2;
+        assignConstraints.fragmentCoverageTarget = 0.94;
+        assignConstraints.fragmentCoverageMinAccept = 0.94;
         // Keep nap constraints active in regular assign-only mode.
         // If caller did not provide them, fall back to sane defaults.
         const napDir = safeNum(assignConstraints.napDirectionDeg);
         const napTol = safeNum(assignConstraints.napToleranceDeg);
         // Canonical default nap direction is vertical down (90 deg).
+        // Default nap tolerance for regular intarsia should stay strict unless
+        // the caller explicitly widens it.
         assignConstraints.napDirectionDeg = napDir === null ? 90 : Number(napDir);
-        assignConstraints.napToleranceDeg = napTol === null ? 15 : Number(napTol);
-        // Keep pool broad in regular assign-only; strict nap check remains in fit/placement.
-        assignConstraints.prefilterNapToleranceDeg = 180;
+        assignConstraints.napToleranceDeg = napTol === null
+          ? 0
+          : Math.max(0, Math.min(180, Number(napTol)));
+        // Prefilter must respect the same nap gate; otherwise diagnostics shows
+        // many "compatible" candidates that can never survive real fit.
+        assignConstraints.prefilterNapToleranceDeg = assignConstraints.napToleranceDeg;
       }
       const intarsiaMode = modeRegistry.require("intarsia");
       let assign = intarsiaMode.assign({
@@ -1349,17 +1656,19 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
         filters,
         constraints: assignConstraints
       });
+      const primaryAssign = assign && typeof assign === "object" ? assign : null;
       let finalPlacementStrategy = effectivePlacementStrategy;
       let matchedCount = Array.isArray(assign && assign.placements)
         ? assign.placements.filter((x) => String(x && x.status || "") === "matched").length
         : 0;
+      let compatibleCount = Number(assign && assign.compatibilityBreakdown && assign.compatibilityBreakdown.compatible || 0);
       if (matchedCount === 0 && effectivePlacementStrategy === "intarsiaSmart") {
         pushProgress({
           type: "solver",
           phase: "intarsia_assign_fallback_bestfit",
           percent: 86,
           iter: 1,
-          title: "Интарсия / fallback bestFit"
+          title: "РРЅС‚Р°СЂСЃРёСЏ / fallback bestFit"
         });
         const fallbackBest = intarsiaMode.assign({
           fragments,
@@ -1384,7 +1693,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
           phase: "intarsia_assign_fallback_greedy",
           percent: 89,
           iter: 2,
-          title: "Интарсия / fallback greedy"
+          title: "РРЅС‚Р°СЂСЃРёСЏ / fallback greedy"
         });
         const fallbackGreedy = intarsiaMode.assign({
           fragments,
@@ -1404,23 +1713,76 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
         }
       }
       let usedRelaxedNapFallback = false;
+      let relaxedNapFallbackDeg = null;
       if (matchedCount === 0 && fillType === "regular") {
-        const relaxedFilters = { ...(filters || {}), napToleranceDeg: 180 };
+        const relaxedNapTol = Math.max(90, Number(safeNum(assignConstraints.napToleranceDeg) || 0));
+        const relaxedFilters = { ...(filters || {}), napToleranceDeg: relaxedNapTol };
+        const relaxedConstraints = {
+          ...assignConstraints,
+          napToleranceDeg: relaxedNapTol,
+          prefilterNapToleranceDeg: relaxedNapTol
+        };
         const relaxedAssign = intarsiaMode.assign({
           fragments,
           candidates,
           placementStrategy: finalPlacementStrategy,
           axis,
           filters: relaxedFilters,
-          constraints: assignConstraints
+          constraints: relaxedConstraints
         });
         const relaxedMatched = Array.isArray(relaxedAssign && relaxedAssign.placements)
           ? relaxedAssign.placements.filter((x) => String(x && x.status || "") === "matched").length
           : 0;
-        if (relaxedMatched > matchedCount) {
+        const relaxedCompatible = Number(relaxedAssign && relaxedAssign.compatibilityBreakdown && relaxedAssign.compatibilityBreakdown.compatible || 0);
+        if (
+          relaxedMatched > matchedCount ||
+          (matchedCount === 0 && relaxedMatched === 0 && relaxedCompatible > compatibleCount)
+        ) {
           assign = relaxedAssign;
           matchedCount = relaxedMatched;
+          compatibleCount = relaxedCompatible;
           usedRelaxedNapFallback = true;
+          relaxedNapFallbackDeg = relaxedNapTol;
+        }
+      }
+      let usedRelaxedCoverageFallback = false;
+      let relaxedCoverageFallbackValue = null;
+      if (matchedCount < fragments.length && fillType === "regular") {
+        const curTarget = safeNum(assignConstraints.fragmentCoverageTarget);
+        const curAccept = safeNum(assignConstraints.fragmentCoverageMinAccept);
+        const baseCoverage = Math.min(
+          curTarget === null ? 0.94 : Number(curTarget),
+          curAccept === null ? 0.94 : Number(curAccept)
+        );
+        const relaxedCoverage = Math.max(0.82, Math.min(0.9, baseCoverage - 0.10));
+        if (relaxedCoverage + 1e-6 < baseCoverage) {
+          const relaxedCoverageConstraints = {
+            ...assignConstraints,
+            fragmentCoverageTarget: relaxedCoverage,
+            fragmentCoverageMinAccept: relaxedCoverage
+          };
+          const relaxedCoverageAssign = intarsiaMode.assign({
+            fragments,
+            candidates,
+            placementStrategy: finalPlacementStrategy,
+            axis,
+            filters,
+            constraints: relaxedCoverageConstraints
+          });
+          const relaxedCoverageMatched = Array.isArray(relaxedCoverageAssign && relaxedCoverageAssign.placements)
+            ? relaxedCoverageAssign.placements.filter((x) => String(x && x.status || "") === "matched").length
+            : 0;
+          const relaxedCoverageCompatible = Number(relaxedCoverageAssign && relaxedCoverageAssign.compatibilityBreakdown && relaxedCoverageAssign.compatibilityBreakdown.compatible || 0);
+          if (
+            relaxedCoverageMatched > matchedCount ||
+            (matchedCount === 0 && relaxedCoverageMatched === 0 && relaxedCoverageCompatible > compatibleCount)
+          ) {
+            assign = relaxedCoverageAssign;
+            matchedCount = relaxedCoverageMatched;
+            compatibleCount = relaxedCoverageCompatible;
+            usedRelaxedCoverageFallback = true;
+            relaxedCoverageFallbackValue = relaxedCoverage;
+          }
         }
       }
       const tAssignMs = Date.now() - tAssign0;
@@ -1456,7 +1818,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
           return p;
         });
       }
-      placements = enrichPlacementContoursForZone(placements, zonePoints);
+      placements = enrichPlacementContoursForFragments(placements, fragments, zonePoints);
       const visible = buildVisibleMosaicModel(placements, zonePoints, {
         layerPolicy: options.layerPolicy,
         minAreaMm2: visibleMinAreaMm2,
@@ -1464,11 +1826,12 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
         minEdgeMm: Math.max(2, rasterMm * 2),
         spikeEdgeMm: Math.max(6, rasterMm * 5),
         spikeAngleDeg: 32,
-        collinearEpsMm: Math.max(0.8, rasterMm * 0.7)
+        collinearEpsMm: Math.max(0.8, rasterMm * 0.7),
+        preferPlacementInZoneContours: true
       });
       const unmatched = placements.filter((p) => p.status !== "matched").length;
-      const intersections = countPlacementIntersections(placements);
-      const pieceIntersections = buildPieceIntersectionsLayer(placements);
+      const intersections = countPlacementIntersections(placements, { preferInZoneContours: true });
+      const pieceIntersections = buildPieceIntersectionsLayer(placements, { preferInZoneContours: true });
       const uncoveredRatio = areaMm2 > 0 ? Math.max(0, areaMm2 - Number(visible.usefulAreaMm2 || 0)) / areaMm2 : 0;
       const usefulAreaMm2 = Number(visible.usefulAreaMm2 || 0);
       const selectedInZoneAreaMm2 = Number(visible.selectedInZoneAreaMm2 || 0);
@@ -1482,9 +1845,15 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
         const v = Number(c && c.areaMm2);
         return acc + (Number.isFinite(v) && v > 0 ? v : 0);
       }, 0);
+      const matchedFragmentIds = new Set(
+        (Array.isArray(placements) ? placements : [])
+          .filter((x) => String(x && x.status || "") === "matched")
+          .map((x) => Number(x && x.fragmentId || 0))
+          .filter((x) => Number.isFinite(x) && x > 0)
+      );
       const stats = {
         fragmentsTotal: fragments.length,
-        placementsMatched: placements.filter((x) => x.status === "matched").length,
+        placementsMatched: matchedFragmentIds.size,
         violations: unmatched > 0 ? 1 : 0,
         intersections,
         uncovered: uncoveredRatio > 0.015 ? 1 : 0
@@ -1495,7 +1864,8 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
       if (finalPlacementStrategy !== effectivePlacementStrategy) {
         warnings.push(`assign_fallback_${finalPlacementStrategy}`);
       }
-      if (usedRelaxedNapFallback) warnings.push("assign_fallback_relaxed_nap");
+      if (usedRelaxedNapFallback) warnings.push(`assign_fallback_relaxed_nap_${Number(relaxedNapFallbackDeg || 0)}`);
+      if (usedRelaxedCoverageFallback) warnings.push(`assign_fallback_relaxed_coverage_${Number(relaxedCoverageFallbackValue || 0)}`);
       const splitPreview = { placements, splitEvents: [] };
       const matchedPct = fragments.length > 0
         ? Math.round((stats.placementsMatched / fragments.length) * 10000) / 100
@@ -1519,6 +1889,43 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
       const placementBreakdown = assign && assign.placementBreakdown && typeof assign.placementBreakdown === "object"
         ? { ...assign.placementBreakdown }
         : {};
+      const primaryPlacementBreakdown = primaryAssign && primaryAssign.placementBreakdown && typeof primaryAssign.placementBreakdown === "object"
+        ? primaryAssign.placementBreakdown
+        : null;
+      if (
+        (!placementBreakdown.topChoicesByFragment || typeof placementBreakdown.topChoicesByFragment !== "object" || !Object.keys(placementBreakdown.topChoicesByFragment).length) &&
+        primaryPlacementBreakdown &&
+        primaryPlacementBreakdown.topChoicesByFragment &&
+        typeof primaryPlacementBreakdown.topChoicesByFragment === "object"
+      ) {
+        placementBreakdown.topChoicesByFragment = primaryPlacementBreakdown.topChoicesByFragment;
+      }
+      if (primaryPlacementBreakdown) {
+        if (primaryPlacementBreakdown.rejected && typeof primaryPlacementBreakdown.rejected === "object") {
+          placementBreakdown.primaryRejected = { ...primaryPlacementBreakdown.rejected };
+        }
+        if (Array.isArray(primaryPlacementBreakdown.fragmentCoverageWorst)) {
+          placementBreakdown.primaryFragmentCoverageWorst = primaryPlacementBreakdown.fragmentCoverageWorst.slice();
+        }
+        if (Number.isFinite(Number(primaryPlacementBreakdown.coveredByTargetCount))) {
+          placementBreakdown.primaryCoveredByTargetCount = Number(primaryPlacementBreakdown.coveredByTargetCount || 0);
+        }
+        if (Number.isFinite(Number(primaryPlacementBreakdown.coveredByMinAcceptCount))) {
+          placementBreakdown.primaryCoveredByMinAcceptCount = Number(primaryPlacementBreakdown.coveredByMinAcceptCount || 0);
+        }
+        if (Number.isFinite(Number(primaryPlacementBreakdown.fragmentCoverageAvg))) {
+          placementBreakdown.primaryFragmentCoverageAvg = Number(primaryPlacementBreakdown.fragmentCoverageAvg || 0);
+        }
+      }
+      placementBreakdown.initialPlacementStrategy = effectivePlacementStrategy;
+      placementBreakdown.finalPlacementStrategy = finalPlacementStrategy;
+      placementBreakdown.fallbackUsed = effectivePlacementStrategy !== finalPlacementStrategy
+        ? finalPlacementStrategy
+        : "";
+      placementBreakdown.regularNapToleranceDeg = Number(assignConstraints.napToleranceDeg || 0);
+      placementBreakdown.relaxedNapFallbackDeg = Number(relaxedNapFallbackDeg || 0);
+      placementBreakdown.relaxedCoverageFallback = usedRelaxedCoverageFallback ? 1 : 0;
+      placementBreakdown.relaxedCoverageFallbackValue = Number(relaxedCoverageFallbackValue || 0);
       for (const p of Array.isArray(placements) ? placements : []) {
         const status = String((p && p.status) || "unknown");
         const reason = String((p && p.reason) || (status === "matched" ? "matched" : "unknown"));
@@ -1530,7 +1937,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
         phase: "intarsia_assign_done",
         percent: 94,
         iter: 3,
-        title: "Интарсия / подбор завершен",
+        title: "РРЅС‚Р°СЂСЃРёСЏ / РїРѕРґР±РѕСЂ Р·Р°РІРµСЂС€РµРЅ",
         matched: stats.placementsMatched,
         fragmentsTotal: stats.fragmentsTotal,
         uncovered: stats.uncovered
@@ -1601,10 +2008,11 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
 
     if (directInventory) {
       const tDirect0 = Date.now();
-      pushProgress({ type: "phase", phase: "server_place", percent: 81, title: "Сервер / размещение кусков" });
+      pushProgress({ type: "phase", phase: "server_place", percent: 81, title: "РЎРµСЂРІРµСЂ / СЂР°Р·РјРµС‰РµРЅРёРµ РєСѓСЃРєРѕРІ" });
       const directMode = modeRegistry.require(splitReturnEnabled ? "inventory_split_return" : "inventory_direct");
       const direct = await directMode.preview({ zonePoints, candidates, axis, filters, constraints, options });
       direct.placements = enrichPlacementContoursForZone(direct.placements, zonePoints);
+      direct.placements = fillGainCoreContours(direct.placements, zonePoints);
       const solveOrder = Array.isArray(direct && direct.solveOrder) ? direct.solveOrder : [];
       const tDirectMs = Date.now() - tDirect0;
       const uncoveredRatio = Number.isFinite(Number(direct.coveredRatio))
@@ -1626,6 +2034,107 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
         spikeAngleDeg: 32,
         collinearEpsMm: Math.max(0.8, rasterMm * 0.7)
       });
+      {
+        const toPts = (arr) => arr
+          .map((q) => ({ x: Number(q && q.x), y: Number(q && q.y) }))
+          .filter((q) => Number.isFinite(q.x) && Number.isFinite(q.y));
+        function extractPts(poly) {
+          const outer = Array.isArray(poly) && Array.isArray(poly[0]) ? poly[0] : null;
+          if (!outer) return null;
+          const pts = [];
+          for (let k = 0; k < outer.length - 1; k++) {
+            const x = Number(outer[k] && outer[k][0]);
+            const y = Number(outer[k] && outer[k][1]);
+            if (Number.isFinite(x) && Number.isFinite(y)) pts.push({ x, y });
+          }
+          return pts.length >= 3 ? pts : null;
+        }
+        const matched = [];
+        for (let pi = 0; pi < direct.placements.length; pi++) {
+          const p = direct.placements[pi];
+          if (!p || String(p.status || "") !== "matched") continue;
+          const fullMp = Array.isArray(p.inZoneContours) && p.inZoneContours.length > 0
+            ? p.inZoneContours
+            : (Array.isArray(p.inZoneContour) && p.inZoneContour.length >= 3
+              ? pointsToMultiPolygon(toPts(p.inZoneContour)) : []);
+          const coreMp = Array.isArray(p.inZoneCoreContours) && p.inZoneCoreContours.length > 0
+            ? p.inZoneCoreContours
+            : (Array.isArray(p.inZoneCoreContour) && p.inZoneCoreContour.length >= 3
+              ? pointsToMultiPolygon(toPts(p.inZoneCoreContour)) : []);
+          const gainCoreMp = Array.isArray(p.gainCoreContours) && p.gainCoreContours.length > 0
+            ? p.gainCoreContours : [];
+          matched.push({ pi, p, fullMp, coreMp, gainCoreMp });
+        }
+        // Фрагмент[i] = diffMulti(fullMp[i], coveredCoresMp).
+        // Граница между кусками идёт по линии шва (вычитаем ЯДРА предшественников, не полные контуры).
+        // На краях зоны fullMp доходит до границы зоны — дырок в углах нет.
+        let fragId = 1;
+        const solverFragments = [];
+        let coveredCoresMp = [];
+        for (const { pi, p, fullMp, coreMp, gainCoreMp } of matched) {
+          const ownerFragmentId = Number.isFinite(Number(p.fragmentId)) ? Number(p.fragmentId) : null;
+          const scrapPieceId = String(p.scrapPieceId || "");
+          const inventoryTag = String(p.inventoryTag || "");
+          const cutPts = Array.isArray(p.inZoneContour) && p.inZoneContour.length >= 3
+            ? toPts(p.inZoneContour) : null;
+          let fragmentMp = fullMp;
+          if (coveredCoresMp.length > 0 && fullMp.length > 0) {
+            try { fragmentMp = diffMulti(fullMp, coveredCoresMp); } catch (_) { fragmentMp = fullMp; }
+          }
+          if (coreMp.length > 0) {
+            coveredCoresMp = coveredCoresMp.length
+              ? (function () { try { return unionMulti(coveredCoresMp, coreMp); } catch (_) { return coveredCoresMp; } })()
+              : coreMp;
+          }
+          const fragCleanOpts = {
+            minEdgeMm: Math.max(2, rasterMm * 2),
+            spikeEdgeMm: Math.max(6, rasterMm * 5),
+            spikeAngleDeg: 32,
+            collinearEpsMm: Math.max(0.8, rasterMm * 0.7)
+          };
+          let addedForThisPi = 0;
+          for (const poly of fragmentMp) {
+            const rawPts = extractPts(poly);
+            if (!rawPts || rawPts.length < 3) continue;
+            const pts = cleanClosedPolygon(rawPts, fragCleanOpts);
+            if (!pts || pts.length < 3) continue;
+            const areaMm2 = polygonArea(pts);
+            if (!Number.isFinite(areaMm2) || areaMm2 < visibleMinAreaMm2) continue;
+            solverFragments.push({
+              id: fragId++,
+              points: pts,
+              cutPoints: cutPts || pts,
+              seamPoints: pts,
+              cleanPoints: pts,
+              areaMm2: Math.round((areaMm2 || 0) * 1000) / 1000,
+              ownerPlacementId: ownerFragmentId,
+              ownerPlacementIndex: pi,
+              scrapPieceId,
+              inventoryTag,
+              zOrder: pi
+            });
+            addedForThisPi++;
+          }
+          if (addedForThisPi === 0 && cutPts && cutPts.length >= 3 && coreMp.length === 0) {
+            // Fallback только если у куска нет ядра совсем — используем полный контур
+            solverFragments.push({
+              id: fragId++,
+              points: cutPts,
+              cutPoints: cutPts,
+              seamPoints: cutPts,
+              cleanPoints: cutPts,
+              areaMm2: Math.round((polygonArea(cutPts) || 0) * 1000) / 1000,
+              ownerPlacementId: ownerFragmentId,
+              ownerPlacementIndex: pi,
+              scrapPieceId,
+              inventoryTag,
+              zOrder: pi,
+              isFallbackFragment: true
+            });
+          }
+        }
+        if (solverFragments.length > 0) visible.fragments = solverFragments;
+      }
       const splitPreview = splitReturnEnabled
         ? (
           Array.isArray(direct && direct.splitEvents)
@@ -1641,7 +2150,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
         type: "phase",
         phase: "server_coverage",
         percent: 90,
-        title: "Сервер / проверка покрытия",
+        title: "РЎРµСЂРІРµСЂ / РїСЂРѕРІРµСЂРєР° РїРѕРєСЂС‹С‚РёСЏ",
         pieces: Array.isArray(direct.placements) ? direct.placements.length : 0,
         coverage: Number(direct.coveragePercent || 0),
         residualAreaMm2: Number(direct.residualAreaMm2 || 0)
@@ -1676,13 +2185,13 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
         type: "phase",
         phase: "server_diag",
         percent: 94,
-        title: "Сервер / сбор диагностики",
+        title: "РЎРµСЂРІРµСЂ / СЃР±РѕСЂ РґРёР°РіРЅРѕСЃС‚РёРєРё",
         pieces: Array.isArray(direct.placements) ? direct.placements.length : 0,
         coverage: Number(direct.coveragePercent || 0),
         utilization: visibleUtilizationPct,
         tail: visibleWastePct
       });
-      pushProgress({ type: "done", percent: 99, title: "Сервер / ответ готов" });
+      pushProgress({ type: "done", percent: 99, title: "РЎРµСЂРІРµСЂ / РѕС‚РІРµС‚ РіРѕС‚РѕРІ" });
       return jsonReply(res, 200, {
         ok: true,
         resultStatus,
@@ -1773,6 +2282,8 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
       Number(safeNum(options && options.pieceSeamReserveMm) ?? safeNum(options && options.seamAllowanceReserveMm) ?? 0) || 0
     );
     const seamAdjusted = applyReserveToPlacements(placements, pieceSeamReserveMm);
+    // Populate inZoneContour / inZoneCoreContour on placements so the report can show both areas.
+    const enrichedPlacements = enrichPlacementContoursForZone(seamAdjusted.placements, zonePoints);
 
     const visible = buildVisibleMosaicModel(placements, zonePoints, {
       layerPolicy: options.layerPolicy,
@@ -1851,7 +2362,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
       },
       droppedByNormalize: normalized.droppedBySize,
       fragments: visible.fragments,
-      placements
+      placements: enrichedPlacements
     });
   }
 
@@ -2097,6 +2608,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
       seamGeometrySource = "core_visible_fallback_full";
     }
 
+    const pieceIntersections = buildPieceIntersectionsLayer(placements, { preferInZoneContours: true });
     const payload = {
       ok: true,
       layerPolicy: visible.layerPolicy,
@@ -2109,12 +2621,15 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
       visibleContours: visible.visibleContours,
       seamVisibleContours: seamVisible.visibleContours,
       seamGeometrySource,
+      pieceIntersections: pieceIntersections.polygons,
       visibleMetrics: {
         usefulAreaMm2: visible.usefulAreaMm2,
         selectedPiecesAreaMm2: visible.selectedPiecesAreaMm2,
         selectedInZoneAreaMm2: visible.selectedInZoneAreaMm2,
         utilizationPct: visible.utilizationPct,
-        overlapAreaMm2: visible.overlapAreaMm2
+        overlapAreaMm2: visible.overlapAreaMm2,
+        pieceIntersectionPairs: pieceIntersections.pairCount,
+        pieceIntersectionAreaMm2: pieceIntersections.totalAreaMm2
       }
     };
     const impossibleZero = !!(
@@ -2243,3 +2758,4 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
 module.exports = {
   handleLayoutRoutes
 };
+

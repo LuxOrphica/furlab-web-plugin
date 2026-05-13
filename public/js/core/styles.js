@@ -1,8 +1,23 @@
 // Extracted from app.js (engineering style preset)
 (function (global) {
   const ENGINEERING_STYLES = {
-    pattern: { stroke: "rgba(169,174,177,0.35)", strokeWidth: 0.75 },
-    zones: { stroke: "rgba(86,92,101,0.95)", strokeWidth: 1.25, selectedStrokeWidth: 1.5 },
+    pattern: {
+      stroke: "rgba(88,94,102,0.58)",
+      strokeWidth: 0.95,
+      selectedStroke: "rgba(24,28,34,0.92)",
+      selectedStrokeWidth: 1.35
+    },
+    zones: {
+      stroke: "rgba(40,106,196,0.88)",
+      strokeWidth: 1.2,
+      fill: "rgba(40,106,196,0.06)",
+      selectedStroke: "rgba(23,80,163,0.98)",
+      selectedStrokeWidth: 1.6,
+      selectedFill: "rgba(40,106,196,0.12)",
+      activeEditStroke: "rgba(9,71,145,1)",
+      activeEditStrokeWidth: 1.9,
+      activeEditFill: "rgba(40,106,196,0.20)"
+    },
     selection: { stroke: "#1B1B1B", strokeWidth: 1.5, pointFill: "#1B1B1B" },
     guides: {
       stroke: "rgba(169,174,177,0.40)",
@@ -15,9 +30,10 @@
     fragments: {
       stroke: "#0076D6",
       strokeWidth: 1.25,
-      fill: "rgba(0,118,214,0.10)",
+      fill: "rgba(0,118,214,0.08)",
+      selectedStroke: "#0050A0",
       selectedStrokeWidth: 1.5,
-      selectedFill: "rgba(0,118,214,0.16)"
+      selectedFill: "rgba(0,118,214,0.18)"
     },
     seams: { stroke: "#005EA2", strokeWidth: 1.5, dash: [10, 4, 2, 4] },
     allowances: { stroke: "rgba(189,87,39,0.85)", strokeWidth: 1, fill: "rgba(189,87,39,0.06)" },

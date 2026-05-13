@@ -93,6 +93,13 @@ function angDiffDeg(a, b) {
   return d;
 }
 
+function normGuid(s) {
+  // Access stores GUIDs as "{guid {XXXXXXXX-...}}", normalize to bare "{XXXXXXXX-...}" for comparison
+  var t = s.replace(/^\s+|\s+$/g, "").toLowerCase();
+  var m = t.match(/\{guid\s*(\{[0-9a-f\-]+\})\}/);
+  return m ? m[1] : t;
+}
+
 function hasContour(contour) {
   var s = String(contour || "");
   if (!s) return false;
@@ -255,7 +262,7 @@ try {
     }
     stageAfterStatus += 1;
 
-    if (materialId && String(row.materialId || "").toLowerCase() !== String(materialId).toLowerCase()) {
+    if (materialId && normGuid(String(row.materialId || "")) !== normGuid(String(materialId))) {
       rejectCounts.material += 1;
       addRejectSample(rejectSamples, "material", row, "materialId");
       rs.MoveNext();

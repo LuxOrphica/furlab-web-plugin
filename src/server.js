@@ -8,9 +8,16 @@ const { spawnSync } = require("child_process");
 const { handleImportRoutes } = require("./routes/import");
 const { handleInventoryRoute } = require("./routes/inventory");
 const { handleLayoutRoutes } = require("./routes/layout");
+const { handleDictRoutes } = require("./routes/dicts");
+const { handleFurMaterialRoutes } = require("./routes/fur_materials");
+const { handleZoneRoutes } = require("./routes/zones");
+const { handleProjectRoutes } = require("./routes/projects");
+const { handleExportRoutes } = require("./routes/export");
+const { createZoneStore } = require("./services/zone_store");
 const {
   pointsToMultiPolygon,
   multiPolygonArea,
+  unionMulti,
   intersectMulti,
   diffMulti,
   largestOuterRingPoints,
@@ -20,7 +27,15 @@ const { createSeededRng, createGridSpec } = require("./services/solver_primitive
 const { solveCoverGrid } = require("./services/cover_grid_solver");
 const { createAssignInventoryDirect } = require("./services/inventory_direct_solver");
 const { assignCandidatesIntarsiaSmart } = require("./services/intarsia_smart_matcher");
-const { buildPieceWorkingContour } = require("./services/piece_working_area");
+const { buildPieceWorkingContour, outsetPath } = require("./services/piece_working_area");
+
+process.on("uncaughtException", (err) => {
+  console.error("[server] uncaughtException:", err && err.stack ? err.stack : String(err));
+  if (err && err.code === "EADDRINUSE") process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[server] unhandledRejection:", reason && reason.stack ? reason.stack : String(reason));
+});
 
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 5600);
@@ -33,7 +48,7 @@ const DEFAULT_DB_PATH_LAT = "F:\\FURLAB\\dev\\furlab-access\\BD\\Furlab 1.accdb"
 const DB_PATH = process.env.FURLAB_DB_PATH ||
   (fs.existsSync(DEFAULT_DB_PATH_CYR) ? DEFAULT_DB_PATH_CYR : DEFAULT_DB_PATH_LAT);
 const CSCRIPT_PATH = process.env.FURLAB_CSCRIPT_PATH || "C:\\Windows\\System32\\cscript.exe";
-const SERVER_BUILD_ID = "telemetry-v4-2026-03-05";
+const SERVER_BUILD_ID = "telemetry-v4-2026-05-06-export-reports-fix";
 
 const previewStore = new Map();
 const PREVIEW_TTL_MS = Math.max(
@@ -51,6 +66,7 @@ const layoutProgressLatest = new Map();
 
 fs.mkdirSync(TMP_DIR, { recursive: true });
 fs.mkdirSync(PUBLIC_DIR, { recursive: true });
+const zoneStore = createZoneStore({ filePath: path.join(TMP_DIR, "zones_store.json") });
 
 function jsonReply(res, code, payload) {
   const body = JSON.stringify(payload);
@@ -909,6 +925,25 @@ function clipPolygonByPolygon(subject, clipper) {
   return out;
 }
 
+function splitPolygonByLine(poly, px, py, dx, dy) {
+  const nx = -Number(dy || 0);
+  const ny = Number(dx || 0);
+  if (!Number.isFinite(nx) || !Number.isFinite(ny) || (Math.abs(nx) < 1e-9 && Math.abs(ny) < 1e-9)) return [];
+  const c = -((nx * Number(px || 0)) + (ny * Number(py || 0)));
+  const a = clipPolygonByHalfPlane(poly, nx, ny, c);
+  const b = clipPolygonByHalfPlane(poly, -nx, -ny, -c);
+  const out = [];
+  if (Array.isArray(a) && a.length >= 3) out.push(a);
+  if (Array.isArray(b) && b.length >= 3) out.push(b);
+  return out;
+}
+
+function clipPolygonByBand(poly, nx, ny, lower, upper) {
+  let out = clipPolygonByHalfPlane(poly, nx, ny, -lower);
+  out = clipPolygonByHalfPlane(out, -nx, -ny, upper);
+  return out;
+}
+
 function buildRoundedRectPolygon(x0, y0, x1, y1, radiusMm) {
   const w = Math.max(0, x1 - x0);
   const h = Math.max(0, y1 - y0);
@@ -1017,6 +1052,44 @@ function generateVoronoiFragments(zonePoints, options) {
   return fragments;
 }
 
+function fillRemainderIntoFrags(frags, zoneMp) {
+  if (!frags.length) return;
+  try {
+    let coveredMp = pointsToMultiPolygon(frags[0]);
+    for (let i = 1; i < frags.length; i++) {
+      try { coveredMp = unionMulti(coveredMp, pointsToMultiPolygon(frags[i])); } catch (_) {}
+    }
+    const remainderMp = diffMulti(zoneMp, coveredMp);
+    const remainderPieces = multiPolygonOuterRingsToPoints(remainderMp);
+    for (const rem of remainderPieces) {
+      if (polygonArea(rem) < 10) continue;
+      let rx = 0, ry = 0;
+      for (const p of rem) { rx += p.x; ry += p.y; }
+      rx /= rem.length; ry /= rem.length;
+      let bestIdx = 0, bestDist = Infinity;
+      for (let i = 0; i < frags.length; i++) {
+        const f = frags[i];
+        let fx = 0, fy = 0;
+        for (const p of f) { fx += p.x; fy += p.y; }
+        fx /= f.length; fy /= f.length;
+        const d = Math.hypot(fx - rx, fy - ry);
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+      }
+      try {
+        const merged = unionMulti(pointsToMultiPolygon(frags[bestIdx]), pointsToMultiPolygon(rem));
+        const mergedPieces = multiPolygonOuterRingsToPoints(merged);
+        if (mergedPieces.length === 1) {
+          frags[bestIdx] = mergedPieces[0];
+        } else {
+          frags.push(rem);
+        }
+      } catch (_) {
+        frags.push(rem);
+      }
+    }
+  } catch (_) {}
+}
+
 function generateRegularFragments(zonePoints, options) {
   const bbox = polygonBBox(zonePoints);
   if (!bbox || bbox.width <= 0 || bbox.height <= 0) return [];
@@ -1024,27 +1097,123 @@ function generateRegularFragments(zonePoints, options) {
   if (!Array.isArray(zoneMp) || zoneMp.length === 0) return [];
   const rng = createSeededRng(options && options.seed);
   const axis = String(options.axis || "y").toLowerCase() === "x" ? "x" : "y";
-  let rows = Math.max(2, Math.min(20, safeNum(options.rows) || 5));
-  let cols = Math.max(2, Math.min(20, safeNum(options.cols) || 5));
+  let rows = Math.max(1, Math.min(20, safeNum(options.rows) || 5));
+  let cols = Math.max(1, Math.min(20, safeNum(options.cols) || 5));
   const gapX = Math.max(0, safeNum(options.gapX) || 0);
   const gapY = Math.max(0, safeNum(options.gapY) || 0);
   const cornerRadius = Math.max(0, safeNum(options.cornerRadius) || 0);
-  if (axis === "y") rows = Math.max(rows, cols);
-  if (axis === "x") cols = Math.max(cols, rows);
   const variability = normalizeScale10(options.variability, 3);
   const minArea = Math.max(50, safeNum(options.minAreaMm2) || 500);
+  const regularStrategy = String(options && options.regularStrategy || "").trim().toLowerCase();
   const xCuts = [bbox.minX];
   const yCuts = [bbox.minY];
-  for (let c = 1; c < cols; c++) {
-    const t = c / cols;
-    const base = bbox.minX + t * bbox.width;
-    const jitter = (rng.next() - 0.5) * bbox.width * (variability / 10) * 0.05;
-    xCuts.push(base + jitter);
+  function scanlineWidestInterval(points, y) {
+    const pts = Array.isArray(points) ? points : [];
+    if (pts.length < 3) return null;
+    const xs = [];
+    for (let i = 0; i < pts.length; i += 1) {
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      const ax = Number(a && a.x);
+      const ay = Number(a && a.y);
+      const bx = Number(b && b.x);
+      const by = Number(b && b.y);
+      if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(bx) || !Number.isFinite(by)) continue;
+      if (Math.abs(ay - by) < 1e-9) continue;
+      const crosses = (ay <= y && y < by) || (by <= y && y < ay);
+      if (!crosses) continue;
+      const t = (y - ay) / (by - ay);
+      xs.push(ax + (bx - ax) * t);
+    }
+    xs.sort((a, b) => a - b);
+    let widest = null;
+    for (let i = 0; i + 1 < xs.length; i += 2) {
+      const left = xs[i];
+      const right = xs[i + 1];
+      if (!Number.isFinite(left) || !Number.isFinite(right) || right <= left) continue;
+      if (!widest || (right - left) > (widest.right - widest.left)) {
+        widest = { left, right, width: right - left };
+      }
+    }
+    return widest;
+  }
+  function quantileSorted(list, q) {
+    const arr = (Array.isArray(list) ? list : []).filter((v) => Number.isFinite(Number(v))).map(Number).sort((a, b) => a - b);
+    if (!arr.length) return null;
+    if (arr.length === 1) return arr[0];
+    const pos = Math.max(0, Math.min(arr.length - 1, (arr.length - 1) * q));
+    const lo = Math.floor(pos);
+    const hi = Math.ceil(pos);
+    if (lo === hi) return arr[lo];
+    const t = pos - lo;
+    return arr[lo] * (1 - t) + arr[hi] * t;
+  }
+  function pushUniqueCut(list, value, minGap) {
+    const v = Number(value);
+    if (!Number.isFinite(v)) return;
+    const gap = Math.max(1e-6, Number(minGap) || 0);
+    for (const existing of list) {
+      if (Math.abs(Number(existing) - v) < gap) return;
+    }
+    list.push(v);
+  }
+  if ((regularStrategy === "core_overlap" || regularStrategy === "core_grid") && axis === "y" && cols >= 2) {
+    const spans = [];
+    const sampleCount = 13;
+    for (let i = 0; i < sampleCount; i += 1) {
+      const t = 0.2 + (0.6 * i) / (sampleCount - 1);
+      const y = bbox.minY + t * bbox.height;
+      const span = scanlineWidestInterval(zonePoints, y);
+      if (span && span.width > bbox.width * 0.2) spans.push(span);
+    }
+    const leftRef = quantileSorted(spans.map((s) => s.left), 0.75);
+    const rightRef = quantileSorted(spans.map((s) => s.right), 0.25);
+    if (Number.isFinite(leftRef) && Number.isFinite(rightRef) && rightRef > leftRef && cols >= 2) {
+      const safeLeft = Math.max(bbox.minX, leftRef);
+      const safeRight = Math.min(bbox.maxX, rightRef);
+      const coreWidth = safeRight - safeLeft;
+      const minUsefulCore = bbox.width * 0.2;
+      if (coreWidth > minUsefulCore) {
+        const minGap = bbox.width / Math.max(200, cols * 20);
+        const step = regularStrategy === "core_grid"
+          ? bbox.width / cols   // равномерно по всему bbox — единый размер колонок
+          : coreWidth / cols;
+        const origin = regularStrategy === "core_grid" ? bbox.minX : safeLeft;
+        for (let c = 1; c < cols; c++) {
+          const base = origin + c * step;
+          const jitter = regularStrategy === "core_grid"
+            ? 0
+            : (rng.next() - 0.5) * step * (variability / 10) * 0.03;
+          pushUniqueCut(xCuts, base + jitter, minGap);
+        }
+      } else {
+        for (let c = 1; c < cols; c++) {
+          const t = c / cols;
+          const base = bbox.minX + t * bbox.width;
+          const jitter = (rng.next() - 0.5) * bbox.width * (variability / 10) * 0.05;
+          xCuts.push(base + jitter);
+        }
+      }
+    } else {
+      for (let c = 1; c < cols; c++) {
+        const t = c / cols;
+        const base = bbox.minX + t * bbox.width;
+        const jitter = (rng.next() - 0.5) * bbox.width * (variability / 10) * 0.05;
+        xCuts.push(base + jitter);
+      }
+    }
+  } else {
+    for (let c = 1; c < cols; c++) {
+      const t = c / cols;
+      const base = bbox.minX + t * bbox.width;
+      const jitter = regularStrategy === "core_grid" ? 0 : (rng.next() - 0.5) * bbox.width * (variability / 10) * 0.05;
+      xCuts.push(base + jitter);
+    }
   }
   for (let r = 1; r < rows; r++) {
     const t = r / rows;
     const base = bbox.minY + t * bbox.height;
-    const jitter = (rng.next() - 0.5) * bbox.height * (variability / 10) * 0.05;
+    const jitter = regularStrategy === "core_grid" ? 0 : (rng.next() - 0.5) * bbox.height * (variability / 10) * 0.05;
     yCuts.push(base + jitter);
   }
   xCuts.push(bbox.maxX);
@@ -1076,12 +1245,277 @@ function generateRegularFragments(zonePoints, options) {
       const baseMp = pointsToMultiPolygon(base);
       const mp = intersectMulti(baseMp, zoneMp);
       const pieces = multiPolygonOuterRingsToPoints(mp);
+      // Берём только крупнейший кусок — тонкие "крошки" по краям детали отбрасываем
+      let best = null;
+      let bestArea = minArea;
+      for (const piece of pieces) {
+        const a = polygonArea(piece);
+        if (a > bestArea) { bestArea = a; best = piece; }
+      }
+      if (best) frags.push(best);
+    }
+  }
+  if (gapX === 0 && gapY === 0) fillRemainderIntoFrags(frags, zoneMp);
+  return frags;
+}
+
+function generateShiftedFragments(zonePoints, options) {
+  const bbox = polygonBBox(zonePoints);
+  if (!bbox || bbox.width <= 0 || bbox.height <= 0) return [];
+  const zoneMp = pointsToMultiPolygon(zonePoints);
+  if (!Array.isArray(zoneMp) || zoneMp.length === 0) return [];
+  const rows = Math.max(1, Math.min(20, Math.round(safeNum(options.rows) || 5)));
+  const cols = Math.max(1, Math.min(20, Math.round(safeNum(options.cols) || 5)));
+  const gapX = Math.max(0, safeNum(options.gapX) || 0);
+  const gapY = Math.max(0, safeNum(options.gapY) || 0);
+  const cornerRadius = Math.max(0, safeNum(options.cornerRadius) || 0);
+  const minArea = Math.max(50, safeNum(options.minAreaMm2) || 500);
+  const shiftPercent = Math.max(-100, Math.min(100, safeNum(options.shiftPercent) || 50));
+  const cellWidth = bbox.width / cols;
+  const cellHeight = bbox.height / rows;
+  const rowShift = cellWidth * (shiftPercent / 100);
+  const frags = [];
+  for (let ry = 0; ry < rows; ry += 1) {
+    let y0 = bbox.minY + ry * cellHeight;
+    let y1 = y0 + cellHeight;
+    if (gapY > 0) {
+      const dy = gapY * 0.5;
+      if (ry > 0) y0 += dy;
+      if (ry < rows - 1) y1 -= dy;
+    }
+    if (!(y1 > y0)) continue;
+    const offset = (ry % 2 === 1) ? rowShift : 0;
+    const startX = bbox.minX + (offset > 0 ? offset - cellWidth : offset);
+    const cellCount = cols + (Math.abs(offset) > 1e-6 ? 1 : 0);
+    for (let cx = 0; cx < cellCount; cx += 1) {
+      let x0 = startX + cx * cellWidth;
+      let x1 = x0 + cellWidth;
+      if (gapX > 0) {
+        const dx = gapX * 0.5;
+        if (cx > 0) x0 += dx;
+        if (cx < cellCount - 1) x1 -= dx;
+      }
+      if (!(x1 > x0)) continue;
+      const base = (cornerRadius > 0)
+        ? buildRoundedRectPolygon(x0, y0, x1, y1, cornerRadius)
+        : [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }];
+      if (!Array.isArray(base) || base.length < 3) continue;
+      const baseMp = pointsToMultiPolygon(base);
+      const mp = intersectMulti(baseMp, zoneMp);
+      const pieces = multiPolygonOuterRingsToPoints(mp);
+      // Берём только крупнейший кусок — тонкие "крошки" по краям детали отбрасываем
+      let best = null;
+      let bestArea = minArea;
+      for (const piece of pieces) {
+        const a = polygonArea(piece);
+        if (a > bestArea) { bestArea = a; best = piece; }
+      }
+      if (best) frags.push(best);
+    }
+  }
+  if (gapX === 0 && gapY === 0) fillRemainderIntoFrags(frags, zoneMp);
+  return frags;
+}
+
+function generateDiagonalFragments(zonePoints, options) {
+  const bbox = polygonBBox(zonePoints);
+  if (!bbox || bbox.width <= 0 || bbox.height <= 0) return [];
+  const zoneMp = pointsToMultiPolygon(zonePoints);
+  if (!Array.isArray(zoneMp) || zoneMp.length === 0) return [];
+  const bandStepMm = Math.max(10, Math.min(5000, safeNum(options.bandStepMm) || Math.max(40, bbox.height / 5)));
+  const gapX = Math.max(0, safeNum(options.gapX) || 0);
+  const gapY = Math.max(0, safeNum(options.gapY) || 0);
+  const minArea = Math.max(50, safeNum(options.minAreaMm2) || 500);
+  const axisCountRaw = safeNum(options.axisCount);
+  const angleDegRaw = safeNum(options.angleDeg);
+  const axisCount = Math.max(0, Math.min(6, Math.round(axisCountRaw === null ? 1 : axisCountRaw)));
+  const angleDeg = Math.max(-89, Math.min(89, angleDegRaw === null ? 45 : angleDegRaw));
+  const slopeAbs = Math.tan((Math.abs(angleDeg) * Math.PI) / 180);
+  const orientation = angleDeg >= 0 ? 1 : -1;
+  const bandGapMm = Math.max(0, Math.max(gapX, gapY));
+
+  const frags = [];
+  if (axisCount === 0) {
+    const rect = [
+      { x: bbox.minX, y: bbox.minY },
+      { x: bbox.maxX, y: bbox.minY },
+      { x: bbox.maxX, y: bbox.maxY },
+      { x: bbox.minX, y: bbox.maxY }
+    ];
+    const linearSlope = orientation * slopeAbs;
+    let minU = Number.POSITIVE_INFINITY;
+    let maxU = Number.NEGATIVE_INFINITY;
+    for (const p of rect) {
+      const u = Number(p.y) - linearSlope * Number(p.x);
+      minU = Math.min(minU, u);
+      maxU = Math.max(maxU, u);
+    }
+    const bandStart = Math.floor(minU / bandStepMm) - 1;
+    const bandEnd = Math.ceil(maxU / bandStepMm) + 1;
+    for (let band = bandStart; band <= bandEnd; band += 1) {
+      const u0 = band * bandStepMm + bandGapMm * 0.5;
+      const u1 = (band + 1) * bandStepMm - bandGapMm * 0.5;
+      if (!(u1 > u0)) continue;
+      const part = clipPolygonByBand(rect.slice(), -linearSlope, 1, u0, u1);
+      if (!Array.isArray(part) || part.length < 3) continue;
+      const partMp = pointsToMultiPolygon(part);
+      const mp = intersectMulti(partMp, zoneMp);
+      const pieces = multiPolygonOuterRingsToPoints(mp);
+      for (const piece of pieces) {
+        if (polygonArea(piece) < minArea) continue;
+        frags.push(piece);
+      }
+    }
+    if (bandGapMm === 0) fillRemainderIntoFrags(frags, zoneMp);
+    return frags;
+  }
+
+  const axisXs = [];
+  for (let i = 0; i < axisCount; i += 1) {
+    axisXs.push(bbox.minX + ((i + 0.5) / axisCount) * bbox.width);
+  }
+  for (let axisIndex = 0; axisIndex < axisXs.length; axisIndex += 1) {
+    const axisX = axisXs[axisIndex];
+    const leftBound = axisIndex === 0 ? bbox.minX : (axisXs[axisIndex - 1] + axisX) * 0.5;
+    const rightBound = axisIndex === axisXs.length - 1 ? bbox.maxX : (axisX + axisXs[axisIndex + 1]) * 0.5;
+    const segments = [
+      {
+        side: "left",
+        rect: [{ x: leftBound, y: bbox.minY }, { x: axisX, y: bbox.minY }, { x: axisX, y: bbox.maxY }, { x: leftBound, y: bbox.maxY }]
+      },
+      {
+        side: "right",
+        rect: [{ x: axisX, y: bbox.minY }, { x: rightBound, y: bbox.minY }, { x: rightBound, y: bbox.maxY }, { x: axisX, y: bbox.maxY }]
+      }
+    ];
+    for (const segment of segments) {
+      const rectBBox = polygonBBox(segment.rect);
+      if (!rectBBox || rectBBox.width <= 1e-6 || rectBBox.height <= 1e-6) continue;
+      const corners = segment.rect;
+      let minU = Number.POSITIVE_INFINITY;
+      let maxU = Number.NEGATIVE_INFINITY;
+      for (const p of corners) {
+        const u = Number(p.y) - orientation * slopeAbs * Math.abs(Number(p.x) - axisX);
+        minU = Math.min(minU, u);
+        maxU = Math.max(maxU, u);
+      }
+      const bandStart = Math.floor(minU / bandStepMm) - 1;
+      const bandEnd = Math.ceil(maxU / bandStepMm) + 1;
+      for (let band = bandStart; band <= bandEnd; band += 1) {
+        const u0 = band * bandStepMm + bandGapMm * 0.5;
+        const u1 = (band + 1) * bandStepMm - bandGapMm * 0.5;
+        if (!(u1 > u0)) continue;
+        let part = segment.rect.slice();
+        if (segment.side === "left") {
+          if (orientation >= 0) {
+            part = clipPolygonByBand(part, slopeAbs, 1, u0 + slopeAbs * axisX, u1 + slopeAbs * axisX);
+          } else {
+            part = clipPolygonByBand(part, -slopeAbs, 1, u0 - slopeAbs * axisX, u1 - slopeAbs * axisX);
+          }
+        } else {
+          if (orientation >= 0) {
+            part = clipPolygonByBand(part, -slopeAbs, 1, u0 - slopeAbs * axisX, u1 - slopeAbs * axisX);
+          } else {
+            part = clipPolygonByBand(part, slopeAbs, 1, u0 + slopeAbs * axisX, u1 + slopeAbs * axisX);
+          }
+        }
+        if (!Array.isArray(part) || part.length < 3) continue;
+        const partMp = pointsToMultiPolygon(part);
+        const mp = intersectMulti(partMp, zoneMp);
+        const pieces = multiPolygonOuterRingsToPoints(mp);
+        for (const piece of pieces) {
+          if (polygonArea(piece) < minArea) continue;
+          frags.push(piece);
+        }
+      }
+    }
+  }
+  if (bandGapMm === 0) fillRemainderIntoFrags(frags, zoneMp);
+  return frags;
+}
+
+function generateRadialFragments(zonePoints, options) {
+  const bbox = polygonBBox(zonePoints);
+  if (!bbox || bbox.width <= 0 || bbox.height <= 0) return [];
+  const zoneMp = pointsToMultiPolygon(zonePoints);
+  if (!Array.isArray(zoneMp) || zoneMp.length === 0) return [];
+  const ringCount = Math.max(1, Math.min(20, Math.round(safeNum(options.ringCount) || 4)));
+  const sectorCount = Math.max(1, Math.min(36, Math.round(safeNum(options.sectorCount) || 8)));
+  const rotationDeg = safeNum(options.rotationDeg) || 0;
+  const innerRadiusMm = Math.max(0, safeNum(options.innerRadiusMm) || 0);
+  const centerMode = String(options.centerMode || "auto").trim();
+  const centerX = centerMode === "manual" && Number.isFinite(safeNum(options.centerX))
+    ? safeNum(options.centerX)
+    : (bbox.minX + bbox.maxX) * 0.5;
+  const centerY = centerMode === "manual" && Number.isFinite(safeNum(options.centerY))
+    ? safeNum(options.centerY)
+    : (bbox.minY + bbox.maxY) * 0.5;
+  const gapX = Math.max(0, safeNum(options.gapX) || 0);
+  const gapY = Math.max(0, safeNum(options.gapY) || 0);
+  const gap = Math.max(gapX, gapY);
+  const minArea = Math.max(50, safeNum(options.minAreaMm2) || 500);
+  const rotationRad = (rotationDeg * Math.PI) / 180;
+  let maxRadius = 0;
+  for (const p of zonePoints || []) {
+    const x = Number(p && p.x);
+    const y = Number(p && p.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    maxRadius = Math.max(maxRadius, Math.hypot(x - centerX, y - centerY));
+  }
+  if (!(maxRadius > 0)) return [];
+  const radialSpan = Math.max(1, maxRadius - innerRadiusMm);
+  const ringStep = radialSpan / ringCount;
+  const sectorStep = (Math.PI * 2) / sectorCount;
+  const frags = [];
+
+  function buildSectorPolygon(r0, r1, a0, a1) {
+    const angleSpan = Math.abs(a1 - a0);
+    const arcSegments = Math.max(6, Math.ceil((angleSpan / (Math.PI / 18))));
+    const out = [];
+    for (let i = 0; i <= arcSegments; i += 1) {
+      const t = i / arcSegments;
+      const a = a0 + (a1 - a0) * t;
+      out.push({ x: centerX + Math.cos(a) * r1, y: centerY + Math.sin(a) * r1 });
+    }
+    for (let i = arcSegments; i >= 0; i -= 1) {
+      const t = i / arcSegments;
+      const a = a0 + (a1 - a0) * t;
+      out.push({ x: centerX + Math.cos(a) * r0, y: centerY + Math.sin(a) * r0 });
+    }
+    return out;
+  }
+
+  for (let ringIndex = 0; ringIndex < ringCount; ringIndex += 1) {
+    let r0 = innerRadiusMm + ringIndex * ringStep;
+    let r1 = innerRadiusMm + (ringIndex + 1) * ringStep;
+    if (gap > 0) {
+      const dr = gap * 0.5;
+      if (ringIndex > 0) r0 += dr;
+      if (ringIndex < ringCount - 1) r1 -= dr;
+    }
+    if (!(r1 > r0)) continue;
+    for (let sectorIndex = 0; sectorIndex < sectorCount; sectorIndex += 1) {
+      let a0 = rotationRad + sectorIndex * sectorStep;
+      let a1 = rotationRad + (sectorIndex + 1) * sectorStep;
+      if (gap > 0 && r1 > 0) {
+        const da = Math.min(sectorStep * 0.45, (gap * 0.5) / Math.max(r1, 1));
+        a0 += da;
+        a1 -= da;
+      }
+      if (!(a1 > a0)) continue;
+      const base = buildSectorPolygon(r0, r1, a0, a1);
+      if (!Array.isArray(base) || base.length < 3) continue;
+      const baseMp = pointsToMultiPolygon(base);
+      const mp = intersectMulti(baseMp, zoneMp);
+      const pieces = multiPolygonOuterRingsToPoints(mp);
       for (const piece of pieces) {
         if (polygonArea(piece) < minArea) continue;
         frags.push(piece);
       }
     }
   }
+
+  if (gap === 0) fillRemainderIntoFrags(frags, zoneMp);
   return frags;
 }
 
@@ -1130,33 +1564,83 @@ function applyNormalizeRules(rawFragments, normalizeRules, axis) {
   const minW = safeNum(rules.minFragmentWidthMm);
   const minL = safeNum(rules.minFragmentLengthMm);
   const simplifyTol = safeNum(rules.simplifyToleranceMm);
-  const out = [];
-  let droppedBySize = 0;
 
-  for (const f of rawFragments) {
-    const bbox = polygonBBox(f.points);
-    if (!bbox) continue;
+  // Determine size threshold for merge: a fragment is "small" if either dimension is below threshold.
+  const threshW = minW !== null ? minW : 0;
+  const threshL = minL !== null ? minL : 0;
+  const hasThreshold = threshW > 0 || threshL > 0;
+
+  function isSmall(pts) {
+    if (!hasThreshold) return false;
+    const bbox = polygonBBox(pts);
+    if (!bbox) return true;
     const along = axis === "x" ? bbox.width : bbox.height;
     const across = axis === "x" ? bbox.height : bbox.width;
-    if (minL !== null && along < minL) {
-      droppedBySize += 1;
-      continue;
+    if (threshL > 0 && along < threshL) return true;
+    if (threshW > 0 && across < threshW) return true;
+    return false;
+  }
+
+  // Separate valid from small fragments.
+  const large = [];
+  const small = [];
+  for (const f of rawFragments) {
+    if (!Array.isArray(f.points) || f.points.length < 3) continue;
+    if (isSmall(f.points)) {
+      small.push(f);
+    } else {
+      large.push({ ...f, areaMm2: polygonArea(f.points) });
     }
-    if (minW !== null && across < minW) {
-      droppedBySize += 1;
-      continue;
+  }
+
+  // Merge each small fragment into the large neighbor with the closest centroid.
+  let mergedCount = 0;
+  for (const sf of small) {
+    if (!large.length) break;
+    const sc = centroid(sf.points);
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < large.length; i++) {
+      const lc = centroid(large[i].points);
+      const dx = sc.x - lc.x;
+      const dy = sc.y - lc.y;
+      const d = dx * dx + dy * dy;
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
     }
+    // Union geometries: treat both as single-ring multipolygons.
+    const sfMp = pointsToMultiPolygon(sf.points);
+    const lfMp = pointsToMultiPolygon(large[bestIdx].points);
+    if (sfMp && lfMp) {
+      const merged = unionMulti(sfMp, lfMp);
+      const ring = largestOuterRingPoints(merged);
+      if (ring && ring.length >= 3) {
+        large[bestIdx] = { ...large[bestIdx], points: ring, areaMm2: polygonArea(ring) };
+        mergedCount += 1;
+        continue;
+      }
+    }
+    // Union failed (non-adjacent slivers) — keep small fragment as-is rather than drop it.
+    large.push({ ...sf, areaMm2: polygonArea(sf.points) });
+  }
+
+  // Apply simplification and emit.
+  const seamReserve = safeNum(rules.seamAllowanceReserveMm);
+  const out = [];
+  for (const f of large) {
     let pts = f.points;
     if (simplifyTol !== null && simplifyTol > 0 && pts.length > 8) {
-      // Light simplification for preview: keep every Nth point based on tolerance.
       const step = Math.max(1, Math.min(8, Math.round(simplifyTol / 2)));
       pts = pts.filter((_, i) => i % step === 0);
       if (pts.length < 3) pts = f.points;
     }
-    out.push({ ...f, points: pts, areaMm2: polygonArea(pts) });
+    const entry = { ...f, points: pts, areaMm2: polygonArea(pts) };
+    if (seamReserve !== null && seamReserve > 0) {
+      entry.cutPoints = outsetPath(pts, seamReserve);
+    }
+    out.push(entry);
   }
 
-  return { fragments: out, droppedBySize };
+  return { fragments: out, droppedBySize: 0, mergedCount };
 }
 
 function buildFragmentCoverageSamples(fragmentPoints, targetCount) {
@@ -1198,6 +1682,14 @@ function evaluateCoverageGainBySamples(samples, coveredFlags, contour) {
   return { gainCount, totalInsideCount, coveredInsideCount };
 }
 
+function pushRejectedSample(map, reason, sample, limit = 12) {
+  if (!map || typeof map !== "object") return;
+  const key = String(reason || "unknown");
+  const bucket = Array.isArray(map[key]) ? map[key] : [];
+  if (bucket.length < limit) bucket.push(sample);
+  map[key] = bucket;
+}
+
 function assignCandidatesRegularByFragmentCoverage({
   fragments,
   pool,
@@ -1211,70 +1703,102 @@ function assignCandidatesRegularByFragmentCoverage({
 }) {
   const placements = [];
   const breakdown = {
-    mode: "regular_fragment_coverage_v1",
+    mode: "regular_fragment_whole_piece_v3",
     checkedPairs: 0,
     rejected: {},
+    rejectedSamples: {},
     fragmentCoverage: []
   };
-  function markReject(reason) {
+  function markReject(reason, sample) {
     const k = String(reason || "unknown");
     breakdown.rejected[k] = Number(breakdown.rejected[k] || 0) + 1;
+    if (sample) pushRejectedSample(breakdown.rejectedSamples, k, sample);
   }
 
   const maxPiecesPerFragmentRaw = safeNum(constraints && constraints.maxPiecesPerFragment);
   const maxPiecesPerFragment = maxPiecesPerFragmentRaw === null
-    ? 3
-    : Math.max(1, Math.min(3, Number(maxPiecesPerFragmentRaw)));
+    ? 1
+    : Math.max(1, Math.min(2, Number(maxPiecesPerFragmentRaw)));
   const targetCoverageRaw = safeNum(constraints && constraints.fragmentCoverageTarget);
   const fragmentCoverageTarget = targetCoverageRaw === null
-    ? 0.92
-    : Math.max(0.5, Math.min(1, Number(targetCoverageRaw)));
-  const enforceRegularQuality = !!(constraints && constraints.enforceRegularQuality === true);
+    ? 0.94
+    : Math.max(0.9, Math.min(1, Number(targetCoverageRaw)));
+  const enforceRegularQuality = true;
   const minCoverageAcceptRaw = safeNum(constraints && constraints.fragmentCoverageMinAccept);
   const fragmentCoverageMinAccept = minCoverageAcceptRaw === null
-    ? (enforceRegularQuality ? 0.85 : fragmentCoverageTarget)
-    : Math.max(0.5, Math.min(1, Number(minCoverageAcceptRaw)));
+    ? fragmentCoverageTarget
+    : Math.max(0.9, Math.min(1, Number(minCoverageAcceptRaw)));
   const reserveRaw = safeNum(constraints && constraints.pieceSeamReserveMm);
   const reserveAlias = safeNum(constraints && constraints.seamAllowanceReserveMm);
   const pieceSeamReserveMm = Math.max(0, Number(reserveRaw === null ? (reserveAlias === null ? 0 : reserveAlias) : reserveRaw));
+  const debugTopKRaw = Number(constraints && constraints.__debugTopK);
+  const debugTopK = Number.isFinite(debugTopKRaw) && debugTopKRaw > 0
+    ? Math.max(1, Math.min(8, Math.floor(debugTopKRaw)))
+    : 0;
+  const topChoicesByFragment = debugTopK > 0 ? {} : null;
+  function summarizeCandidate(candidate, fit, score, sampleCoverage, meta) {
+    return {
+      scrapPieceId: String(candidate && candidate.id || ""),
+      inventoryTag: String(candidate && candidate.inventoryTag || ""),
+      score: Math.round(Number(score || 0) * 1000) / 1000,
+      fitScore: Math.round(Number(fit && fit.fitScore || 0) * 1000) / 1000,
+      fitCoverageRatio: Math.round(Number(sampleCoverage || 0) * 1000) / 1000,
+      fitInsidePercent: Math.round(Number(fit && fit.insidePercent || 0) * 10) / 10,
+      outsidePercent: Math.round(Number((meta && meta.outsideRatio) || 0) * 1000 * 100) / 1000,
+      scoreBreakdown: {
+        fitScoreNorm: Math.round(Math.max(0, Math.min(1, Number(fit && fit.fitScore || 0) / 100)) * 1000) / 1000,
+        overlapNorm: Math.round(Math.max(0, Math.min(1, Number(fit && fit.overlapApprox || 0))) * 1000) / 1000,
+        areaRatioNorm: Math.round(Math.max(0, Math.min(1, Number(fit && fit.areaRatio || 0))) * 1000) / 1000,
+        insideRatio: Math.round(Number((meta && meta.insideRatio) || 0) * 1000) / 1000,
+        outsideRatio: Math.round(Number((meta && meta.outsideRatio) || 0) * 1000) / 1000,
+        sampleCoverage: Math.round(Number(sampleCoverage || 0) * 1000) / 1000,
+        coverageOverflow: Math.round(Math.max(0, Number(fit && fit.coverageRatio || 0) - 1) * 1000) / 1000
+      }
+    };
+  }
+  const workFragments = Array.isArray(fragments) ? fragments : [];
+  const availablePool = (Array.isArray(pool) ? pool : []).filter((c) => {
+    const key = String(c && (c.id || c.inventoryTag) || "");
+    return !!key && !used.has(key);
+  });
+  const rows = workFragments.length;
+  const realCols = availablePool.length;
+  const dummyCols = rows;
+  const cols = realCols + dummyCols;
+  const BIG = 1e7;
+  const fitGrid = Array.from({ length: rows }, () => new Array(realCols).fill(null));
+  const scoreGrid = Array.from({ length: rows }, () => new Array(realCols).fill(null));
+  const coverageGrid = Array.from({ length: rows }, () => new Array(realCols).fill(0));
+  const metaGrid = Array.from({ length: rows }, () => new Array(realCols).fill(null));
+  const pairFitGrid = Array.from({ length: rows }, () => new Array(realCols).fill(null));
+  const pairCoverageGrid = Array.from({ length: rows }, () => new Array(realCols).fill(0));
+  const pairMetaGrid = Array.from({ length: rows }, () => new Array(realCols).fill(null));
+  const regularCompatibility = !!(constraints && constraints.regularCompatibility === true);
+  const perFragmentCapRaw = safeNum(constraints && constraints.maxCandidatesPerFragment);
+  const perFragmentCap = perFragmentCapRaw === null
+    ? (regularCompatibility ? Math.min(Math.max(32, realCols), 64) : 18)
+    : Math.max(8, Math.min(regularCompatibility ? 96 : 48, Number(perFragmentCapRaw)));
+  const samplePointsByFragment = new Array(rows);
+  const rankedChoicesByFragment = new Array(rows);
 
-  for (const f of Array.isArray(fragments) ? fragments : []) {
-    const fArea = safeNum(f && f.areaMm2) || polygonArea((f && f.points) || []);
-    const samplePoints = buildFragmentCoverageSamples((f && f.points) || [], 260);
-    const coveredFlags = new Array(samplePoints.length).fill(false);
-    let coveredCount = 0;
-    let piecesUsed = 0;
-    const matchedRows = [];
-
-    for (let pass = 1; pass <= maxPiecesPerFragment; pass++) {
-      let best = null;
-      const minGainByPass = pass === 1 ? 0.10 : (pass === 2 ? 0.04 : 0.02);
-      const minInsideByPass = enforceRegularQuality
-        ? (pass === 1 ? 0.30 : (pass === 2 ? 0.20 : 0.14))
-        : 0;
-      const maxOutsideByPass = enforceRegularQuality
-        ? (pass === 1 ? 0.70 : (pass === 2 ? 0.80 : 0.86))
-        : 1;
-
-      for (const c of pool) {
-        const key = String(c && (c.id || c.inventoryTag) || "");
-        if (!key || used.has(key)) continue;
-        breakdown.checkedPairs += 1;
-        const fit = evaluateFragmentCandidateFit(f, c, constraints);
-        if (!fit) {
-          markReject("fit_null");
-          continue;
-        }
-        if (Number(fit.fitScore || 0) + 1e-9 < minAcceptFit) {
-          markReject("fit_score_low");
-          continue;
-        }
-
-        const fullContour = Array.isArray(fit.alignedContour) ? fit.alignedContour : [];
-        if (fullContour.length < 3) {
-          markReject("aligned_contour_missing");
-          continue;
-        }
+  function retargetPairPieceToResidual(fragment, candidate, fit, coveredMask, samplePoints) {
+    const fragPoints = Array.isArray(fragment && fragment.points) ? fragment.points : [];
+    const baseFullContour = Array.isArray(fit && fit.alignedContour) ? fit.alignedContour : [];
+    if (fragPoints.length < 3 || baseFullContour.length < 3 || !Array.isArray(samplePoints) || !samplePoints.length) {
+      return null;
+    }
+    const uncoveredPoints = samplePoints.filter((_, idx) => !coveredMask[idx]);
+    if (!uncoveredPoints.length) return null;
+    const residualCenter = centroid(uncoveredPoints);
+    const baseCenter = centroid(baseFullContour);
+    const shiftedBase = translatePoints(baseFullContour, residualCenter.x - baseCenter.x, residualCenter.y - baseCenter.y);
+    const fb = polygonBBox(fragPoints) || { width: 0, height: 0 };
+    const shiftX = [0, -0.10 * fb.width, 0.10 * fb.width, -0.18 * fb.width, 0.18 * fb.width];
+    const shiftY = [0, -0.10 * fb.height, 0.10 * fb.height, -0.18 * fb.height, 0.18 * fb.height];
+    let best = null;
+    for (const dx of shiftX) {
+      for (const dy of shiftY) {
+        const fullContour = translatePoints(shiftedBase, dx, dy);
         let coreContour = fullContour;
         let seamStatus = "disabled";
         if (pieceSeamReserveMm > 0) {
@@ -1284,102 +1808,454 @@ function assignCandidatesRegularByFragmentCoverage({
             coreContour = core.contour;
           }
         }
-
-        const gain = evaluateCoverageGainBySamples(samplePoints, coveredFlags, coreContour);
-        if (gain.totalInsideCount <= 0 || gain.gainCount <= 0) {
-          markReject("zero_gain");
-          continue;
-        }
-        const gainRatio = samplePoints.length > 0 ? gain.gainCount / samplePoints.length : 0;
-        if (gainRatio + 1e-9 < minGainByPass) {
-          markReject("gain_too_low");
-          continue;
-        }
-        const nextCoverage = samplePoints.length > 0 ? (coveredCount + gain.gainCount) / samplePoints.length : 0;
-        const insideRatio = Math.max(0, Math.min(1, Number(fit.insidePercent || 0) / 100));
+        const cov = evaluateCoverageGainBySamples(samplePoints, coveredMask, coreContour);
+        if (cov.totalInsideCount <= 0 || cov.gainCount <= 0) continue;
+        const detailed = evaluateCandidateContourAgainstFragmentDetailed(
+          fullContour,
+          fragment,
+          candidate,
+          constraints,
+          {
+            rotationDeg: safeNum(fit && fit.rotationDeg) || 0,
+            offsetX: (safeNum(fit && fit.offsetX) || 0) + (residualCenter.x - baseCenter.x) + dx,
+            offsetY: (safeNum(fit && fit.offsetY) || 0) + (residualCenter.y - baseCenter.y) + dy
+          }
+        );
+        const nextFit = detailed && detailed.fit ? detailed.fit : null;
+        if (!nextFit) continue;
+        const gainRatio = samplePoints.length > 0 ? (Number(cov.gainCount || 0) / samplePoints.length) : 0;
+        const insideRatio = Math.max(0, Math.min(1, Number(nextFit.insidePercent || 0) / 100));
         const outsideRatio = Math.max(0, 1 - insideRatio);
-        if (enforceRegularQuality && insideRatio + 1e-9 < minInsideByPass) {
-          markReject("inside_low");
-          continue;
-        }
-        if (enforceRegularQuality && outsideRatio - 1e-9 > maxOutsideByPass) {
-          markReject("outside_high");
-          continue;
-        }
         const score =
-          gainRatio * 100 +
-          nextCoverage * 24 +
-          insideRatio * 10 -
-          outsideRatio * 8 +
-          Number(fit.fitScore || 0) * 0.03;
-        if (!best || score > best.score + 1e-9) {
-          best = { c, fit, score, gainRatio, nextCoverage, insideRatio, outsideRatio, coreContour, seamStatus };
+          gainRatio * 220 +
+          Math.max(0, Math.min(1, Number(nextFit.fitScore || 0) / 100)) * 55 -
+          outsideRatio * 18;
+        if (!best || score > best.score) {
+          best = { score, fit: nextFit, coreContour, seamStatus, insideRatio, outsideRatio, gainRatio };
         }
       }
+    }
+    return best;
+  }
 
-      if (!best) break;
+  function contourOverlapInFragmentRatio(fragment, contourA, contourB) {
+    const fragPoints = Array.isArray(fragment && fragment.points) ? fragment.points : [];
+    const aPoints = Array.isArray(contourA) ? contourA : [];
+    const bPoints = Array.isArray(contourB) ? contourB : [];
+    if (fragPoints.length < 3 || aPoints.length < 3 || bPoints.length < 3) return 0;
+    try {
+      const fragMp = pointsToMultiPolygon(fragPoints);
+      const aMp = intersectMulti(pointsToMultiPolygon(aPoints), fragMp);
+      const bMp = intersectMulti(pointsToMultiPolygon(bPoints), fragMp);
+      const areaA = Math.max(0, multiPolygonArea(aMp));
+      const areaB = Math.max(0, multiPolygonArea(bMp));
+      if (areaA <= 1e-6 || areaB <= 1e-6) return 0;
+      const overlap = Math.max(0, multiPolygonArea(intersectMulti(aMp, bMp)));
+      return overlap / Math.max(1e-6, Math.min(areaA, areaB));
+    } catch (_) {
+      return 0;
+    }
+  }
 
-      const key = String(best.c && (best.c.id || best.c.inventoryTag) || "");
-      used.add(key);
-      piecesUsed += 1;
-      for (let i = 0; i < samplePoints.length; i++) {
-        if (coveredFlags[i]) continue;
-        if (pointInPolygon(samplePoints[i], best.coreContour)) {
-          coveredFlags[i] = true;
-          coveredCount += 1;
+  for (let i = 0; i < rows; i++) {
+    const f = workFragments[i];
+    const samplePoints = buildFragmentCoverageSamples((f && f.points) || [], 260);
+    samplePointsByFragment[i] = samplePoints;
+    const ranked = [];
+    for (let j = 0; j < realCols; j++) {
+      const q = quickFragmentCandidateScore(f, availablePool[j], constraints);
+      if (q === null) continue;
+      ranked.push({ j, q });
+    }
+    ranked.sort((a, b) => b.q - a.q);
+    const top = new Set(ranked.slice(0, perFragmentCap).map((x) => x.j));
+    rankedChoicesByFragment[i] = ranked.slice(0, perFragmentCap).map((x) => x.j);
+
+    for (let j = 0; j < realCols; j++) {
+      if (!top.has(j)) continue;
+      const c = availablePool[j];
+      breakdown.checkedPairs += 1;
+      const fitDiag = evaluateFragmentCandidateFitDetailed(f, c, constraints);
+      const fit = fitDiag && fitDiag.fit ? fitDiag.fit : null;
+      if (!fit) {
+        markReject(
+          fitDiag && fitDiag.rejectReason ? fitDiag.rejectReason : "fit_null",
+          {
+            fragmentId: Number(f && f.id || 0),
+            inventoryTag: String(c && c.inventoryTag || ""),
+            scrapPieceId: String(c && c.id || "")
+          }
+        );
+        continue;
+      }
+      if (Number(fit.fitScore || 0) + 1e-9 < minAcceptFit) {
+        markReject("fit_score_low", {
+          fragmentId: Number(f && f.id || 0),
+          inventoryTag: String(c && c.inventoryTag || ""),
+          scrapPieceId: String(c && c.id || "")
+        });
+        continue;
+      }
+      const fullContour = Array.isArray(fit.alignedContour) ? fit.alignedContour : [];
+      if (fullContour.length < 3) {
+        markReject("aligned_contour_missing", {
+          fragmentId: Number(f && f.id || 0),
+          inventoryTag: String(c && c.inventoryTag || ""),
+          scrapPieceId: String(c && c.id || "")
+        });
+        continue;
+      }
+      let coreContour = fullContour;
+      let seamStatus = "disabled";
+      if (pieceSeamReserveMm > 0) {
+        const core = buildPieceWorkingContour(fullContour, pieceSeamReserveMm);
+        seamStatus = String(core && core.status || "failed");
+        if (core && core.applied && Array.isArray(core.contour) && core.contour.length >= 3) {
+          coreContour = core.contour;
         }
       }
-      const baseNap = safeNum(best.c && best.c.napDirectionDeg);
-      const rotDeg = Number(Math.round((Number(best.fit && best.fit.rotationDeg || 0)) * 10) / 10);
+      const gain = evaluateCoverageGainBySamples(samplePoints, new Array(samplePoints.length).fill(false), coreContour);
+      if (gain.totalInsideCount <= 0 || gain.gainCount <= 0) {
+        markReject("zero_gain", {
+          fragmentId: Number(f && f.id || 0),
+          inventoryTag: String(c && c.inventoryTag || ""),
+          scrapPieceId: String(c && c.id || "")
+        });
+        continue;
+      }
+      const coverageBySamples = samplePoints.length > 0 ? gain.gainCount / samplePoints.length : 0;
+      const insideRatio = Math.max(0, Math.min(1, Number(fit.insidePercent || 0) / 100));
+      const outsideRatio = Math.max(0, 1 - insideRatio);
+      const fitScoreNorm = Math.max(0, Math.min(1, Number(fit.fitScore || 0) / 100));
+      const overlapNorm = Math.max(0, Math.min(1, Number(fit.overlapApprox || 0)));
+      const areaRatioNorm = Math.max(0, Math.min(1, Number(fit.areaRatio || 0)));
+      const coverageOverflow = Math.max(0, Number(fit.coverageRatio || 0) - 1);
+      const score =
+        coverageBySamples * 150 +
+        fitScoreNorm * 95 +
+        overlapNorm * 55 +
+        areaRatioNorm * 45 -
+        Math.min(1, coverageOverflow) * 25 -
+        outsideRatio * 20 +
+        insideRatio * 10;
+      pairFitGrid[i][j] = fit;
+      pairCoverageGrid[i][j] = coverageBySamples;
+      pairMetaGrid[i][j] = { coreContour, seamStatus, insideRatio, outsideRatio };
+      if (coverageBySamples + 1e-9 < fragmentCoverageTarget) {
+        markReject("fragment_not_fully_covered", {
+          fragmentId: Number(f && f.id || 0),
+          inventoryTag: String(c && c.inventoryTag || ""),
+          scrapPieceId: String(c && c.id || "")
+        });
+        continue;
+      }
+      fitGrid[i][j] = fit;
+      scoreGrid[i][j] = score;
+      coverageGrid[i][j] = coverageBySamples;
+      metaGrid[i][j] = { coreContour, seamStatus, insideRatio, outsideRatio };
+    }
+    if (topChoicesByFragment) {
+      const tops = [];
+      for (let j = 0; j < realCols; j++) {
+        if (!fitGrid[i][j] || !metaGrid[i][j] || !Number.isFinite(scoreGrid[i][j])) continue;
+        tops.push({
+          j,
+          score: Number(scoreGrid[i][j] || 0)
+        });
+      }
+      tops.sort((a, b) => b.score - a.score);
+      topChoicesByFragment[String(f.id)] = {
+        fragmentId: Number(f.id || 0),
+        fragmentClass: "regular",
+        selected: null,
+        topCandidates: tops.slice(0, debugTopK).map((item) => summarizeCandidate(
+          availablePool[item.j],
+          fitGrid[i][item.j],
+          scoreGrid[i][item.j],
+          coverageGrid[i][item.j],
+          metaGrid[i][item.j]
+        )),
+        decision: "pending_assignment"
+      };
+    }
+  }
+
+  let maxScore = 0;
+  for (let i = 0; i < rows; i++) {
+    for (let j = 0; j < realCols; j++) {
+      const s = Number(scoreGrid[i][j]);
+      if (Number.isFinite(s) && s > maxScore) maxScore = s;
+    }
+  }
+  maxScore = Math.max(1, maxScore);
+  const cost = [];
+  for (let i = 0; i < rows; i++) {
+    const row = [];
+    for (let j = 0; j < realCols; j++) {
+      const s = scoreGrid[i][j];
+      row.push(Number.isFinite(s) ? (maxScore - s) : BIG);
+    }
+    for (let j = 0; j < dummyCols; j++) row.push(maxScore + 5);
+    cost.push(row);
+  }
+
+  const assignment = rows > 0 && cols > 0 ? hungarianMinCost(cost) : [];
+  const unmatchedRows = [];
+  for (let i = 0; i < rows; i++) {
+    const f = workFragments[i];
+    const fArea = safeNum(f && f.areaMm2) || polygonArea((f && f.points) || []);
+    const col = Array.isArray(assignment) ? assignment[i] : -1;
+    if (col >= 0 && col < realCols && fitGrid[i][col] && metaGrid[i][col]) {
+      const c = availablePool[col];
+      const fit = fitGrid[i][col];
+      const meta = metaGrid[i][col];
+      const key = String(c && (c.id || c.inventoryTag) || "");
+      if (key) used.add(key);
+      const baseNap = safeNum(c && c.napDirectionDeg);
+      const rotDeg = Number(Math.round((Number(fit && fit.rotationDeg || 0)) * 10) / 10);
       const napEffectiveDeg = (baseNap === null) ? null : normalizeDeg(baseNap + rotDeg);
-
-      const row = {
+      placements.push({
         fragmentId: f.id,
         fragmentAreaMm2: fArea,
-        scrapPieceId: String(best.c && best.c.id || ""),
-        inventoryTag: String(best.c && best.c.inventoryTag || ""),
-        scrapContour: String(best.c && best.c.scrapContour || ""),
-        napDirectionDeg: safeNum(best.c && best.c.napDirectionDeg),
-        bboxWidthMm: safeNum(best.c && best.c.bboxWidthMm),
-        bboxHeightMm: safeNum(best.c && best.c.bboxHeightMm),
-        fitScore: Math.round(Number(best.fit && best.fit.fitScore || 0) * 1000) / 1000,
-        fitAreaRatio: Math.round(Number(best.fit && best.fit.areaRatio || 0) * 1000) / 1000,
-        fitCoverageRatio: Math.round(Number(best.fit && best.fit.coverageRatio || 0) * 1000) / 1000,
-        fitOverlap: Math.round(Number(best.fit && best.fit.overlapApprox || 0) * 1000) / 1000,
-        fitInsidePercent: Math.round(Number(best.fit && best.fit.insidePercent || 0) * 10) / 10,
-        fitChamferMm: Math.round(Number(best.fit && best.fit.chamferMm || 0) * 100) / 100,
-        napDeltaDeg: (best.fit && best.fit.napDeltaDeg !== null) ? Math.round(Number(best.fit.napDeltaDeg) * 10) / 10 : null,
+        scrapPieceId: String(c && c.id || ""),
+        inventoryTag: String(c && c.inventoryTag || ""),
+        scrapContour: String(c && c.scrapContour || ""),
+        napDirectionDeg: safeNum(c && c.napDirectionDeg),
+        bboxWidthMm: safeNum(c && c.bboxWidthMm),
+        bboxHeightMm: safeNum(c && c.bboxHeightMm),
+        fitScore: Math.round(Number(fit && fit.fitScore || 0) * 1000) / 1000,
+        fitAreaRatio: Math.round(Number(fit && fit.areaRatio || 0) * 1000) / 1000,
+        fitCoverageRatio: Math.round(Number(fit && fit.coverageRatio || 0) * 1000) / 1000,
+        fitOverlap: Math.round(Number(fit && fit.overlapApprox || 0) * 1000) / 1000,
+        fitInsidePercent: Math.round(Number(fit && fit.insidePercent || 0) * 10) / 10,
+        fitChamferMm: Math.round(Number(fit && fit.chamferMm || 0) * 100) / 100,
+        napDeltaDeg: (fit && fit.napDeltaDeg !== null) ? Math.round(Number(fit.napDeltaDeg) * 10) / 10 : null,
         alignRotationDeg: rotDeg,
         napEffectiveDeg,
-        alignOffsetX: Math.round(Number(best.fit && best.fit.offsetX || 0) * 100) / 100,
-        alignOffsetY: Math.round(Number(best.fit && best.fit.offsetY || 0) * 100) / 100,
-        alignedContour: Array.isArray(best.fit && best.fit.alignedContour) ? best.fit.alignedContour : null,
-        alignedCoreContour: Array.isArray(best.coreContour) ? best.coreContour : null,
+        alignOffsetX: Math.round(Number(fit && fit.offsetX || 0) * 100) / 100,
+        alignOffsetY: Math.round(Number(fit && fit.offsetY || 0) * 100) / 100,
+        alignedContour: Array.isArray(fit && fit.alignedContour) ? fit.alignedContour : null,
+        alignedCoreContour: Array.isArray(meta.coreContour) ? meta.coreContour : null,
         seamReserveMm: pieceSeamReserveMm,
-        seamStatus: best.seamStatus,
-        fragmentCoverageRatio: Math.round(Number(best.nextCoverage || 0) * 1000) / 1000,
-        fragmentGainCoverageRatio: Math.round(Number(best.gainRatio || 0) * 1000) / 1000,
-        insideRatio: Math.round(Number(best.insideRatio || 0) * 1000) / 1000,
-        outsideRatio: Math.round(Number(best.outsideRatio || 0) * 1000) / 1000,
-        fragmentPieceIndex: piecesUsed,
+        seamStatus: meta.seamStatus,
+        fragmentCoverageRatio: Math.round(Number(coverageGrid[i][col] || 0) * 1000) / 1000,
+        fragmentGainCoverageRatio: Math.round(Number(coverageGrid[i][col] || 0) * 1000) / 1000,
+        insideRatio: Math.round(Number(meta.insideRatio || 0) * 1000) / 1000,
+        outsideRatio: Math.round(Number(meta.outsideRatio || 0) * 1000) / 1000,
+        fragmentPieceIndex: 1,
         status: "matched"
-      };
-      matchedRows.push(row);
-      placements.push(row);
-
-      if (best.nextCoverage + 1e-9 >= fragmentCoverageTarget) break;
+      });
+      if (topChoicesByFragment && topChoicesByFragment[String(f.id)]) {
+        topChoicesByFragment[String(f.id)].selected = summarizeCandidate(
+          c,
+          fit,
+          scoreGrid[i][col],
+          coverageGrid[i][col],
+          meta
+        );
+        topChoicesByFragment[String(f.id)].decision = "max_score_global_one_piece";
+      }
+      breakdown.fragmentCoverage.push({
+        fragmentId: Number(f && f.id || 0),
+        piecesUsed: 1,
+        coverageRatio: Math.round(Number(coverageGrid[i][col] || 0) * 1000) / 1000,
+        coveredByTarget: true,
+        coveredByMinAccept: true
+      });
+    } else {
+      unmatchedRows.push(i);
     }
+  }
 
-    const finalCoverage = samplePoints.length > 0 ? coveredCount / samplePoints.length : 0;
-    breakdown.fragmentCoverage.push({
-      fragmentId: Number(f && f.id || 0),
-      piecesUsed,
-      coverageRatio: Math.round(finalCoverage * 1000) / 1000,
-      coveredByTarget: finalCoverage + 1e-9 >= fragmentCoverageTarget,
-      coveredByMinAccept: finalCoverage + 1e-9 >= fragmentCoverageMinAccept
-    });
-
-    if (finalCoverage + 1e-9 < fragmentCoverageTarget) {
+  if (regularCompatibility && maxPiecesPerFragment > 1 && unmatchedRows.length > 0) {
+    const pairCoverageMinAccept = Math.max(0.82, fragmentCoverageMinAccept - 0.10);
+    for (const i of unmatchedRows) {
+      const f = workFragments[i];
+      const fArea = safeNum(f && f.areaMm2) || polygonArea((f && f.points) || []);
+      const samplePoints = Array.isArray(samplePointsByFragment[i]) ? samplePointsByFragment[i] : [];
+      const rankedIndexes = Array.isArray(rankedChoicesByFragment[i]) ? rankedChoicesByFragment[i] : [];
+      const availableIndexes = rankedIndexes.filter((j) => {
+        const c = availablePool[j];
+        const key = String(c && (c.id || c.inventoryTag) || "");
+        return !!key && !used.has(key) && pairFitGrid[i][j] && pairMetaGrid[i][j];
+      }).slice(0, 18);
+      let bestPair = null;
+      for (let a = 0; a < availableIndexes.length; a++) {
+        const j1 = availableIndexes[a];
+        const fit1 = pairFitGrid[i][j1];
+        const meta1 = pairMetaGrid[i][j1];
+        const cov1 = evaluateCoverageGainBySamples(samplePoints, new Array(samplePoints.length).fill(false), meta1.coreContour);
+        const covered1 = Array.isArray(cov1.insideMask) ? cov1.insideMask.slice() : new Array(samplePoints.length).fill(false);
+        const ratio1 = samplePoints.length > 0 ? (Number(cov1.gainCount || 0) / samplePoints.length) : 0;
+        for (let b = a + 1; b < availableIndexes.length; b++) {
+          const j2 = availableIndexes[b];
+          let fit2 = pairFitGrid[i][j2];
+          let meta2 = pairMetaGrid[i][j2];
+          let cov2 = evaluateCoverageGainBySamples(samplePoints, covered1, meta2.coreContour);
+          let ratio2 = samplePoints.length > 0 ? (Number(cov2.gainCount || 0) / samplePoints.length) : 0;
+          const residualFit2 = retargetPairPieceToResidual(f, availablePool[j2], fit2, covered1, samplePoints);
+          if (residualFit2 && residualFit2.gainRatio > ratio2 + 1e-6) {
+            fit2 = residualFit2.fit;
+            meta2 = {
+              coreContour: residualFit2.coreContour,
+              seamStatus: residualFit2.seamStatus,
+              insideRatio: residualFit2.insideRatio,
+              outsideRatio: residualFit2.outsideRatio
+            };
+            ratio2 = residualFit2.gainRatio;
+            cov2 = evaluateCoverageGainBySamples(samplePoints, covered1, meta2.coreContour);
+          }
+          const cov2Raw = evaluateCoverageGainBySamples(samplePoints, new Array(samplePoints.length).fill(false), meta2.coreContour);
+          const ratio2Raw = samplePoints.length > 0 ? (Number(cov2Raw.gainCount || 0) / samplePoints.length) : 0;
+          const overlapSampleRatio = Math.max(0, ratio2Raw - ratio2);
+          const overlapPieceRatio = overlapSampleRatio / Math.max(0.001, Math.min(Math.max(0.001, ratio1), Math.max(0.001, ratio2Raw)));
+          const overlapGeometryRatio = contourOverlapInFragmentRatio(f, meta1.coreContour, meta2.coreContour);
+          if (overlapPieceRatio > 0.28) continue;
+          const totalRatio = Math.max(ratio1, Math.min(1, ratio1 + ratio2));
+          if (totalRatio + 1e-9 < pairCoverageMinAccept) continue;
+          const fit1Norm = Math.max(0, Math.min(1, Number(fit1 && fit1.fitScore || 0) / 100));
+          const fit2Norm = Math.max(0, Math.min(1, Number(fit2 && fit2.fitScore || 0) / 100));
+          const outsidePenalty = Number(meta1 && meta1.outsideRatio || 0) + Number(meta2 && meta2.outsideRatio || 0);
+          const balancePenalty = Math.abs(ratio1 - ratio2);
+          const pairScore =
+            totalRatio * 220 +
+            (fit1Norm + fit2Norm) * 40 -
+            outsidePenalty * 18 -
+            balancePenalty * 8 -
+            overlapPieceRatio * 120 -
+            overlapGeometryRatio * 180;
+          if (!bestPair || pairScore > bestPair.score) {
+            bestPair = {
+              score: pairScore,
+              j1,
+              j2,
+              fit1,
+              fit2,
+              meta1,
+              meta2,
+              ratio1,
+              ratio2,
+              totalRatio
+            };
+          }
+        }
+      }
+      if (bestPair) {
+        const c1 = availablePool[bestPair.j1];
+        const c2 = availablePool[bestPair.j2];
+        const key1 = String(c1 && (c1.id || c1.inventoryTag) || "");
+        const key2 = String(c2 && (c2.id || c2.inventoryTag) || "");
+        if (key1) used.add(key1);
+        if (key2) used.add(key2);
+        const pairItems = [
+          {
+            c: c1,
+            fit: bestPair.fit1,
+            meta: bestPair.meta1,
+            gainRatio: bestPair.ratio1,
+            idx: 1
+          },
+          {
+            c: c2,
+            fit: bestPair.fit2,
+            meta: bestPair.meta2,
+            gainRatio: bestPair.ratio2,
+            idx: 2
+          }
+        ];
+        for (const item of pairItems) {
+          const baseNap = safeNum(item.c && item.c.napDirectionDeg);
+          const rotDeg = Number(Math.round((Number(item.fit && item.fit.rotationDeg || 0)) * 10) / 10);
+          const napEffectiveDeg = (baseNap === null) ? null : normalizeDeg(baseNap + rotDeg);
+          placements.push({
+            fragmentId: f.id,
+            fragmentAreaMm2: fArea,
+            scrapPieceId: String(item.c && item.c.id || ""),
+            inventoryTag: String(item.c && item.c.inventoryTag || ""),
+            scrapContour: String(item.c && item.c.scrapContour || ""),
+            napDirectionDeg: safeNum(item.c && item.c.napDirectionDeg),
+            bboxWidthMm: safeNum(item.c && item.c.bboxWidthMm),
+            bboxHeightMm: safeNum(item.c && item.c.bboxHeightMm),
+            fitScore: Math.round(Number(item.fit && item.fit.fitScore || 0) * 1000) / 1000,
+            fitAreaRatio: Math.round(Number(item.fit && item.fit.areaRatio || 0) * 1000) / 1000,
+            fitCoverageRatio: Math.round(Number(item.fit && item.fit.coverageRatio || 0) * 1000) / 1000,
+            fitOverlap: Math.round(Number(item.fit && item.fit.overlapApprox || 0) * 1000) / 1000,
+            fitInsidePercent: Math.round(Number(item.fit && item.fit.insidePercent || 0) * 10) / 10,
+            fitChamferMm: Math.round(Number(item.fit && item.fit.chamferMm || 0) * 100) / 100,
+            napDeltaDeg: (item.fit && item.fit.napDeltaDeg !== null) ? Math.round(Number(item.fit.napDeltaDeg) * 10) / 10 : null,
+            alignRotationDeg: rotDeg,
+            napEffectiveDeg,
+            alignOffsetX: Math.round(Number(item.fit && item.fit.offsetX || 0) * 100) / 100,
+            alignOffsetY: Math.round(Number(item.fit && item.fit.offsetY || 0) * 100) / 100,
+            alignedContour: Array.isArray(item.fit && item.fit.alignedContour) ? item.fit.alignedContour : null,
+            alignedCoreContour: Array.isArray(item.meta.coreContour) ? item.meta.coreContour : null,
+            seamReserveMm: pieceSeamReserveMm,
+            seamStatus: item.meta.seamStatus,
+            fragmentCoverageRatio: Math.round(Number(bestPair.totalRatio || 0) * 1000) / 1000,
+            fragmentGainCoverageRatio: Math.round(Number(item.gainRatio || 0) * 1000) / 1000,
+            insideRatio: Math.round(Number(item.meta.insideRatio || 0) * 1000) / 1000,
+            outsideRatio: Math.round(Number(item.meta.outsideRatio || 0) * 1000) / 1000,
+            fragmentPieceIndex: item.idx,
+            status: "matched"
+          });
+        }
+        if (topChoicesByFragment && topChoicesByFragment[String(f.id)]) {
+          topChoicesByFragment[String(f.id)].decision = "max_score_two_piece_fallback";
+        }
+        breakdown.fragmentCoverage.push({
+          fragmentId: Number(f && f.id || 0),
+          piecesUsed: 2,
+          coverageRatio: Math.round(Number(bestPair.totalRatio || 0) * 1000) / 1000,
+          coveredByTarget: bestPair.totalRatio + 1e-9 >= fragmentCoverageTarget,
+          coveredByMinAccept: bestPair.totalRatio + 1e-9 >= pairCoverageMinAccept
+        });
+      } else {
+        placements.push({
+          fragmentId: f.id,
+          fragmentAreaMm2: fArea,
+          scrapPieceId: null,
+          inventoryTag: null,
+          scrapContour: "",
+          napDirectionDeg: null,
+          bboxWidthMm: null,
+          bboxHeightMm: null,
+          fitScore: null,
+          fitAreaRatio: null,
+          fitCoverageRatio: null,
+          fitOverlap: null,
+          fitInsidePercent: null,
+          fitChamferMm: null,
+          napDeltaDeg: null,
+          alignRotationDeg: null,
+          napEffectiveDeg: null,
+          alignOffsetX: null,
+          alignOffsetY: null,
+          alignedContour: null,
+          alignedCoreContour: null,
+          fragmentCoverageRatio: 0,
+          fragmentGainCoverageRatio: 0,
+          insideRatio: null,
+          outsideRatio: null,
+          fragmentPieceIndex: 1,
+          status: "needs_attention",
+          reason: "smart_not_found"
+        });
+        if (topChoicesByFragment && topChoicesByFragment[String(f.id)]) {
+          topChoicesByFragment[String(f.id)].decision = "smart_not_found";
+        }
+        breakdown.fragmentCoverage.push({
+          fragmentId: Number(f && f.id || 0),
+          piecesUsed: 0,
+          coverageRatio: 0,
+          coveredByTarget: false,
+          coveredByMinAccept: false
+        });
+      }
+    }
+  } else {
+    for (const i of unmatchedRows) {
+      const f = workFragments[i];
+      const fArea = safeNum(f && f.areaMm2) || polygonArea((f && f.points) || []);
       placements.push({
         fragmentId: f.id,
         fragmentAreaMm2: fArea,
@@ -1402,15 +2278,23 @@ function assignCandidatesRegularByFragmentCoverage({
         alignOffsetY: null,
         alignedContour: null,
         alignedCoreContour: null,
-        fragmentCoverageRatio: Math.round(finalCoverage * 1000) / 1000,
+        fragmentCoverageRatio: 0,
         fragmentGainCoverageRatio: 0,
         insideRatio: null,
         outsideRatio: null,
-        fragmentPieceIndex: piecesUsed + 1,
+        fragmentPieceIndex: 1,
         status: "needs_attention",
-        reason: piecesUsed > 0
-          ? ((finalCoverage + 1e-9 < fragmentCoverageMinAccept) ? "fragment_coverage_below_min" : "fragment_coverage_below_target")
-          : "smart_not_found"
+        reason: "smart_not_found"
+      });
+      if (topChoicesByFragment && topChoicesByFragment[String(f.id)]) {
+        topChoicesByFragment[String(f.id)].decision = "smart_not_found";
+      }
+      breakdown.fragmentCoverage.push({
+        fragmentId: Number(f && f.id || 0),
+        piecesUsed: 0,
+        coverageRatio: 0,
+        coveredByTarget: false,
+        coveredByMinAccept: false
       });
     }
   }
@@ -1434,6 +2318,7 @@ function assignCandidatesRegularByFragmentCoverage({
   breakdown.coveredByMinAcceptCount = coveredByMinAcceptCount;
   breakdown.fragmentCoverageAvg = Math.round(coverageAvg * 1000) / 1000;
   breakdown.fragmentCoverageWorst = coverageWorst;
+  if (topChoicesByFragment) breakdown.topChoicesByFragment = topChoicesByFragment;
 
   return {
     placements,
@@ -1465,11 +2350,27 @@ function checkCandidateCompatibility(c, filters, constraints, axis) {
   if (constraints.minAcrossMm !== null && across < constraints.minAcrossMm) return { ok: false, reason: "min_across" };
   if (constraints.maxAcrossMm !== null && across > constraints.maxAcrossMm) return { ok: false, reason: "max_across" };
   if (constraints.napDirectionDeg !== null && constraints.napToleranceDeg !== null) {
-    const d = deltaDeg(constraints.napDirectionDeg, c.napDirectionDeg);
     const tol = prefilterNapTol === null
       ? Number(constraints.napToleranceDeg)
       : Math.max(0, Number(prefilterNapTol));
-    if (d !== null && d > tol) return { ok: false, reason: "nap" };
+    if (regularCompatibility) {
+      const baseNap = normalizeDeg(c && c.napDirectionDeg);
+      const targetNap = normalizeDeg(constraints.napDirectionDeg);
+      const rotations = [0, 90, 180, 270];
+      let anyNapOk = false;
+      for (const rot of rotations) {
+        const effective = baseNap === null ? null : normalizeDeg(baseNap + rot);
+        const d = deltaDeg(targetNap, effective);
+        if (d !== null && d <= tol + 1e-6) {
+          anyNapOk = true;
+          break;
+        }
+      }
+      if (!anyNapOk) return { ok: false, reason: "nap" };
+    } else {
+      const d = deltaDeg(constraints.napDirectionDeg, c.napDirectionDeg);
+      if (d !== null && d > tol) return { ok: false, reason: "nap" };
+    }
   }
   if (!regularCompatibility && constraints.requireScrapContour === true) {
     const hasContour = Array.isArray(c.__scrapContourPoints) && c.__scrapContourPoints.length >= 3;
@@ -1658,7 +2559,31 @@ function buildAlignedCandidateContourForFragment(candidate, fragmentPoints) {
           .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y))
       : [];
     if (fromPrepared.length >= 3) return fromPrepared;
-    return parseScrapContourPoints(candidate && candidate.scrapContour);
+    const parsed = parseScrapContourPoints(candidate && candidate.scrapContour);
+    if (parsed.length >= 3) return parsed;
+    const bboxWidthMm = safeNum(candidate && candidate.bboxWidthMm);
+    const bboxHeightMm = safeNum(candidate && candidate.bboxHeightMm);
+    if (bboxWidthMm !== null && bboxHeightMm !== null) {
+      const w = Math.max(1, Number(bboxWidthMm));
+      const h = Math.max(1, Number(bboxHeightMm));
+      return [
+        { x: -w * 0.5, y: -h * 0.5 },
+        { x:  w * 0.5, y: -h * 0.5 },
+        { x:  w * 0.5, y:  h * 0.5 },
+        { x: -w * 0.5, y:  h * 0.5 }
+      ];
+    }
+    const areaMm2Raw = safeNum(candidate && candidate.areaMm2);
+    if (areaMm2Raw !== null && Number(areaMm2Raw) > 0) {
+      const side = Math.max(1, Math.sqrt(Number(areaMm2Raw)));
+      return [
+        { x: -side * 0.5, y: -side * 0.5 },
+        { x:  side * 0.5, y: -side * 0.5 },
+        { x:  side * 0.5, y:  side * 0.5 },
+        { x: -side * 0.5, y:  side * 0.5 }
+      ];
+    }
+    return [];
   })();
   let contour = sourceContour.slice();
   let rotationDeg = 0;
@@ -1687,11 +2612,20 @@ function buildAlignedCandidateContourForFragment(candidate, fragmentPoints) {
 }
 
 function evaluateCandidateContourAgainstFragment(candContour, fragment, candidate, constraints, transformMeta) {
+  const detailed = evaluateCandidateContourAgainstFragmentDetailed(candContour, fragment, candidate, constraints, transformMeta);
+  return detailed && detailed.fit ? detailed.fit : null;
+}
+
+function evaluateCandidateContourAgainstFragmentDetailed(candContour, fragment, candidate, constraints, transformMeta) {
   const fragPoints = Array.isArray(fragment && fragment.points) ? fragment.points : [];
-  if (fragPoints.length < 3 || !Array.isArray(candContour) || candContour.length < 3) return null;
+  if (fragPoints.length < 3 || !Array.isArray(candContour) || candContour.length < 3) {
+    return { fit: null, reason: "fit_null" };
+  }
   const fArea = safeNum(fragment.areaMm2) || polygonArea(fragPoints);
   const cArea = safeNum(candidate && candidate.areaMm2) || polygonArea(candContour);
-  if (!Number.isFinite(fArea) || fArea <= 0 || !Number.isFinite(cArea) || cArea <= 0) return null;
+  if (!Number.isFinite(fArea) || fArea <= 0 || !Number.isFinite(cArea) || cArea <= 0) {
+    return { fit: null, reason: "fit_null" };
+  }
 
   const fragSample = samplePolyline(fragPoints, 36);
   const candSample = samplePolyline(candContour, 36);
@@ -1714,7 +2648,9 @@ function evaluateCandidateContourAgainstFragment(candContour, fragment, candidat
     ? (regularCompatibility ? 0.18 : 0.75)
     : Math.max(minCoverageFloor, Math.min(1.2, Number(constraints.minCoverageRatio)));
   const coverageGateFactor = regularCompatibility ? 0.6 : 0.85;
-  if (coverageRatio < minCoverageRatio * coverageGateFactor) return null;
+  if (coverageRatio < minCoverageRatio * coverageGateFactor) {
+    return { fit: null, reason: "coverage_gate_low" };
+  }
 
   const rotationDeg = safeNum(transformMeta && transformMeta.rotationDeg) || 0;
   const baseNapDeg = normalizeDeg(candidate && candidate.napDirectionDeg);
@@ -1723,7 +2659,7 @@ function evaluateCandidateContourAgainstFragment(candContour, fragment, candidat
   let napScore = 1;
   if (constraints && constraints.napDirectionDeg !== null && constraints.napToleranceDeg !== null && napDelta !== null) {
     const tol = Number(constraints.napToleranceDeg);
-    if (!isNapWithinTolerance(napDelta, tol)) return null;
+    if (!isNapWithinTolerance(napDelta, tol)) return { fit: null, reason: "nap" };
     napScore = tol > NAP_EPS_DEG ? Math.max(0, 1 - napDelta / tol) : 1;
   }
 
@@ -1734,18 +2670,21 @@ function evaluateCandidateContourAgainstFragment(candContour, fragment, candidat
     8 * napScore;
 
   return {
-    fitScore,
-    areaRatio,
-    coverageRatio,
-    overlapApprox,
-    insidePercent: insideCand * 100,
-    chamferMm,
-    napDeltaDeg: napDelta,
-    napEffectiveDeg,
-    rotationDeg,
-    offsetX: safeNum(transformMeta && transformMeta.offsetX) || 0,
-    offsetY: safeNum(transformMeta && transformMeta.offsetY) || 0,
-    alignedContour: candContour
+    fit: {
+      fitScore,
+      areaRatio,
+      coverageRatio,
+      overlapApprox,
+      insidePercent: insideCand * 100,
+      chamferMm,
+      napDeltaDeg: napDelta,
+      napEffectiveDeg,
+      rotationDeg,
+      offsetX: safeNum(transformMeta && transformMeta.offsetX) || 0,
+      offsetY: safeNum(transformMeta && transformMeta.offsetY) || 0,
+      alignedContour: candContour
+    },
+    reason: null
   };
 }
 
@@ -1761,71 +2700,117 @@ function quickFragmentCandidateScore(fragment, candidate, constraints) {
   const fAspect = Math.max(fb.width, fb.height) / Math.max(1e-9, Math.min(fb.width, fb.height));
   const cAspect = Math.max(cw, ch) / Math.max(1e-9, Math.min(cw, ch));
   const aspectScore = Math.max(0, 1 - Math.min(1, Math.abs(fAspect - cAspect) / 2));
+  const regularCompatibility = !!(constraints && constraints.regularCompatibility === true);
+  const fBbArea = Math.max(1e-9, fb.width * fb.height);
+  const fRect = Math.max(0, Math.min(1, fArea / fBbArea));
+  const candContour = Array.isArray(candidate && candidate.__scrapContourPoints) ? candidate.__scrapContourPoints : [];
+  const cb = candContour.length >= 3 ? polygonBBox(candContour) : null;
+  const cBbArea = cb ? Math.max(1e-9, cb.width * cb.height) : Math.max(1e-9, cw * ch);
+  const cRect = Math.max(0, Math.min(1, cArea / cBbArea));
+  const rectScore = Math.max(0, 1 - Math.min(1, Math.abs(fRect - cRect) / 0.6));
+  const coverageRatio = cArea / Math.max(1e-9, fArea);
+  const areaOverflowPenalty = Math.max(0, coverageRatio - 1);
   // Nap is checked at detailed fit stage with actual rotation.
   const napScore = 1;
-  return 0.62 * fr + 0.28 * aspectScore + 0.1 * napScore;
+  if (regularCompatibility) {
+    return 0.46 * fr + 0.16 * aspectScore + 0.28 * rectScore + 0.10 * napScore - 0.34 * Math.min(1, areaOverflowPenalty);
+  }
+  return 0.56 * fr + 0.24 * aspectScore + 0.1 * rectScore + 0.1 * napScore;
 }
 
 function evaluateFragmentCandidateFit(fragment, candidate, constraints) {
+  const detailed = evaluateFragmentCandidateFitDetailed(fragment, candidate, constraints);
+  return detailed && detailed.fit ? detailed.fit : null;
+}
+
+function evaluateFragmentCandidateFitDetailed(fragment, candidate, constraints) {
   const fragPoints = Array.isArray(fragment && fragment.points) ? fragment.points : [];
-  if (fragPoints.length < 3) return null;
+  if (fragPoints.length < 3) return { fit: null, rejectReason: "fit_null" };
+  const regularCompatibility = !!(constraints && constraints.regularCompatibility === true);
   const aligned = buildAlignedCandidateContourForFragment(candidate, fragPoints);
   const candContour = aligned.contour;
-  if (!Array.isArray(candContour) || candContour.length < 3) return null;
+  if (!Array.isArray(candContour) || candContour.length < 3) return { fit: null, rejectReason: "fit_null" };
 
   const fb = polygonBBox(fragPoints) || { width: 0, height: 0 };
-  const base = evaluateCandidateContourAgainstFragment(
+  const rejectCounts = {};
+  function markReject(reason) {
+    const key = String(reason || "fit_null");
+    rejectCounts[key] = Number(rejectCounts[key] || 0) + 1;
+  }
+  const baseResult = evaluateCandidateContourAgainstFragmentDetailed(
     candContour,
     fragment,
     candidate,
     constraints,
     { rotationDeg: aligned.rotationDeg, offsetX: 0, offsetY: 0 }
   );
-  if (!base) return null;
+  let best = baseResult && baseResult.fit ? baseResult.fit : null;
+  if (!best) markReject(baseResult && baseResult.reason ? baseResult.reason : "fit_null");
 
-  let best = base;
   const fc = centroid(fragPoints);
-  const regularCompatibility = !!(constraints && constraints.regularCompatibility === true);
   const searchClass = String((constraints && constraints.__searchClass) || "").toLowerCase();
   const enableCornerEdgeEnhance = !!(constraints && constraints.__enableCornerEdgeEnhance === true);
   const enhanceCornerEdge = regularCompatibility && enableCornerEdgeEnhance && (searchClass === "corner" || searchClass === "edge");
   const angleDeltas = enhanceCornerEdge
-    ? [0, -14, -10, -6, 6, 10, 14]
-    : [0, -8, 8];
-  const shiftFactor = enhanceCornerEdge ? 0.14 : 0.07;
+    ? [0, -18, -14, -10, -6, 6, 10, 14, 18]
+    : (regularCompatibility ? [0, -16, -12, -8, -4, 4, 8, 12, 16] : [0, -8, 8]);
+  const shiftFactor = enhanceCornerEdge ? 0.18 : (regularCompatibility ? 0.16 : 0.07);
   const shiftX = enhanceCornerEdge
-    ? [0, -shiftFactor * fb.width, shiftFactor * fb.width, -0.07 * fb.width, 0.07 * fb.width]
-    : [0, -0.07 * fb.width, 0.07 * fb.width];
+    ? [0, -shiftFactor * fb.width, shiftFactor * fb.width, -0.09 * fb.width, 0.09 * fb.width]
+    : (regularCompatibility
+      ? [0, -shiftFactor * fb.width, shiftFactor * fb.width, -0.08 * fb.width, 0.08 * fb.width]
+      : [0, -0.07 * fb.width, 0.07 * fb.width]);
   const shiftY = enhanceCornerEdge
-    ? [0, -shiftFactor * fb.height, shiftFactor * fb.height, -0.07 * fb.height, 0.07 * fb.height]
-    : [0, -0.07 * fb.height, 0.07 * fb.height];
+    ? [0, -shiftFactor * fb.height, shiftFactor * fb.height, -0.09 * fb.height, 0.09 * fb.height]
+    : (regularCompatibility
+      ? [0, -shiftFactor * fb.height, shiftFactor * fb.height, -0.08 * fb.height, 0.08 * fb.height]
+      : [0, -0.07 * fb.height, 0.07 * fb.height]);
   const source = Array.isArray(aligned.sourceContour) && aligned.sourceContour.length >= 3 ? aligned.sourceContour : candContour;
   const sourceCenter = centroid(source);
 
-  for (const aDeg of angleDeltas) {
-    const rotAbsDeg = aligned.rotationDeg + aDeg;
-    const rot = (rotAbsDeg * Math.PI) / 180;
-    let rotated = rotatePoints(source, rot, sourceCenter);
-    const rc = centroid(rotated);
-    rotated = translatePoints(rotated, fc.x - rc.x, fc.y - rc.y);
+  const rotationAnchors = regularCompatibility
+    ? [aligned.rotationDeg, aligned.rotationDeg + 90, aligned.rotationDeg + 180, aligned.rotationDeg + 270]
+    : [aligned.rotationDeg];
+  const seenRot = new Set();
+  for (const anchorDeg of rotationAnchors) {
+    for (const aDeg of angleDeltas) {
+      const rotAbsDeg = anchorDeg + aDeg;
+      const rotKey = Math.round(normalizeDeg(rotAbsDeg) * 10) / 10;
+      if (seenRot.has(rotKey)) continue;
+      seenRot.add(rotKey);
+      const rot = (rotAbsDeg * Math.PI) / 180;
+      let rotated = rotatePoints(source, rot, sourceCenter);
+      const rc = centroid(rotated);
+      rotated = translatePoints(rotated, fc.x - rc.x, fc.y - rc.y);
 
-    for (const dx of shiftX) {
-      for (const dy of shiftY) {
-        const moved = translatePoints(rotated, dx, dy);
-        const fit = evaluateCandidateContourAgainstFragment(
-          moved,
-          fragment,
-          candidate,
-          constraints,
-          { rotationDeg: rotAbsDeg, offsetX: dx, offsetY: dy }
-        );
-        if (!fit) continue;
-        if (fit.fitScore > best.fitScore) best = fit;
+      for (const dx of shiftX) {
+        for (const dy of shiftY) {
+          const moved = translatePoints(rotated, dx, dy);
+          const fitResult = evaluateCandidateContourAgainstFragmentDetailed(
+            moved,
+            fragment,
+            candidate,
+            constraints,
+            { rotationDeg: rotAbsDeg, offsetX: dx, offsetY: dy }
+          );
+          const fit = fitResult && fitResult.fit ? fitResult.fit : null;
+          if (!fit) {
+            markReject(fitResult && fitResult.reason ? fitResult.reason : "fit_null");
+            continue;
+          }
+          if (!best || fit.fitScore > best.fitScore) best = fit;
+        }
       }
     }
   }
 
-  return best;
+  if (best) return { fit: best, rejectReason: null, rejectCounts };
+  const sortedRejects = Object.entries(rejectCounts).sort((a, b) => Number(b[1] || 0) - Number(a[1] || 0));
+  return {
+    fit: null,
+    rejectReason: sortedRejects.length ? String(sortedRejects[0][0]) : "fit_null",
+    rejectCounts
+  };
 }
 
 function hungarianMinCost(costMatrix) {
@@ -2788,6 +3773,51 @@ const server = http.createServer(async (req, res) => {
     }
 
     {
+      await handleDictRoutes(req, res, reqUrl, {
+        ROOT_DIR,
+        DB_PATH,
+        jsonReply,
+        runCscript,
+        parseScriptJson
+      });
+      if (res.writableEnded) return;
+    }
+
+    {
+      await handleFurMaterialRoutes(req, res, reqUrl, {
+        ROOT_DIR,
+        jsonReply
+      });
+      if (res.writableEnded) return;
+    }
+
+    {
+      await handleZoneRoutes(req, res, reqUrl, {
+        jsonReply,
+        readBodyJson,
+        zoneStore
+      });
+      if (res.writableEnded) return;
+    }
+
+    {
+      await handleProjectRoutes(req, res, reqUrl, {
+        jsonReply,
+        readBodyJson,
+        ROOT_DIR
+      });
+      if (res.writableEnded) return;
+    }
+
+    {
+      await handleExportRoutes(req, res, reqUrl, {
+        jsonReply,
+        readBodyJson
+      });
+      if (res.writableEnded) return;
+    }
+
+    {
       await handleLayoutRoutes(req, res, reqUrl, {
         jsonReply,
         readBodyJson,
@@ -2795,6 +3825,9 @@ const server = http.createServer(async (req, res) => {
         polygonArea,
         safeNum,
         generateRegularFragments,
+        generateShiftedFragments,
+        generateDiagonalFragments,
+        generateRadialFragments,
         generateVoronoiFragments,
         applyNormalizeRules,
         assignCandidatesToFragments,
@@ -2810,7 +3843,12 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && (reqUrl.pathname === "/" || reqUrl.pathname === "/index.html")) {
       const htmlPath = path.join(PUBLIC_DIR, "index.html");
       const html = fs.readFileSync(htmlPath);
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        Pragma: "no-cache",
+        Expires: "0"
+      });
       res.end(html);
       return;
     }
@@ -2825,7 +3863,12 @@ const server = http.createServer(async (req, res) => {
       }
       const ext = path.extname(full).toLowerCase();
       const ctype = ext === ".svg" ? "image/svg+xml; charset=utf-8" : "image/x-icon";
-      res.writeHead(200, { "Content-Type": ctype });
+      res.writeHead(200, {
+        "Content-Type": ctype,
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        Pragma: "no-cache",
+        Expires: "0"
+      });
       fs.createReadStream(full).pipe(res);
       return;
     }
@@ -2841,7 +3884,12 @@ const server = http.createServer(async (req, res) => {
       }
       const ext = path.extname(full).toLowerCase();
       const ctype = ext === ".js" ? "application/javascript; charset=utf-8" : "application/octet-stream";
-      res.writeHead(200, { "Content-Type": ctype });
+      res.writeHead(200, {
+        "Content-Type": ctype,
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        Pragma: "no-cache",
+        Expires: "0"
+      });
       fs.createReadStream(full).pipe(res);
       return;
     }
@@ -2883,6 +3931,9 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+server.timeout = 300000; // 5 min — prevents Node from dropping long-running requests
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
 server.listen(PORT, HOST, () => {
   console.log(`[furlab-web-plugin] http://${HOST}:${PORT}`);
   console.log(`[furlab-web-plugin] db=${DB_PATH}`);

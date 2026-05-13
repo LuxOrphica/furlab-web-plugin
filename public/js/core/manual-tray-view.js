@@ -28,7 +28,7 @@
         : { large: [], medium: [], small: [] };
       const trayOpen = cfg.trayOpen && typeof cfg.trayOpen === "object"
         ? cfg.trayOpen
-        : { large: false, medium: false, small: false };
+        : { large: false, medium: false, small: false, all: false };
       const selectedTag = String(cfg.selectedTag || "");
       const getThumbSvg = typeof cfg.getThumbSvg === "function" ? cfg.getThumbSvg : () => "";
       const formatSectionRangeCm = typeof cfg.formatSectionRangeCm === "function" ? cfg.formatSectionRangeCm : () => "";
@@ -68,12 +68,28 @@
         `;
       };
 
+      const allOpen = !!trayOpen.all;
+      const allPieces = [
+        ...(Array.isArray(sections.large) ? sections.large : []),
+        ...(Array.isArray(sections.medium) ? sections.medium : []),
+        ...(Array.isArray(sections.small) ? sections.small : [])
+      ];
+      const totalCount = allPieces.length;
+
       return `
         <div class="manual-tray-toolbar manual-tray-toolbar-main">
           <div class="manual-tray-toolbar-group manual-tray-toolbar-group-actions">
             <button type="button" data-manual-toolbar="recompute">${t("btn_evaluate", null, "Оценить")}</button>
             <button type="button" data-manual-toolbar="apply">${t("btn_apply", null, "Применить")}</button>
           </div>
+          ${hasDebug ? `
+          <div class="manual-tray-toolbar-group">
+            <button type="button" class="manual-tray-toggle manual-tray-debug-toggle" data-manual-debug-toggle="1">
+              <span>${t("manual_debug_summary", null, "Диагностика")}</span>
+              <span class="manual-tray-toggle-icon">${debugOpen ? iconSpan("chevronDown") : iconSpan("chevronRight")}</span>
+            </button>
+          </div>
+          ` : ""}
           <div class="manual-tray-toolbar-group manual-tray-toolbar-group-rotate">
             <button type="button" class="manual-tray-icon-btn" data-manual-toolbar="rotate-left" aria-label="${t("manual_rotate_left", null, "Повернуть влево")}" title="${t("manual_rotate_left", null, "Повернуть влево")}">${iconSpan("rotateLeft")}</button>
             <button type="button" class="manual-tray-icon-btn" data-manual-toolbar="rotate-right" aria-label="${t("manual_rotate_right", null, "Повернуть вправо")}" title="${t("manual_rotate_right", null, "Повернуть вправо")}">${iconSpan("rotateRight")}</button>
@@ -87,14 +103,12 @@
             <button type="button" class="manual-tray-icon-btn" data-manual-toolbar="z-front" aria-label="${t("manual_z_front", null, "Вперёд")}" title="${t("manual_z_front", null, "Вперёд")}">${iconSpan("zFront")}</button>
             <button type="button" class="manual-tray-icon-btn" data-manual-toolbar="z-back" aria-label="${t("manual_z_back", null, "Назад")}" title="${t("manual_z_back", null, "Назад")}">${iconSpan("zBack")}</button>
           </div>
-          ${hasDebug ? `
           <div class="manual-tray-toolbar-group manual-tray-toolbar-group-right">
-            <button type="button" class="manual-tray-toggle manual-tray-debug-toggle" data-manual-debug-toggle="1">
-              <span>${t("manual_debug_summary", null, "Диагностика")}</span>
-              <span class="manual-tray-toggle-icon">${debugOpen ? iconSpan("chevronDown") : iconSpan("chevronRight")}</span>
+            <button type="button" class="manual-tray-toggle manual-tray-all-toggle" data-manual-toggle="all">
+              <span>${t("tray_section_all", null, "Лоток")}${totalCount ? ` (${totalCount})` : ""}</span>
+              <span class="manual-tray-toggle-icon">${allOpen ? iconSpan("chevronDown") : iconSpan("chevronRight")}</span>
             </button>
           </div>
-          ` : ""}
         </div>
         ${hasDebug ? `
           <div class="manual-tray-debug ${debugOpen ? "open" : ""}">
@@ -107,10 +121,19 @@
             </div>
           </div>
         ` : ""}
-        <div class="manual-tray-sections">
-          ${sectionHtml("large", `${t("tray_section_large", null, "Большие")} ${formatSectionRangeCm("large", sections)}`, sections.large)}
-          ${sectionHtml("medium", `${t("tray_section_medium", null, "Средние")} ${formatSectionRangeCm("medium", sections)}`, sections.medium)}
-          ${sectionHtml("small", `${t("tray_section_small", null, "Малые")} ${formatSectionRangeCm("small", sections)}`, sections.small)}
+        <div class="manual-tray-sections ${allOpen ? "open" : ""}">
+          <div class="manual-tray-section">
+            <div class="manual-tray-size-label">${t("tray_section_large", null, "Большие")} ${formatSectionRangeCm("large", sections)}</div>
+            <div class="manual-tray-cards-wrap open"><div class="manual-tray-cards-grid">${makeCards(sections.large, "large")}</div></div>
+          </div>
+          <div class="manual-tray-section">
+            <div class="manual-tray-size-label">${t("tray_section_medium", null, "Средние")} ${formatSectionRangeCm("medium", sections)}</div>
+            <div class="manual-tray-cards-wrap open"><div class="manual-tray-cards-grid">${makeCards(sections.medium, "medium")}</div></div>
+          </div>
+          <div class="manual-tray-section">
+            <div class="manual-tray-size-label">${t("tray_section_small", null, "Малые")} ${formatSectionRangeCm("small", sections)}</div>
+            <div class="manual-tray-cards-wrap open"><div class="manual-tray-cards-grid">${makeCards(sections.small, "small")}</div></div>
+          </div>
         </div>
       `;
     }

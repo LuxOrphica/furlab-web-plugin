@@ -143,7 +143,7 @@ function createIntarsiaMode(deps) {
       filters,
       constraints
     });
-    return wrapIntarsiaPreview(wrapReq, { placements: assigned.placements });
+    return wrapIntarsiaPreview(wrapReq, assigned);
   }
 
   async function applyWrapper(req) {

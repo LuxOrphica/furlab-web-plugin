@@ -1,4 +1,4 @@
-// Extracted from app.js (placement rows / coverage / explain blocks)
+﻿// Extracted from app.js (placement rows / coverage / explain blocks)
 (function (global) {
   function createPlacementExplainView(deps) {
     const d = deps && typeof deps === "object" ? deps : {};
@@ -19,7 +19,7 @@
 function renderPlacementRows(rows) {
       const body = byId("invPlacementRows");
       if (!body) return;
-      const items = Array.isArray(rows) ? rows : [];
+      const rawItems = Array.isArray(rows) ? rows : [];
       const fragmentList = Array.isArray(state.layoutRun && state.layoutRun.fragments) ? state.layoutRun.fragments : [];
       const pc = (typeof window !== "undefined" && window.polygonClipping) ? window.polygonClipping : null;
       function normalizeContourArray(raw) {
@@ -71,6 +71,46 @@ function renderPlacementRows(rows) {
         }
         return contours;
       }
+      const groupedByFragment = new Map();
+      for (const row of rawItems) {
+        const fid = Number(row && row.fragmentId || 0);
+        if (!Number.isFinite(fid) || fid <= 0) continue;
+        if (!groupedByFragment.has(fid)) groupedByFragment.set(fid, []);
+        groupedByFragment.get(fid).push(row);
+      }
+      const items = Array.from(groupedByFragment.entries()).map(([fragmentId, list]) => {
+        const rowsForFragment = Array.isArray(list) ? list.slice() : [];
+        rowsForFragment.sort((a, b) => Number(a && a.fragmentPieceIndex || 0) - Number(b && b.fragmentPieceIndex || 0));
+        const first = rowsForFragment[0] || {};
+        const matchedRows = rowsForFragment.filter((r) => String(r && r.status || "") === "matched");
+        const tags = matchedRows
+          .map((r) => String(r && r.inventoryTag || "").trim())
+          .filter(Boolean);
+        const status = matchedRows.length > 0 ? "matched" : String(first && first.status || "");
+        const fitScoreBest = matchedRows.reduce((best, r) => {
+          const score = Number(r && r.fitScore);
+          return Number.isFinite(score) ? Math.max(best, score) : best;
+        }, Number.NEGATIVE_INFINITY);
+        return {
+          fragmentId,
+          rows: rowsForFragment,
+          fragmentAreaMm2: Number(first && first.fragmentAreaMm2 || 0),
+          inventoryTag: tags.length ? tags.join(" + ") : "-",
+          status,
+          fitScore: Number.isFinite(fitScoreBest) ? fitScoreBest : Number(first && first.fitScore || 0),
+          napDirectionDeg: matchedRows.length === 1
+            ? matchedRows[0].napDirectionDeg
+            : (matchedRows.length > 1 ? null : first.napDirectionDeg),
+          napEffectiveDeg: matchedRows.length === 1
+            ? matchedRows[0].napEffectiveDeg
+            : (matchedRows.length > 1 ? null : first.napEffectiveDeg),
+          alignRotationDeg: matchedRows.length === 1
+            ? matchedRows[0].alignRotationDeg
+            : (matchedRows.length > 1 ? null : first.alignRotationDeg),
+          pieceCount: matchedRows.length,
+          reason: String(first && first.reason || "")
+        };
+      });
       const qualityByFragment = new Map();
       function getQualityRow(r) {
         const fid = Number(r && r.fragmentId || 0);
@@ -78,10 +118,17 @@ function renderPlacementRows(rows) {
         if (qualityByFragment.has(fid)) return qualityByFragment.get(fid);
         const frag = fragmentList.find((f) => Number(f && f.id || 0) === fid) || null;
         const fragArea = frag ? Math.max(0, Math.abs(polygonArea(frag.points || []))) : 0;
-        let coverageRatio = Number.isFinite(Number(r && r.fitCoverageRatio)) ? Number(r.fitCoverageRatio) : null;
+        const fragmentRows = Array.isArray(r && r.rows) ? r.rows : [r];
+        let coverageRatio = fragmentRows.reduce((best, item) => {
+          const val = Number(item && item.fragmentCoverageRatio);
+          return Number.isFinite(val) ? Math.max(best, val) : best;
+        }, Number.NEGATIVE_INFINITY);
+        if (!Number.isFinite(coverageRatio)) {
+          coverageRatio = Number.isFinite(Number(r && r.fitCoverageRatio)) ? Number(r.fitCoverageRatio) : null;
+        }
         if (!(Number.isFinite(coverageRatio) && coverageRatio >= 0) && pc && frag && fragArea > 1e-9) {
           const fragMp = toBooleanMulti(frag.points);
-          const pieceContours = pieceContoursForPlacement(r, frag);
+          const pieceContours = fragmentRows.flatMap((row) => pieceContoursForPlacement(row, frag));
           const pieceMp = toBooleanMultiFromMultiOuter(pieceContours);
           if (Array.isArray(fragMp) && fragMp.length && Array.isArray(pieceMp) && pieceMp.length) {
             try {
@@ -91,9 +138,11 @@ function renderPlacementRows(rows) {
             } catch (_) {}
           }
         }
-        const insidePctRaw = Number(r && r.fitInsidePercent);
-        const insideRatio = Number.isFinite(insidePctRaw)
-          ? Math.max(0, Math.min(1, insidePctRaw / 100))
+        const insideValues = fragmentRows
+          .map((row) => Number(row && row.fitInsidePercent))
+          .filter((v) => Number.isFinite(v));
+        const insideRatio = insideValues.length
+          ? Math.max(0, Math.min(1, (insideValues.reduce((a, v) => a + v, 0) / insideValues.length) / 100))
           : null;
         const outsideRatio = Number.isFinite(insideRatio) ? Math.max(0, 1 - insideRatio) : null;
         const out = {
@@ -137,23 +186,30 @@ function renderPlacementRows(rows) {
         const score = Number(r.fitScore || 0);
         const statusBase = String(r.status || "");
         const status = score > 0 ? `${statusBase} (${score.toFixed(1)})` : statusBase;
-        const baseNap = Number.isFinite(Number(r.napDirectionDeg)) ? Number(r.napDirectionDeg) : DEFAULT_NAP_DIRECTION_DEG;
-        const rotNap = Number.isFinite(Number(r.alignRotationDeg)) ? Number(r.alignRotationDeg) : 0;
-        const effNapRaw = Number.isFinite(Number(r.napEffectiveDeg)) ? Number(r.napEffectiveDeg) : (baseNap + rotNap);
-        const effNap = ((effNapRaw % 360) + 360) % 360;
-        const delta = Math.min(Math.abs(effNap - targetNapDeg), 360 - Math.abs(effNap - targetNapDeg));
-        const ok = napTolDeg <= 1e-6 ? (delta <= 1e-6) : (delta <= napTolDeg + 1e-6);
-        const napInfo = `${effNap.toFixed(1)}° / ${targetNapDeg.toFixed(1)}°; Δ ${delta.toFixed(2)}°; ${ok ? "OK" : "FAIL"}`;
+        let napInfo = "-";
+        let napOk = null;
+        if (Number(r.pieceCount || 0) > 1) {
+          napInfo = `${Number(r.pieceCount || 0)} куска`;
+        } else {
+          const baseNap = Number.isFinite(Number(r.napDirectionDeg)) ? Number(r.napDirectionDeg) : DEFAULT_NAP_DIRECTION_DEG;
+          const rotNap = Number.isFinite(Number(r.alignRotationDeg)) ? Number(r.alignRotationDeg) : 0;
+          const effNapRaw = Number.isFinite(Number(r.napEffectiveDeg)) ? Number(r.napEffectiveDeg) : (baseNap + rotNap);
+          const effNap = ((effNapRaw % 360) + 360) % 360;
+          const delta = Math.min(Math.abs(effNap - targetNapDeg), 360 - Math.abs(effNap - targetNapDeg));
+          napOk = napTolDeg <= 1e-6 ? (delta <= 1e-6) : (delta <= napTolDeg + 1e-6);
+          napInfo = `${effNap.toFixed(1)}° / ${targetNapDeg.toFixed(1)}°; Δ ${delta.toFixed(2)}°; ${napOk ? "OK" : "FAIL"}`;
+        }
         const q = getQualityRow(r);
         const covText = q && Number.isFinite(q.fragmentCoverageRatio) ? `${(q.fragmentCoverageRatio * 100).toFixed(1)}%` : "-";
         const inText = q && Number.isFinite(q.insideRatio) ? `${(q.insideRatio * 100).toFixed(1)}%` : "-";
         const outText = q && Number.isFinite(q.outsideRatio) ? `${(q.outsideRatio * 100).toFixed(1)}%` : "-";
-        const statusExt = `${status}${status ? " | " : ""}cov=${covText} in=${inText} out=${outText}`;
+        const pieceSuffix = Number(r.pieceCount || 0) > 1 ? ` | pieces=${Number(r.pieceCount || 0)}` : "";
+        const statusExt = `${status}${pieceSuffix}${status ? " | " : ""}cov=${covText} in=${inText} out=${outText}`;
         return `<tr data-fragment-id="${fid}" class="${isSelected ? "active" : ""}" style="cursor:pointer;">
           <td style="font-size:12px;">${fid}</td>
           <td style="font-size:12px;">${areaText}</td>
           <td style="font-size:12px;">${tag}</td>
-          <td style="font-size:12px; white-space:nowrap; color:${ok ? "#0a7d2e" : "#b42318"};">${napInfo}</td>
+          <td style="font-size:12px; white-space:nowrap; color:${napOk === null ? "#444" : (napOk ? "#0a7d2e" : "#b42318")};">${napInfo}</td>
           <td style="font-size:12px;">${statusExt}</td>
         </tr>`;
       }).join("");
@@ -219,6 +275,14 @@ function renderPlacementRows(rows) {
       const map = state.layoutRun && state.layoutRun.topChoicesByFragment && typeof state.layoutRun.topChoicesByFragment === "object"
         ? state.layoutRun.topChoicesByFragment
         : {};
+      const rowsByFragment = new Map();
+      const placementRows = Array.isArray(state.layoutRun && state.layoutRun.placements) ? state.layoutRun.placements : [];
+      for (const row of placementRows) {
+        const fid = Number(row && row.fragmentId || 0);
+        if (!Number.isFinite(fid) || fid <= 0) continue;
+        if (!rowsByFragment.has(fid)) rowsByFragment.set(fid, []);
+        rowsByFragment.get(fid).push(row);
+      }
       const selectedFragmentId = Number(state.layoutRun && state.layoutRun.selectedPlacementFragmentId || 0);
       if (!Number.isFinite(selectedFragmentId) || selectedFragmentId <= 0) {
         summary.textContent = "Выберите строку фрагмента в таблице выше";
@@ -226,13 +290,19 @@ function renderPlacementRows(rows) {
         return;
       }
       const explain = map[String(selectedFragmentId)];
+      const selectedRows = Array.isArray(rowsByFragment.get(selectedFragmentId)) ? rowsByFragment.get(selectedFragmentId) : [];
+      const matchedRows = selectedRows.filter((r) => String(r && r.status || "") === "matched");
       if (!explain || typeof explain !== "object") {
-        summary.textContent = `Фрагмент ${selectedFragmentId}: нет объяснимости (topChoices не пришли из preview)`;
+        const selectedTags = matchedRows.map((r) => String(r && r.inventoryTag || "").trim()).filter(Boolean);
+        const selectedText = selectedTags.length ? selectedTags.join(" + ") : "-";
+        summary.textContent = `Фрагмент ${selectedFragmentId}: topChoices не пришли из preview | выбранные куски: ${selectedText}`;
         rows.innerHTML = '<tr><td colspan="6" style="font-size:12px; color:#666; text-align:center;">Нет данных</td></tr>';
         return;
       }
       const selected = explain.selected && typeof explain.selected === "object" ? explain.selected : null;
-      const selectedTag = selected ? String(selected.inventoryTag || selected.scrapPieceId || "-") : "-";
+      const selectedTag = matchedRows.length > 1
+        ? matchedRows.map((r) => String(r && r.inventoryTag || r && r.scrapPieceId || "-")).join(" + ")
+        : (selected ? String(selected.inventoryTag || selected.scrapPieceId || "-") : "-");
       const selectedScore = selected ? Number(selected.score || 0).toFixed(3) : "-";
       const decision = String(explain.decision || "unknown");
       const cls = String(explain.fragmentClass || "-");
@@ -240,9 +310,10 @@ function renderPlacementRows(rows) {
         ? selected.scoreBreakdown
         : null;
       const reason = breakdown
-        ? `cov=${Number(breakdown.coverageRatio || 0).toFixed(3)} in=${Number(breakdown.insideRatio || 0).toFixed(3)} waste=${Number(breakdown.wasteRatio || 0).toFixed(3)} shape=${Number(breakdown.shapeMismatch || 0).toFixed(3)}`
+        ? `sample=${Number(breakdown.sampleCoverage || 0).toFixed(3)} in=${Number(breakdown.insideRatio || 0).toFixed(3)} out=${Number(breakdown.outsideRatio || 0).toFixed(3)} area=${Number(breakdown.areaRatioNorm || 0).toFixed(3)}`
         : "breakdown=none";
-      summary.textContent = `Фрагмент ${selectedFragmentId} (${cls}) | выбор=${selectedTag} | score=${selectedScore} | decision=${decision} | ${reason}`;
+      const piecesInfo = matchedRows.length > 1 ? ` | pieces=${matchedRows.length}` : "";
+      summary.textContent = `Фрагмент ${selectedFragmentId} (${cls}) | выбор=${selectedTag} | score=${selectedScore} | decision=${decision}${piecesInfo} | ${reason}`;
       const list = Array.isArray(explain.topCandidates) ? explain.topCandidates : [];
       if (!list.length) {
         rows.innerHTML = '<tr><td colspan="6" style="font-size:12px; color:#666; text-align:center;">Нет альтернатив</td></tr>';
@@ -275,3 +346,4 @@ function renderPlacementRows(rows) {
     createPlacementExplainView
   });
 })(window);
+

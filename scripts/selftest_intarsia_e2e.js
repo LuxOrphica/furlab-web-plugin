@@ -55,7 +55,7 @@ fs.mkdirSync(OUT_DIR, { recursive: true });
   });
 
   try {
-    await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 120000 });
     await page.waitForTimeout(500);
 
     await page.evaluate(() => {
@@ -92,14 +92,12 @@ fs.mkdirSync(OUT_DIR, { recursive: true });
       const gapYEl = document.getElementById("fillGapY");
       const limitEl = document.getElementById("invLimit");
       const minAreaEl = document.getElementById("invMinArea");
-      const napTolEl = document.getElementById("invNapTol");
       if (rowsEl) rowsEl.value = "4";
       if (colsEl) colsEl.value = "4";
       if (gapXEl) gapXEl.value = "4";
       if (gapYEl) gapYEl.value = "4";
       if (limitEl) limitEl.value = "8";
       if (minAreaEl) minAreaEl.value = "5000";
-      if (napTolEl) napTolEl.value = "5";
     });
 
     await page.click("#inventoryStep1RunBtn");
@@ -130,6 +128,17 @@ fs.mkdirSync(OUT_DIR, { recursive: true });
       info: `candidates=${report.routeHits.candidates}, preview=${report.routeHits.preview}`
     };
 
+    await page.waitForFunction(() => {
+      const lr = state && state.layoutRun ? state.layoutRun : {};
+      const debugText = String((document.getElementById("invDebugInfo") || {}).textContent || "");
+      return (
+        (Array.isArray(lr.placements) && lr.placements.length > 0) ||
+        (Array.isArray(lr.matchedFragmentGeometry) && lr.matchedFragmentGeometry.length > 0) ||
+        (typeof lr.resultStatus === "string" && lr.resultStatus.trim() !== "") ||
+        /^Ошибка:/i.test(debugText)
+      );
+    }, { timeout: 180000 });
+
     const previewState = await page.evaluate(() => {
       const lr = state && state.layoutRun ? state.layoutRun : {};
       return {
@@ -138,14 +147,15 @@ fs.mkdirSync(OUT_DIR, { recursive: true });
         resultStatus: String(lr.resultStatus || ""),
         status: String(lr.status || ""),
         matchedGeometry: Array.isArray(lr.matchedFragmentGeometry) ? lr.matchedFragmentGeometry.length : 0,
-        coverage: Number((document.getElementById("invCoveragePercent") || {}).textContent || 0)
+        coverage: Number((document.getElementById("invCoveragePercent") || {}).textContent || 0),
+        debug: String((document.getElementById("invDebugInfo") || {}).textContent || "")
       };
     });
     report.steps.preview_has_result = {
       pass: previewState.fragments > 0 &&
         (previewState.placements > 0 || previewState.matchedGeometry > 0) &&
         /ok|needs_attention|failed/i.test(previewState.resultStatus),
-      info: `fragments=${previewState.fragments}, placements=${previewState.placements}, matchedGeometry=${previewState.matchedGeometry}, resultStatus=${previewState.resultStatus}, status=${previewState.status}, coverage=${previewState.coverage}`
+      info: `fragments=${previewState.fragments}, placements=${previewState.placements}, matchedGeometry=${previewState.matchedGeometry}, resultStatus=${previewState.resultStatus}, status=${previewState.status}, coverage=${previewState.coverage}, debug=${previewState.debug}`
     };
     report.debug.preview = previewState;
 

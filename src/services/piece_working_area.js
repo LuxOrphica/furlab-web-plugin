@@ -63,6 +63,31 @@ function insetPathBest(cleanedPath, reserveMm, scale) {
   return (best && best.length >= 3 && bestArea > 1e-9) ? best : [];
 }
 
+function outsetPath(points, reserveMm) {
+  const src = Array.isArray(points) ? points : [];
+  const reserve = Number.isFinite(Number(reserveMm)) ? Math.max(0, Number(reserveMm)) : 0;
+  if (src.length < 3 || !(reserve > 1e-9)) return src.length >= 3 ? src : [];
+  const scale = 1000;
+  const raw = pointsToClipperPath(src, scale);
+  if (raw.length < 3) return src;
+  const cleaned = ClipperLib.Clipper.CleanPolygon(raw, 2);
+  if (!Array.isArray(cleaned) || cleaned.length < 3) return src;
+  const co = new ClipperLib.ClipperOffset(2, 0.25 * scale);
+  co.AddPath(cleaned, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
+  const out = new ClipperLib.Paths();
+  co.Execute(out, reserve * scale);
+  if (!Array.isArray(out) || !out.length) return src;
+  let best = null;
+  let bestArea = 0;
+  for (const path of out) {
+    const pts = clipperPathToPoints(path, scale);
+    if (pts.length < 3) continue;
+    const area = Math.abs(ringAreaSigned(pts));
+    if (area > bestArea) { bestArea = area; best = pts; }
+  }
+  return (best && best.length >= 3) ? best : src;
+}
+
 function buildPieceWorkingContour(points, reserveMm) {
   const src = Array.isArray(points) ? points.slice() : [];
   const reserve = Number.isFinite(Number(reserveMm)) ? Math.max(0, Number(reserveMm)) : 0;
@@ -132,10 +157,12 @@ function applyReserveToPlacements(placements, reserveMm) {
     const wrk = buildPieceWorkingContour(contour, reserve);
     if (wrk.applied && Array.isArray(wrk.contour) && wrk.contour.length >= 3) {
       changed += 1;
-      out.push({ ...p, alignedContour: wrk.contour, seamStatus: "ok", seamReserveMm: reserve });
+      // Keep original full contour as alignedFullContour; replace alignedContour with core
+      // so buildVisibleMosaicModel uses eroded geometry for coverage metrics.
+      out.push({ ...p, alignedFullContour: contour, alignedCoreContour: wrk.contour, alignedContour: wrk.contour, seamStatus: "ok", seamReserveMm: reserve });
     } else {
       failed += 1;
-      out.push({ ...p, seamStatus: String(wrk.status || "failed"), seamReserveMm: reserve });
+      out.push({ ...p, alignedFullContour: contour, seamStatus: String(wrk.status || "failed"), seamReserveMm: reserve });
     }
   }
   return { placements: out, reserveMm: reserve, changed, failed };
@@ -143,5 +170,6 @@ function applyReserveToPlacements(placements, reserveMm) {
 
 module.exports = {
   buildPieceWorkingContour,
-  applyReserveToPlacements
+  applyReserveToPlacements,
+  outsetPath
 };

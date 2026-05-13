@@ -262,6 +262,43 @@ function createAssignInventoryDirect(deps) {
       });
     }
 
+    function ensurePlacementsGainCoreContours(placementsList) {
+      const list = Array.isArray(placementsList) ? placementsList : [];
+      if (list.length === 0) return list;
+      // Build gainCoreContours for placements that lack it.
+      // Sort by solveOrder so residual accumulation is correct.
+      const sorted = list.slice().sort((a, b) =>
+        Number(a && a.solveOrder || 0) - Number(b && b.solveOrder || 0)
+      );
+      let coreResidual = zoneMulti;
+      const gainMap = new Map();
+      for (const p of sorted) {
+        if (Array.isArray(p.gainCoreContours)) {
+          // Already has it — still update residual by subtracting its inZoneCore.
+          const coreMp = Array.isArray(p.inZoneCoreContours) && p.inZoneCoreContours.length > 0
+            ? p.inZoneCoreContours : [];
+          if (coreMp.length > 0) coreResidual = diffMulti(coreResidual, coreMp);
+          continue;
+        }
+        const coreMp = Array.isArray(p.inZoneCoreContours) && p.inZoneCoreContours.length > 0
+          ? p.inZoneCoreContours
+          : (Array.isArray(p.inZoneCoreContour) && p.inZoneCoreContour.length >= 3
+            ? pointsToMultiPolygon(p.inZoneCoreContour.map(pt => ({ x: Number(pt.x || pt[0] || 0), y: Number(pt.y || pt[1] || 0) })))
+            : []);
+        if (coreMp.length > 0) {
+          const gcc = intersectMulti(coreMp, coreResidual);
+          gainMap.set(p, gcc);
+          coreResidual = diffMulti(coreResidual, coreMp);
+        } else {
+          gainMap.set(p, []);
+        }
+      }
+      return list.map((p) => {
+        if (Array.isArray(p.gainCoreContours)) return p;
+        return { ...p, gainCoreContours: gainMap.get(p) || [] };
+      });
+    }
+
     function computeScenarioADiagnostics(placementsList, residualAreaValue, strictInfo) {
       return computeScenarioADiagnosticsImpl({
         placementsList,
@@ -334,7 +371,10 @@ function createAssignInventoryDirect(deps) {
           alignOffsetY: 0,
           alignedContour: evalObj.contour,
           inZoneContour: inZonePoints.length >= 3 ? inZonePoints : [],
+          inZoneCoreContour: largestOuterRingPoints(evalObj.inZoneCoreMulti || []),
           inZoneContours: evalObj.inZoneMulti,
+          inZoneCoreContours: evalObj.inZoneCoreMulti || [],
+          gainCoreContours: evalObj.gainCoreMulti || [],
           fragmentContour: fragPoints.length >= 3 ? fragPoints : [],
           fragmentContours: evalObj.gainMulti,
           status: "matched"
@@ -416,11 +456,16 @@ function createAssignInventoryDirect(deps) {
                 1.45 * (overlapArea / Math.max(1e-9, zoneArea)) -
                 1.20 * (outsideArea / Math.max(1e-9, zoneArea));
               if (!best || score > Number(best.score || -1e18)) {
+                const patchCoreGeom = buildCoreGeometry(contour);
+                const patchInZoneCoreMulti = patchCoreGeom.coreMulti.length ? intersectMulti(patchCoreGeom.coreMulti, zoneMulti) : [];
+                const patchGainCoreMulti = patchInZoneCoreMulti.length ? intersectMulti(patchInZoneCoreMulti, residualMp) : [];
                 best = {
                   tpl,
                   contour,
                   inZoneMulti,
+                  inZoneCoreMulti: patchInZoneCoreMulti,
                   gainMulti,
+                  gainCoreMulti: patchGainCoreMulti,
                   gainArea,
                   inZoneArea,
                   overlapArea,
@@ -815,9 +860,19 @@ function createAssignInventoryDirect(deps) {
     }
 
     if (runGridPrepass) {
+      const poolForGrid = pieceSeamReserveMm > 1e-9
+        ? pool.reduce((acc, c) => {
+            const contour = Array.isArray(c.__scrapContourPoints) ? c.__scrapContourPoints : [];
+            if (contour.length < 3) { acc.push(c); return acc; }
+            const coreGeom = buildCoreGeometry(contour);
+            if (coreGeom.coreContour.length < 3) return acc; // ядро схлопнулось — кусок не кандидат
+            acc.push({ ...c, __coreContourPoints: coreGeom.coreContour });
+            return acc;
+          }, [])
+        : pool;
       const gridRes = await solveCoverGrid({
         zonePoints: workingZone,
-        candidates: pool,
+        candidates: poolForGrid,
         constraints: sourceConstraints,
         options: {
           ...(options || {}),
@@ -2108,17 +2163,19 @@ function createAssignInventoryDirect(deps) {
                   continue;
                 }
               }
-              if (phaseMode !== "A" && minSpanMm > 0 && !strictTailRescueActive) {
+              if (minSpanMm > 0 && !strictTailRescueActive) {
                 const derivedGateScale = splitReturnEnabled && tpl.derived
                   ? (inTailPhase ? 0.2 : 0.35)
                   : 1;
+                // Phase A applies a relaxed span gate (50%) to avoid rejecting large pieces clipped by zone edge
+                const phaseARelax = phaseMode === "A" ? 0.5 : 1;
                 if (!gainBb) {
                   rejectedByCoverage += 1;
                   algorithmTrace.steps.placement_search.rejected.lowGain += 1;
                   continue;
                 }
                 const span = Math.max(Number(gainBb.width || 0), Number(gainBb.height || 0));
-                if (span + 1e-9 < (minSpanMm * coreSpanScale * derivedGateScale)) {
+                if (span + 1e-9 < (minSpanMm * coreSpanScale * derivedGateScale * phaseARelax)) {
                   rejectedByCoverage += 1;
                   algorithmTrace.steps.placement_search.rejected.lowGain += 1;
                   continue;
@@ -2211,6 +2268,7 @@ function createAssignInventoryDirect(deps) {
                 inZoneCoreMulti,
                 inZoneCoreArea,
                 gainMulti,
+                gainCoreMulti,
                 gainArea,
                 gainCoreArea,
                 gainVisibleArea,
@@ -2404,17 +2462,18 @@ function createAssignInventoryDirect(deps) {
                         continue;
                       }
                     }
-                    if (phaseMode !== "A" && minSpanMm > 0 && !strictTailRescueActive) {
+                    if (minSpanMm > 0 && !strictTailRescueActive) {
                       const derivedGateScale = splitReturnEnabled && tpl.derived
                         ? (inTailPhase ? 0.2 : 0.35)
                         : 1;
+                      const phaseARelax = phaseMode === "A" ? 0.5 : 1;
                       if (!gainBb) {
                         rejectedByCoverage += 1;
                         algorithmTrace.steps.placement_search.rejected.lowGain += 1;
                         continue;
                       }
                       const span = Math.max(Number(gainBb.width || 0), Number(gainBb.height || 0));
-                      if (span + 1e-9 < (minSpanMm * coreSpanScale * derivedGateScale)) {
+                      if (span + 1e-9 < (minSpanMm * coreSpanScale * derivedGateScale * phaseARelax)) {
                         rejectedByCoverage += 1;
                         algorithmTrace.steps.placement_search.rejected.lowGain += 1;
                         continue;
@@ -2505,6 +2564,7 @@ function createAssignInventoryDirect(deps) {
                 inZoneCoreMulti,
                 inZoneCoreArea,
                 gainMulti,
+                gainCoreMulti,
                 gainArea,
                 gainCoreArea,
                 gainVisibleArea,
@@ -2643,9 +2703,12 @@ function createAssignInventoryDirect(deps) {
         dynamicGainFactor = Math.min(1, dynamicGainFactor + 0.08);
 
         usedCandidateKeys.add(bestPlacement.tpl.key);
+        // Residual updated by core — seam allowance doesn't block neighbouring placements.
         const coverageSliceMulti = splitReturnEnabled
           ? (Array.isArray(bestPlacement.gainMulti) ? bestPlacement.gainMulti : [])
-          : bestPlacement.inZoneMulti;
+          : (Array.isArray(bestPlacement.inZoneCoreMulti) && bestPlacement.inZoneCoreMulti.length > 0
+              ? bestPlacement.inZoneCoreMulti
+              : bestPlacement.inZoneMulti);
         residualMulti = diffMulti(residualMulti, coverageSliceMulti);
         const fragPoints = largestOuterRingPoints(bestPlacement.gainMulti).length >= 3
           ? largestOuterRingPoints(bestPlacement.gainMulti)
@@ -2725,6 +2788,7 @@ function createAssignInventoryDirect(deps) {
           inZoneCoreContour: inZoneCorePoints.length >= 3 ? inZoneCorePoints : [],
           inZoneContours: bestPlacement.inZoneMulti,
           inZoneCoreContours: bestPlacement.inZoneCoreMulti || [],
+          gainCoreContours: bestPlacement.gainCoreMulti || [],
           fragmentContour: fragPoints.length >= 3 ? fragPoints : [],
           fragmentContours: bestPlacement.gainMulti,
           usedVisibleContour: usedVisibleContour.length >= 3 ? usedVisibleContour : [],

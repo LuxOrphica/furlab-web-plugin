@@ -2,6 +2,8 @@
 
 const LAYOUT_TYPES = new Set([
   "longitudinal",
+  "radial",
+  "shifted",
   "transverse",
   "intarsia",
   "inventory_direct",
@@ -72,6 +74,64 @@ function renderItemsFromPlacements(placements) {
   return items;
 }
 
+function renderItemsFromFragments(fragments) {
+  const items = [];
+  for (const f of Array.isArray(fragments) ? fragments : []) {
+    const contour = normalizePoints(f && f.points);
+    if (contour.length < 3) continue;
+    const fragmentId = Number(f && f.id);
+    items.push({
+      id: String(Number.isFinite(fragmentId) ? fragmentId : `fragment_${items.length + 1}`),
+      contour,
+      closed: true,
+      renderIndex: Number.isFinite(fragmentId) ? fragmentId : (items.length + 1),
+      meta: {
+        fragmentId: Number.isFinite(fragmentId) ? fragmentId : null,
+        areaMm2: Number(f && f.areaMm2 || 0),
+        status: "fragment"
+      }
+    });
+  }
+  return items;
+}
+
+function wrapRegularFragmentPreview(input, result, layoutType, modeVersion, displayName) {
+  const fragments = Array.isArray(result && result.fragments) ? result.fragments : [];
+  const rawFragments = Array.isArray(result && result.rawFragments) ? result.rawFragments : [];
+  const normalized = result && result.normalized && typeof result.normalized === "object"
+    ? result.normalized
+    : null;
+  const solveOrder = fragments
+    .map((f, idx) => String((f && f.id) || `fragment_${idx + 1}`))
+    .filter(Boolean);
+  const totalAreaMm2 = fragments.reduce((acc, f) => acc + Math.max(0, Number(f && f.areaMm2 || 0)), 0);
+  return {
+    ok: true,
+    layoutType,
+    modeVersion,
+    resultStatus: fragments.length > 0 ? "ok" : "failed",
+    warnings: fragments.length > 0 ? [] : ["no_fragments_generated"],
+    failedReason: fragments.length > 0 ? null : "no_fragments_generated",
+    stats: {
+      fragmentsTotal: fragments.length,
+      totalAreaMm2: Math.round(totalAreaMm2 * 1000) / 1000,
+      rawFragmentsTotal: rawFragments.length,
+      droppedByNormalize: Math.max(0, rawFragments.length - fragments.length)
+    },
+    render: {
+      renderOrderPolicy: "fragment_index",
+      stackOrderPolicy: "fragment_index",
+      solveOrder,
+      items: renderItemsFromFragments(fragments)
+    },
+    fragments,
+    debug: {
+      displayName: String(displayName || layoutType),
+      normalized
+    }
+  };
+}
+
 function wrapInventoryDirectPreview(input, direct) {
   const strictCoverage = !!(direct && direct.strictCoverage === true);
   const fullCoverageOk = !!(direct && direct.fullCoverageOk === true);
@@ -110,6 +170,12 @@ function wrapIntarsiaPreview(input, result) {
   const solveOrder = placements.map((p, idx) => String(
     (p && p.fragmentId) || (p && p.inventoryTag) || `placement_${idx + 1}`
   ));
+  const compatibilityBreakdown = result && result.compatibilityBreakdown && typeof result.compatibilityBreakdown === "object"
+    ? result.compatibilityBreakdown
+    : null;
+  const placementBreakdown = result && result.placementBreakdown && typeof result.placementBreakdown === "object"
+    ? result.placementBreakdown
+    : null;
   return {
     ok: true,
     layoutType: "intarsia",
@@ -127,12 +193,19 @@ function wrapIntarsiaPreview(input, result) {
       solveOrder,
       items: renderItemsFromPlacements(placements)
     },
+    diagnostics: (compatibilityBreakdown || placementBreakdown)
+      ? {
+          compatibilityBreakdown,
+          placementBreakdown
+        }
+      : null,
     debug: {}
   };
 }
 
 module.exports = {
   parsePreviewWrapperRequest,
+  wrapRegularFragmentPreview,
   wrapInventoryDirectPreview,
   wrapIntarsiaPreview
 };

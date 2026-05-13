@@ -22,6 +22,7 @@
     const closeLayoutTypePicker = typeof opts.closeLayoutTypePicker === "function" ? opts.closeLayoutTypePicker : () => {};
     const layoutTypePicker = opts.layoutTypePicker || null;
     const addLayoutByMode = typeof opts.addLayoutByMode === "function" ? opts.addLayoutByMode : () => {};
+    const addMaterialById = typeof opts.addMaterialById === "function" ? opts.addMaterialById : async () => {};
     const isManualInventoryMode = typeof opts.isManualInventoryMode === "function" ? opts.isManualInventoryMode : () => false;
     const renderLayoutModeSwitch = typeof opts.renderLayoutModeSwitch === "function" ? opts.renderLayoutModeSwitch : () => {};
     const renderDetailZoneTree = typeof opts.renderDetailZoneTree === "function" ? opts.renderDetailZoneTree : () => {};
@@ -51,6 +52,7 @@
     function bindMainControls() {
       byId("layerPattern").onchange = (e) => { state.layers.pattern = !!e.target.checked; renderScene(); };
       byId("layerZones").onchange = (e) => { state.layers.zones = !!e.target.checked; renderScene(); };
+      byId("layerZoneMaterials").onchange = (e) => { state.layers.zoneMaterials = !!e.target.checked; renderScene(); };
       byId("layerSelection").onchange = (e) => { state.layers.selection = !!e.target.checked; renderScene(); };
       byId("layerGuides").onchange = (e) => { state.layers.guides = !!e.target.checked; renderScene(); };
       byId("layerVisibleArea").onchange = (e) => { state.layers.visibleArea = !!e.target.checked; renderScene(); };
@@ -61,9 +63,9 @@
       byId("layerUsedGain").onchange = (e) => { state.layers.usedGain = !!e.target.checked; renderScene(); };
       byId("layerPcoreZ").onchange = (e) => { state.layers.pcoreZ = !!e.target.checked; renderScene(); };
       byId("layerVisibleCore").onchange = (e) => { state.layers.visibleCore = !!e.target.checked; renderScene(); };
-      byId("layerSplitLeftovers").onchange = (e) => { state.layers.splitLeftovers = !!e.target.checked; renderScene(); };
+      const layerSplitLeftoversEl = byId("layerSplitLeftovers"); if (layerSplitLeftoversEl) layerSplitLeftoversEl.onchange = (e) => { state.layers.splitLeftovers = !!e.target.checked; renderScene(); };
       byId("layerCoverageHoles").onchange = (e) => { state.layers.coverageHoles = !!e.target.checked; renderScene(); };
-      byId("majorContoursOnly").onchange = (e) => { state.view.majorContoursOnly = !!e.target.checked; renderScene(); };
+      byId("majorContoursOnly").onchange = (e) => { state.view.majorContoursOnly = !e.target.checked; renderScene(); };
       byId("zprjCompactView").onchange = (e) => { state.view.zprjCompactView = !!e.target.checked; renderScene(); };
       byId("partsMode").onchange = (e) => { state.view.partsMode = String(e.target.value || "main"); renderScene(); };
       byId("closedContoursOnly").onchange = (e) => { state.view.closedContoursOnly = !!e.target.checked; renderScene(); };
@@ -112,10 +114,24 @@
       };
 
       byId("invLimit").onblur = () => clampInputNumber("invLimit", 10, 2000, 300);
+      byId("invNapTol").oninput = () => {
+        const el = byId("invNapTol");
+        if (!el) return;
+        el.dataset.userTouched = "1";
+        if (state.layoutRun && typeof state.layoutRun === "object") {
+          state.layoutRun.__napTolTouchedByUser = true;
+        }
+      };
       byId("invNapTol").onblur = () => clampInputNumber("invNapTol", 0, 180, 15);
-      byId("invMinArea").onblur = () => clampInputNumber("invMinArea", 0, 100000, 0);
-      byId("minFragmentWidthMm").onblur = () => clampInputNumber("minFragmentWidthMm", 0, 10000, 100);
-      byId("minFragmentLengthMm").onblur = () => clampInputNumber("minFragmentLengthMm", 0, 10000, 100);
+      function syncMinAreaFromDimensions() {
+        const w = Math.max(0, Number(byId("minFragmentWidthMm") && byId("minFragmentWidthMm").value || 0));
+        const h = Math.max(0, Number(byId("minFragmentLengthMm") && byId("minFragmentLengthMm").value || 0));
+        const el = byId("invMinArea");
+        if (el) el.value = String(w * h);
+      }
+      byId("minFragmentWidthMm").onblur = () => { clampInputNumber("minFragmentWidthMm", 0, 10000, 100); syncMinAreaFromDimensions(); };
+      byId("minFragmentLengthMm").onblur = () => { clampInputNumber("minFragmentLengthMm", 0, 10000, 100); syncMinAreaFromDimensions(); };
+      syncMinAreaFromDimensions();
       byId("fillType").onchange = () => syncFillTypeUi();
       byId("inventoryScenario").onchange = () => syncFillTypeUi();
       byId("inventoryStep1RunBtn").onclick = () => {
@@ -168,10 +184,19 @@
       byId("replaceCandidateCancelBtn").onclick = () => closeReplaceCandidateModal();
       byId("layoutTypeCloseBtn").onclick = () => closeLayoutTypePicker();
       byId("layoutTypeCancelBtn").onclick = () => closeLayoutTypePicker();
-      byId("layoutTypeAddBtn").onclick = () => {
-        const selectedMode = (layoutTypePicker && typeof layoutTypePicker.getSelectedMode === "function")
-          ? String(layoutTypePicker.getSelectedMode() || "")
-          : "";
+      byId("layoutTypeAddBtn").onclick = async () => {
+        const selectedKey = (layoutTypePicker && typeof layoutTypePicker.getSelectedKey === "function")
+          ? String(layoutTypePicker.getSelectedKey() || "")
+          : ((layoutTypePicker && typeof layoutTypePicker.getSelectedMode === "function")
+              ? String(layoutTypePicker.getSelectedMode() || "")
+              : "");
+        if (!selectedKey) return;
+        if (String(state.libraryPickerMode || "layouts") === "materials") {
+          await addMaterialById(selectedKey);
+          closeLayoutTypePicker();
+          return;
+        }
+        const selectedMode = selectedKey;
         if (!selectedMode) return;
         addLayoutByMode(selectedMode);
         closeLayoutTypePicker();
@@ -228,6 +253,12 @@
       byId("layoutModeSwitch").querySelectorAll("button[data-panel]").forEach((btn) => {
         btn.addEventListener("click", () => {
           state.uiPanel = String(btn.getAttribute("data-panel") || "zones");
+          if (state.uiPanel === "materials" && !state.selectedMaterialId && Array.isArray(state.zones)) {
+            const currentZone = state.zones.find((item) => Number(item && item.id || 0) === Number(state.selectedZoneId || 0)) || null;
+            if (currentZone && currentZone.materialId) {
+              state.selectedMaterialId = String(currentZone.materialId);
+            }
+          }
           renderLayoutModeSwitch();
           renderDetailZoneTree();
           renderPropertyEditor();

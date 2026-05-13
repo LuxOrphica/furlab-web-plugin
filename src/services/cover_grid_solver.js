@@ -346,10 +346,48 @@ async function solveCoverGrid(params) {
   const totalCells = gridSpec.width * gridSpec.height;
   const zoneData = buildZoneMask(zonePoints, gridSpec);
   const zoneMask = zoneData.mask;
-  const targetCellCount = zoneData.count;
+
+  // Erode zone boundary by pieceSeamReserveMm so cells within seam-reserve distance
+  // from zone edge are not required to be covered by cores — they'll be covered by
+  // the seam allowance of adjacent pieces' full contours.
+  const seamReserveCells = Math.max(0, Math.ceil(
+    Number(options.pieceSeamReserveMm || 0) / Math.max(1e-9, gridSpec.r)
+  ));
+  let coverageMask = zoneMask;
+  let targetCellCount = zoneData.count;
+  if (seamReserveCells > 0) {
+    const eroded = createBitset(totalCells);
+    let erodedCount = 0;
+    for (let j = 0; j < gridSpec.height; j++) {
+      for (let i = 0; i < gridSpec.width; i++) {
+        const idx = index2d(gridSpec, i, j);
+        if (!getBit(zoneMask, idx)) continue;
+        // Check all 4-neighbors within seamReserveCells radius are also in zone
+        let ok = true;
+        outer: for (let dj = -seamReserveCells; dj <= seamReserveCells; dj++) {
+          for (let di = -seamReserveCells; di <= seamReserveCells; di++) {
+            if (Math.abs(di) + Math.abs(dj) > seamReserveCells) continue; // Manhattan
+            const ni = i + di;
+            const nj = j + dj;
+            if (ni < 0 || ni >= gridSpec.width || nj < 0 || nj >= gridSpec.height) {
+              ok = false; break outer;
+            }
+            if (!getBit(zoneMask, index2d(gridSpec, ni, nj))) {
+              ok = false; break outer;
+            }
+          }
+        }
+        if (ok) { setBit(eroded, idx); erodedCount++; }
+      }
+    }
+    if (erodedCount > 0) {
+      coverageMask = eroded;
+      targetCellCount = erodedCount;
+    }
+  }
 
   const coveredMask = createBitset(totalCells);
-  const uncoveredMask = new Uint32Array(zoneMask);
+  const uncoveredMask = new Uint32Array(coverageMask);
   let uncoveredCount = targetCellCount;
 
   const napTol = Math.max(0, Math.min(180, Number((constraints && constraints.napToleranceDeg) ?? 15)));
@@ -422,12 +460,18 @@ async function solveCoverGrid(params) {
     .map((c, i) => {
       const contour = Array.isArray(c.__scrapContourPoints) ? c.__scrapContourPoints : [];
       if (contour.length < 3) return null;
+      const coreContour = Array.isArray(c.__coreContourPoints) && c.__coreContourPoints.length >= 3
+        ? c.__coreContourPoints : contour;
+      const centered = translateToAnchor(contour, { x: 0, y: 0 });
+      const coreCentered = coreContour !== contour ? translateToAnchor(coreContour, { x: 0, y: 0 }) : centered;
       return {
         idx: i,
         c,
         key: `${String(c.id || "").trim()}|${String(c.inventoryTag || "").trim()}|${i}`,
         contour,
-        centered: translateToAnchor(contour, { x: 0, y: 0 }),
+        centered,
+        coreCentered,
+        hasCore: coreContour !== contour,
         area: safeNum(c.areaMm2) || polygonArea(contour),
         napDirectionDeg: normalizeDeg(c.napDirectionDeg)
       };
@@ -499,12 +543,19 @@ async function solveCoverGrid(params) {
         }
         const rot = (a * Math.PI) / 180;
         const rotated = rotatePoints(tpl.centered, rot, { x: 0, y: 0 });
+        const coreRotated = tpl.hasCore ? rotatePoints(tpl.coreCentered, rot, { x: 0, y: 0 }) : rotated;
         for (const off of offsets) {
           evaluated += 1;
           const contour = translateToAnchor(rotated, { x: target.x + off.dx, y: target.y + off.dy });
           const win = rasterizePolygonWindow(contour, gridSpec);
           if (!win) continue;
-          const s = evaluateWindow(win, zoneMask, coveredMask, gridSpec);
+          const coreContourPlaced = tpl.hasCore ? translateToAnchor(coreRotated, { x: target.x + off.dx, y: target.y + off.dy }) : contour;
+          const coreWin = tpl.hasCore ? (rasterizePolygonWindow(coreContourPlaced, gridSpec) || win) : win;
+          // gain = new required cells covered by CORE (coverageMask = eroded zone, excl. boundary seam strip)
+          // inside/overlap/outside = full zoneMask for placement quality scoring
+          const sCore = evaluateWindow(coreWin, coverageMask, coveredMask, gridSpec);
+          const sFull = tpl.hasCore ? evaluateWindow(win, zoneMask, coveredMask, gridSpec) : sCore;
+          const s = { ...sFull, gainCount: sCore.gainCount };
           if (s.gainCount < dynamicMinGainCells) {
             rejectedByCoverage += 1;
             continue;
@@ -568,7 +619,7 @@ async function solveCoverGrid(params) {
             score > best.score + 1e-9 ||
             (Math.abs(score - best.score) <= 1e-9 && s.insideCount < Number(best.s && best.s.insideCount || Number.POSITIVE_INFINITY))
           ) {
-            best = { tpl, contour, win, score, s, angleDeg: a, dNap };
+            best = { tpl, contour, win: coreWin, score, s, angleDeg: a, dNap }; // win=coreWin for commitWindow
           }
         }
       }
@@ -636,7 +687,7 @@ async function solveCoverGrid(params) {
       continue;
     }
     used.add(best.tpl.key);
-    const newly = commitWindow(best.win, zoneMask, coveredMask, uncoveredMask, gridSpec);
+    const newly = commitWindow(best.win, coverageMask, coveredMask, uncoveredMask, gridSpec);
     if (newly <= 0) continue;
     noProgressStreak = 0;
     uncoveredCount = Math.max(0, uncoveredCount - newly);

@@ -6,16 +6,17 @@
       layers: {
         pattern: true,
         zones: true,
+        zoneMaterials: true,
         selection: true,
         guides: true,
         coverageHoles: false,
         visibleArea: false,
         pieceIntersections: false,
         pieceBorders: true,
-        assignedPieces: true,
-        pfullZ: true,
+        assignedPieces: false,
+        pfullZ: false,
         usedGain: true,
-        pcoreZ: true,
+        pcoreZ: false,
         visibleCore: false,
         splitLeftovers: true
       },
@@ -27,9 +28,21 @@
       zones: [],
       nextZoneId: 1,
       selectedZoneId: null,
+      selectedVertexIndex: null,
+      debugVertex: {
+        enabled: false,
+        last: ""
+      },
       selectedFragmentId: null,
+      hover: { zoneId: null, vertexIndex: null, edgeInsertIndex: null, edgePoint: null },
+      curveEdit: null,
       draftZone: [],
-      drag: { isDown: false, mode: "", startX: 0, startY: 0, startOffsetX: 0, startOffsetY: 0, movingZoneId: null, movingVertexIndex: null, movingOldPoint: null },
+      draftSplitLine: [],
+      toolUi: {
+        penSubtool: "split-zone",
+        polygonSubtool: "draw-zone"
+      },
+      drag: { isDown: false, mode: "", startX: 0, startY: 0, startOffsetX: 0, startOffsetY: 0, movingZoneId: null, movingVertexIndex: null, movingOldPoint: null, boundaryLock: false, sharedBoundaryLock: false, sharedLinkedVertices: null, drawShapeStart: null },
       history: { undo: [], redo: [] }
       ,
       view: {
@@ -49,9 +62,14 @@
       },
       filterStats: { total: 0, noisy: 0, open: 0, minPoints: 0, tooSmall: 0, dedup: 0, capped: 0, shown: 0, smartClosed: 0 },
       uiPanel: "zones",
+      libraryPickerMode: "layouts",
       layouts: [],
       nextLayoutId: 1,
       selectedLayoutId: null,
+      selectedMaterialId: null,
+      projectMaterials: [],
+      furMaterialsCatalog: [],
+      furMaterialDetailsById: {},
       layoutMode: "inventory",
       layoutRun: {
         active: false,

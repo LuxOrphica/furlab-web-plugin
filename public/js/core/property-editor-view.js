@@ -16,10 +16,16 @@
     const openReplaceCandidateModal = deps && deps.openReplaceCandidateModal;
     const renderPlacementRows = deps && deps.renderPlacementRows;
     const renderDetailZoneTree = deps && deps.renderDetailZoneTree;
-    const renderScene = deps && deps.renderScene;
-    const openInventoryStep1 = deps && deps.openInventoryStep1;
-    const renderManualTrayIntoRoot = deps && deps.renderManualTrayIntoRoot;
-    const saveLayoutEntry = deps && deps.saveLayoutEntry;
+      const renderScene = deps && deps.renderScene;
+      const openInventoryStep1 = deps && deps.openInventoryStep1;
+      const renderManualTrayIntoRoot = deps && deps.renderManualTrayIntoRoot;
+      const saveLayoutEntry = deps && deps.saveLayoutEntry;
+      const markLayoutDirty = deps && deps.markLayoutDirty;
+    const getRadialAutoCenter = deps && deps.getRadialAutoCenter;
+    const getFurMaterialById = deps && deps.getFurMaterialById;
+    const ensureFurMaterialLoaded = deps && deps.ensureFurMaterialLoaded;
+    const importSvgContours = deps && deps.importSvgContours;
+      let regularLayoutPreviewTimer = null;
 
     function ensurePropertyEditorUi() {
       if (!state.propertyEditorUi || typeof state.propertyEditorUi !== "object") {
@@ -27,6 +33,9 @@
       }
       if (!state.propertyEditorUi.sections || typeof state.propertyEditorUi.sections !== "object") {
         state.propertyEditorUi.sections = {};
+      }
+      if (!state.propertyEditorUi.layoutEdit || typeof state.propertyEditorUi.layoutEdit !== "object") {
+        state.propertyEditorUi.layoutEdit = {};
       }
       return state.propertyEditorUi;
     }
@@ -74,6 +83,39 @@
       if (!s) return fallback;
       const n = Number(s);
       return Number.isFinite(n) ? n : fallback;
+    }
+
+    function isLayoutEditEnabled(layoutId, defaultValue = true) {
+      const ui = ensurePropertyEditorUi();
+      const key = String(layoutId || "");
+      if (key && Object.prototype.hasOwnProperty.call(ui.layoutEdit, key)) {
+        return !!ui.layoutEdit[key];
+      }
+      return !!defaultValue;
+    }
+
+    function setLayoutEditEnabled(layoutId, value) {
+      const ui = ensurePropertyEditorUi();
+      const key = String(layoutId || "");
+      if (!key) return;
+      ui.layoutEdit[key] = !!value;
+    }
+
+    let _propToastTimer = null;
+    function showPropToast(msg, isError) {
+      let el = document.getElementById("propSaveToast");
+      if (!el) {
+        el = document.createElement("div");
+        el.id = "propSaveToast";
+        el.className = "prop-save-toast";
+        document.body.appendChild(el);
+      }
+      el.textContent = msg;
+      el.className = "prop-save-toast" + (isError ? " prop-save-toast--error" : "") + " prop-save-toast--visible";
+      if (_propToastTimer) clearTimeout(_propToastTimer);
+      _propToastTimer = setTimeout(() => {
+        el.className = "prop-save-toast";
+      }, 3000);
     }
 
     function renderPropertyEditor() {
@@ -146,17 +188,87 @@
         : null;
       const currentLayoutMode = String((selectedLayout && selectedLayout.mode) || state.layoutMode || "");
       const isManualLayoutSelected = currentLayoutMode === "inventory_manual";
+      const isFragmentOnlyRegularLayoutSelected = currentLayoutMode === "longitudinal" || currentLayoutMode === "shifted" || currentLayoutMode === "transverse" || currentLayoutMode === "radial";
+      const isIntarsiaMode = currentLayoutMode === "intarsia";
       const actionTitle = currentLayoutMode === "inventory_manual"
         ? "Загрузить кандидаты из БД"
+        : (isFragmentOnlyRegularLayoutSelected
+          ? "Сгенерировать выкладку"
         : (currentLayoutMode === "inventory_split_return"
           ? "Подобрать (Split & Return)"
           : (currentLayoutMode === "inventory"
           ? "Подобрать из библиотеки"
-          : (currentLayoutMode === "intarsia" ? "Сгенерировать интарсию" : "Заполнить остаток")));
+          : (currentLayoutMode === "intarsia" ? "Сгенерировать интарсию" : "Заполнить остаток"))));
       const selectedLayoutName = selectedLayout ? String(selectedLayout.name || "") : "";
       const selectedLayoutModeTitle = getLayoutModeTitle(selectedLayout ? selectedLayout.mode : state.layoutMode);
       const zoneAreaValue = zone ? polygonArea(zone.points || []).toFixed(2) : "-";
       const zonePerimeterValue = zone ? polylineLength(zone.points || [], true).toFixed(2) : "-";
+      const zoneValidation = state.zoneValidation && Array.isArray(state.zoneValidation.zones)
+        ? (state.zoneValidation.zones.find((item) => Number(item && item.id || 0) === Number(zone && zone.id || 0)) || null)
+        : null;
+      const detailValidation = state.zoneValidation && Array.isArray(state.zoneValidation.details)
+        ? (state.zoneValidation.details.find((item) => Number(item && item.id || 0) === Number(detail && detail.id || 0)) || null)
+        : null;
+      const selectedMaterial = typeof getFurMaterialById === "function"
+        ? getFurMaterialById(String(state.selectedMaterialId || ""))
+        : null;
+
+      if (state.uiPanel === "materials") {
+        const selectedMaterialId = String(state.selectedMaterialId || "");
+        if (selectedMaterialId && typeof ensureFurMaterialLoaded === "function") {
+          void ensureFurMaterialLoaded(selectedMaterialId);
+        }
+        if (!selectedMaterial) {
+          root.innerHTML = '<div class="tree-empty">Меховой материал не выбран</div>';
+          return;
+        }
+        const swatch = selectedMaterial.colorHex
+          ? `<span class="prop-color-swatch" style="background:${String(selectedMaterial.colorHex)};"></span>`
+          : '<span class="prop-color-swatch"></span>';
+        root.innerHTML = `
+          <div class="prop-title">Меховой материал</div>
+          ${renderEditorSection("fur_info", "Информация", `
+            <div class="prop-row"><div class="prop-label">Название</div><div>${String(selectedMaterial.name || "-")}</div></div>
+            <div class="prop-row"><div class="prop-label">Категория</div><div>${String(selectedMaterial.category || "-")}</div></div>
+            <div class="prop-row"><div class="prop-label">Вид</div><div>${String(selectedMaterial.species || "-")}</div></div>
+          `, true)}
+          ${renderEditorSection("fur_color", "Цвет и пигментация", `
+            <div class="prop-row"><div class="prop-label">Цвет</div><div class="prop-color-row">${swatch}<span>${String(selectedMaterial.colorHex || "-")}</span></div></div>
+            <div class="prop-row"><div class="prop-label">Меланин</div><div>${selectedMaterial.melanin !== null && selectedMaterial.melanin !== undefined ? Number(selectedMaterial.melanin).toFixed(2) : "-"}</div></div>
+            <div class="prop-row"><div class="prop-label">Феомеланин</div><div>${selectedMaterial.pheomelanin !== null && selectedMaterial.pheomelanin !== undefined ? Number(selectedMaterial.pheomelanin).toFixed(2) : "-"}</div></div>
+          `, true)}
+          ${renderEditorSection("fur_size", "Размеры заготовки", `
+            <div class="prop-row"><div class="prop-label">Длина макс, мм</div><div>${selectedMaterial.maxLengthMm !== null && selectedMaterial.maxLengthMm !== undefined ? Number(selectedMaterial.maxLengthMm).toFixed(0) : "-"}</div></div>
+            <div class="prop-row"><div class="prop-label">Ширина макс, мм</div><div>${selectedMaterial.maxWidthMm !== null && selectedMaterial.maxWidthMm !== undefined ? Number(selectedMaterial.maxWidthMm).toFixed(0) : "-"}</div></div>
+            <div class="prop-row"><div class="prop-label">Толщина, мм</div><div>${selectedMaterial.thicknessMm !== null && selectedMaterial.thicknessMm !== undefined ? Number(selectedMaterial.thicknessMm).toFixed(2) : "-"}</div></div>
+          `, true)}
+          ${renderEditorSection("fur_aesthetic", "Эстетика", `
+            <div class="prop-row"><div class="prop-label">Блеск</div><div>${selectedMaterial.gloss !== null && selectedMaterial.gloss !== undefined ? Number(selectedMaterial.gloss).toFixed(2) : "-"}</div></div>
+            <div class="prop-row"><div class="prop-label">Мягкость</div><div>${selectedMaterial.softness !== null && selectedMaterial.softness !== undefined ? Number(selectedMaterial.softness).toFixed(2) : "-"}</div></div>
+            <div class="prop-row"><div class="prop-label">Опушенность</div><div>${selectedMaterial.fluffiness !== null && selectedMaterial.fluffiness !== undefined ? Number(selectedMaterial.fluffiness).toFixed(2) : "-"}</div></div>
+          `, true)}
+          ${renderEditorSection("fur_hair", "Геометрия ворса", `
+            <div class="prop-row"><div class="prop-label">Длина, мм</div><div>${selectedMaterial.pileLengthMm !== null && selectedMaterial.pileLengthMm !== undefined ? Number(selectedMaterial.pileLengthMm).toFixed(1) : "-"}</div></div>
+            <div class="prop-row"><div class="prop-label">Диаметр, мм</div><div>${selectedMaterial.hairThicknessMm !== null && selectedMaterial.hairThicknessMm !== undefined ? Number(selectedMaterial.hairThicknessMm).toFixed(2) : "-"}</div></div>
+            <div class="prop-row"><div class="prop-label">Густота, шт/inch²</div><div>${selectedMaterial.pileDensityPerIn2 !== null && selectedMaterial.pileDensityPerIn2 !== undefined ? Number(selectedMaterial.pileDensityPerIn2).toFixed(0) : "-"}</div></div>
+            <div class="prop-row"><div class="prop-label">Уточнение</div><div>${selectedMaterial.taper !== null && selectedMaterial.taper !== undefined ? Number(selectedMaterial.taper).toFixed(2) : "-"}</div></div>
+            <div class="prop-row"><div class="prop-label">Сегментация, шт</div><div>${selectedMaterial.segmentationCount !== null && selectedMaterial.segmentationCount !== undefined ? Number(selectedMaterial.segmentationCount).toFixed(0) : "-"}</div></div>
+          `, true)}
+          ${renderEditorSection("fur_orientation", "Ориентация и извитость", `
+            <div class="prop-row"><div class="prop-label">Изгиб/наклон волос</div><div>${selectedMaterial.hairBend !== null && selectedMaterial.hairBend !== undefined ? Number(selectedMaterial.hairBend).toFixed(2) : "-"}</div></div>
+            <div class="prop-row"><div class="prop-label">Разброс направления изгиба</div><div>${selectedMaterial.bendSpread !== null && selectedMaterial.bendSpread !== undefined ? Number(selectedMaterial.bendSpread).toFixed(2) : "-"}</div></div>
+            <div class="prop-row"><div class="prop-label">Радиус извитости, мм</div><div>${selectedMaterial.curlRadiusMm !== null && selectedMaterial.curlRadiusMm !== undefined ? Number(selectedMaterial.curlRadiusMm).toFixed(1) : "-"}</div></div>
+            <div class="prop-row"><div class="prop-label">Эффект скрученности</div><div>${selectedMaterial.curlEffect !== null && selectedMaterial.curlEffect !== undefined ? Number(selectedMaterial.curlEffect).toFixed(2) : "-"}</div></div>
+          `, true)}
+          ${renderEditorSection("fur_physics", "Физика полотна", `
+            <div class="prop-row"><div class="prop-label">Упругость</div><div>${selectedMaterial.elasticity !== null && selectedMaterial.elasticity !== undefined ? Number(selectedMaterial.elasticity).toFixed(2) : "-"}</div></div>
+            <div class="prop-row"><div class="prop-label">Растяжимость</div><div>${selectedMaterial.stretch !== null && selectedMaterial.stretch !== undefined ? Number(selectedMaterial.stretch).toFixed(2) : "-"}</div></div>
+            <div class="prop-row"><div class="prop-label">Вес полотна, г/м²</div><div>${selectedMaterial.weightGm2 !== null && selectedMaterial.weightGm2 !== undefined ? Number(selectedMaterial.weightGm2).toFixed(0) : "-"}</div></div>
+          `, true)}
+        `;
+        bindSectionToggles(root);
+        return;
+      }
 
       if (state.uiPanel === "zones") {
         if (zone) {
@@ -169,11 +281,15 @@
               <div class="prop-row"><div class="prop-label">Название</div><div>${String(zone.name || `Зона ${zone.id}`)}</div></div>
               <div class="prop-row"><div class="prop-label">Detail ID</div><div>${detail ? detail.id : "-"}</div></div>
               <div class="prop-row"><div class="prop-label">Zone ID</div><div>${zone.id}</div></div>
-              <div class="prop-row"><div class="prop-label">Направление ворса, °</div><div><input id="zoneNapDirectionInput" class="prop-input" type="number" min="0" max="359.9" step="1" value="${zoneNapDeg.toFixed(1)}"></div></div>
+              <div class="prop-row"><div class="prop-label">Направление ворса, °</div><div class="prop-field-inline"><input id="zoneNapDirectionInput" class="prop-input prop-input-compact prop-input-numeric prop-input-align-start" type="number" min="0" max="359.9" step="1" value="${zoneNapDeg.toFixed(1)}"></div></div>
+            `, true)}
+            ${renderEditorSection("zone_material", "Меховой материал", `
+              <div class="prop-row"><div class="prop-label">Материал</div><div>${String(zone.materialName || zone.materialId || "-")}</div></div>
+              <div class="prop-row"><div class="prop-label">Material ID</div><div>${String(zone.materialId || "-")}</div></div>
             `, true)}
             ${renderEditorSection("zone_geometry", "Геометрия", `
-              <div class="prop-row"><div class="prop-label">Площадь зоны</div><div>${zoneAreaValue}</div></div>
-              <div class="prop-row"><div class="prop-label">Периметр зоны</div><div>${zonePerimeterValue}</div></div>
+              <div class="prop-row"><div class="prop-label">Площадь зоны</div><div>${zoneAreaValue} мм²</div></div>
+              <div class="prop-row"><div class="prop-label">Периметр зоны</div><div>${zonePerimeterValue} мм</div></div>
             `, true)}
           `;
           bindSectionToggles(root);
@@ -212,7 +328,20 @@
       }
 
       if (selectedFragId > 0) {
-        root.innerHTML = `
+        const regularFragmentMode = isFragmentOnlyRegularLayoutSelected;
+        const allowanceText = Number.isFinite(Number(allowance)) ? Number(allowance).toFixed(1) : "-";
+        root.innerHTML = regularFragmentMode
+          ? `
+          <div class="prop-title">Фрагмент</div>
+          ${renderEditorSection("fragment_info", "Информация", `
+            <div class="prop-row"><div class="prop-label">ID фрагмента</div><div>${selectedFragId}</div></div>
+            <div class="prop-row"><div class="prop-label">Площадь, мм²</div><div>${fragArea.toFixed(1)}</div></div>
+            <div class="prop-row"><div class="prop-label">Периметр, мм</div><div>${fragPerim.toFixed(1)}</div></div>
+            <div class="prop-row"><div class="prop-label">Резерв под припуск, мм</div><div>${allowanceText}</div></div>
+            <div class="prop-row"><div class="prop-label">Режим</div><div>${selectedLayoutModeTitle}</div></div>
+          `, true)}
+          `
+          : `
           <div class="prop-title">Фрагмент</div>
           ${renderEditorSection("fragment_info", "Информация", `
             <div class="prop-row"><div class="prop-label">ID фрагмента</div><div>${selectedFragId}</div></div>
@@ -228,7 +357,7 @@
             </div>
           `, true)}
           ${renderEditorSection("fragment_params", "Параметры", `
-            <div class="prop-row"><div class="prop-label">Резерв под припуск, мм</div><div>${allowance.toFixed(1)}</div></div>
+            <div class="prop-row"><div class="prop-label">Резерв под припуск, мм</div><div>${allowanceText}</div></div>
             <div class="prop-row"><div class="prop-label">Направление ворса</div><div>${nap}</div></div>
             <div class="prop-row"><div class="prop-label">Цель ворса</div><div>${napTargetText}</div></div>
             <div class="prop-row"><div class="prop-label">Допуск ворса</div><div>${napTolText}</div></div>
@@ -244,8 +373,11 @@
             <div class="prop-row"><div class="prop-label">Δ ворса</div><div>${napDelta}</div></div>
             <div class="prop-row"><div class="prop-label">Поворот совмещения</div><div>${alignRot}</div></div>
           `, false)}
-        `;
+          `;
         bindSectionToggles(root);
+        if (regularFragmentMode) {
+          return;
+        }
         const clearBtn = byId("fragClearBtn");
         if (clearBtn && selectedPlacement) {
           clearBtn.onclick = () => {
@@ -352,78 +484,368 @@
         ? state.layoutRun.candidatePool.length
         : 0;
       const lockManualInventoryParams = !!(isManualLayoutSelected && loadedCandidatesCount > 0);
+      const isLongitudinalLayoutSelected = currentLayoutMode === "longitudinal";
+      const showLongitudinalDebug = false;
+      const layoutEditEnabled = selectedLayout ? isLayoutEditEnabled(selectedLayout.id, true) : true;
+      const layoutSavedState = !!(selectedLayout && selectedLayout.persistedRunId && !selectedLayout.isDirty);
       const nameInputReadonly = selectedLayout ? "" : "readonly";
       const typeValue = selectedLayout ? selectedLayoutModeTitle : "-";
+      const rowsValue = Math.max(1, Number((byId("fillRows") && byId("fillRows").value) || 5));
+      const colsValue = Math.max(1, Number((byId("fillCols") && byId("fillCols").value) || 5));
+      const axisCountValue = Math.max(0, Math.min(6, Number((byId("fillAxisCount") && byId("fillAxisCount").value) || 1)));
+      const angleValue = Math.max(-89, Math.min(89, Number((byId("fillAngleDeg") && byId("fillAngleDeg").value) || 45)));
+      const bandStepValue = Math.max(10, Math.min(5000, Number((byId("fillBandStep") && byId("fillBandStep").value) || 120)));
+      const shiftPercentValue = Math.max(-100, Math.min(100, Number((byId("fillShiftPercent") && byId("fillShiftPercent").value) || 50)));
+      const ringCountValue = Math.max(1, Math.min(20, Number((byId("fillRingCount") && byId("fillRingCount").value) || 4)));
+      const sectorCountValue = Math.max(1, Math.min(36, Number((byId("fillSectorCount") && byId("fillSectorCount").value) || 8)));
+      const sectorRotationValue = Math.max(-360, Math.min(360, Number((byId("fillSectorRotationDeg") && byId("fillSectorRotationDeg").value) || 0)));
+      const innerRadiusValue = Math.max(0, Number((byId("fillInnerRadiusMm") && byId("fillInnerRadiusMm").value) || 0));
+      const centerModeValue = String((byId("fillCenterMode") && byId("fillCenterMode").value) || "auto");
+      const centerXValue = Number((byId("fillCenterX") && byId("fillCenterX").value) || 0);
+      const centerYValue = Number((byId("fillCenterY") && byId("fillCenterY").value) || 0);
+      const gapXValue = Math.max(0, Number((byId("fillGapX") && byId("fillGapX").value) || 0));
+      const gapYValue = Math.max(0, Number((byId("fillGapY") && byId("fillGapY").value) || 0));
+      const cornerRadiusValue = Math.max(0, Number((byId("fillCornerRadius") && byId("fillCornerRadius").value) || 0));
+      const workspaceInfoText = String((byId("workspaceInfo") && byId("workspaceInfo").textContent) || "").trim();
+      const selectedLayoutBoundZoneId = Number(selectedLayout && selectedLayout.boundZoneId || 0) || 0;
+      const selectedLayoutBoundDetailId = Number(selectedLayout && selectedLayout.boundDetailId || 0) || 0;
+      const layoutRunZoneId = Number(state.layoutRun && state.layoutRun.selectedZoneId || 0) || 0;
+      const selectedZoneIdValue = Number(state.selectedZoneId || 0) || 0;
+      const selectedDetailIdValue = Number(state.selectedDetailId || 0) || 0;
+      const layoutRunFragmentsCount = Array.isArray(state.layoutRun && state.layoutRun.fragments) ? state.layoutRun.fragments.length : 0;
+      const runtimeSnapshot = selectedLayout && selectedLayout.runtimeSnapshot && typeof selectedLayout.runtimeSnapshot === "object"
+        ? selectedLayout.runtimeSnapshot
+        : null;
+      const runtimeSnapshotFragmentsCount = Array.isArray(runtimeSnapshot && runtimeSnapshot.layoutRun && runtimeSnapshot.layoutRun.fragments)
+        ? runtimeSnapshot.layoutRun.fragments.length
+        : 0;
+      const runtimeSnapshotZoneId = Number(runtimeSnapshot && (runtimeSnapshot.selectedZoneId || (runtimeSnapshot.layoutRun && runtimeSnapshot.layoutRun.selectedZoneId) || 0) || 0) || 0;
+      const diagnosticRows = isLongitudinalLayoutSelected
+        ? `
+          <div class="prop-row prop-row-diagnostic"><div class="prop-label prop-label-diagnostic">layout.boundZoneId</div><div class="prop-value-diagnostic">${selectedLayoutBoundZoneId || "-"}</div></div>
+          <div class="prop-row prop-row-diagnostic"><div class="prop-label prop-label-diagnostic">layout.boundDetailId</div><div class="prop-value-diagnostic">${selectedLayoutBoundDetailId || "-"}</div></div>
+          <div class="prop-row prop-row-diagnostic"><div class="prop-label prop-label-diagnostic">state.selectedZoneId</div><div class="prop-value-diagnostic">${selectedZoneIdValue || "-"}</div></div>
+          <div class="prop-row prop-row-diagnostic"><div class="prop-label prop-label-diagnostic">state.selectedDetailId</div><div class="prop-value-diagnostic">${selectedDetailIdValue || "-"}</div></div>
+          <div class="prop-row prop-row-diagnostic"><div class="prop-label prop-label-diagnostic">layoutRun.selectedZoneId</div><div class="prop-value-diagnostic">${layoutRunZoneId || "-"}</div></div>
+          <div class="prop-row prop-row-diagnostic"><div class="prop-label prop-label-diagnostic">layoutRun.status</div><div class="prop-value-diagnostic">${String(state.layoutRun && state.layoutRun.status || "-")}</div></div>
+          <div class="prop-row prop-row-diagnostic"><div class="prop-label prop-label-diagnostic">layoutRun.active</div><div class="prop-value-diagnostic">${state.layoutRun && state.layoutRun.active ? "true" : "false"}</div></div>
+          <div class="prop-row prop-row-diagnostic"><div class="prop-label prop-label-diagnostic">layoutRun.fragments</div><div class="prop-value-diagnostic">${layoutRunFragmentsCount}</div></div>
+          <div class="prop-row prop-row-diagnostic"><div class="prop-label prop-label-diagnostic">snapshot.selectedZoneId</div><div class="prop-value-diagnostic">${runtimeSnapshotZoneId || "-"}</div></div>
+          <div class="prop-row prop-row-diagnostic"><div class="prop-label prop-label-diagnostic">snapshot.fragments</div><div class="prop-value-diagnostic">${runtimeSnapshotFragmentsCount}</div></div>
+          <div class="prop-row prop-row-diagnostic"><div class="prop-label prop-label-diagnostic">workspaceInfo</div><div class="prop-value-diagnostic" style="word-break:break-word;">${workspaceInfoText ? String(workspaceInfoText) : "-"}</div></div>
+        `
+        : "";
+      const layoutActionSectionTitle = isFragmentOnlyRegularLayoutSelected ? "Параметры выкладки" : "Инвентарь";
+      const layoutActionSectionHint = isFragmentOnlyRegularLayoutSelected
+        ? ""
+        : (isManualLayoutSelected ? "" : `<div class="tree-empty" style="margin-top:6px;">Настройки подбора, preview и применение</div>`);
+      const _lockedCls = !layoutEditEnabled ? " prop-input--locked" : "";
+      const _lockedAttr = !layoutEditEnabled ? " disabled" : "";
+      const layoutActionSectionBody = isFragmentOnlyRegularLayoutSelected
+        ? `
+          <div class="prop-row prop-row-compact"><div class="prop-label">Резерв под припуски, мм</div><div class="prop-field-compact"><input id="layoutAllowanceInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="0" max="200" step="0.5" value="${Number(allowanceValue).toFixed(1)}"${_lockedAttr}></div></div>
+          ${currentLayoutMode === "transverse"
+            ? `<div class="prop-row prop-row-compact"><div class="prop-label">Оси</div><div class="prop-field-compact"><input id="layoutAxisCountInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="0" max="6" step="1" value="${axisCountValue}"${_lockedAttr}></div></div>
+               <div class="prop-row prop-row-compact"><div class="prop-label">Шаг, мм</div><div class="prop-field-compact"><input id="layoutBandStepInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="10" max="5000" step="5" value="${bandStepValue}"${_lockedAttr}></div></div>
+               <div class="prop-row prop-row-compact"><div class="prop-label">Угол, °</div><div class="prop-field-compact"><input id="layoutAngleDegInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="-89" max="89" step="1" value="${angleValue}"${_lockedAttr}></div></div>`
+            : currentLayoutMode === "radial"
+            ? `<div class="prop-row prop-row-compact"><div class="prop-label">Кольца</div><div class="prop-field-compact"><input id="layoutRingCountInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="1" max="20" step="1" value="${ringCountValue}"${_lockedAttr}></div></div>
+               <div class="prop-row prop-row-compact"><div class="prop-label">Секторы</div><div class="prop-field-compact"><input id="layoutSectorCountInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="1" max="36" step="1" value="${sectorCountValue}"${_lockedAttr}></div></div>
+               <div class="prop-row prop-row-compact"><div class="prop-label">Поворот, °</div><div class="prop-field-compact"><input id="layoutSectorRotationInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="-360" max="360" step="1" value="${sectorRotationValue}"${_lockedAttr}></div></div>
+               <div class="prop-row prop-row-compact"><div class="prop-label">Внутренний радиус, мм</div><div class="prop-field-compact"><input id="layoutInnerRadiusInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="0" max="5000" step="1" value="${innerRadiusValue}"${_lockedAttr}></div></div>
+               <div class="prop-row prop-row-compact"><div class="prop-label">Центр</div><div class="prop-field-compact"><select id="layoutCenterModeInput" class="prop-input prop-input-compact${_lockedCls}"${_lockedAttr}><option value="auto"${centerModeValue === "auto" ? " selected" : ""}>Авто</option><option value="manual"${centerModeValue === "manual" ? " selected" : ""}>Вручную</option></select></div></div>
+               <div class="tree-empty" style="margin:2px 0 6px; font-size:11px;">При режиме «Вручную» это координаты центра рисунка в мм на рабочем поле.</div>
+               <div class="prop-row prop-row-compact"><div class="prop-label">Координата X, мм</div><div class="prop-field-compact"><input id="layoutCenterXInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="-100000" max="100000" step="1" value="${centerXValue}"${_lockedAttr}></div></div>
+               <div class="prop-row prop-row-compact"><div class="prop-label">Координата Y, мм</div><div class="prop-field-compact"><input id="layoutCenterYInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="-100000" max="100000" step="1" value="${centerYValue}"${_lockedAttr}></div></div>`
+            : currentLayoutMode === "shifted"
+            ? `<div class="prop-row prop-row-compact"><div class="prop-label">Ряды</div><div class="prop-field-compact"><input id="layoutRowsInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="1" max="20" step="1" value="${rowsValue}"${_lockedAttr}></div></div>
+               <div class="prop-row prop-row-compact"><div class="prop-label">Колонки</div><div class="prop-field-compact"><input id="layoutColsInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="1" max="20" step="1" value="${colsValue}"${_lockedAttr}></div></div>
+               <div class="prop-row prop-row-compact"><div class="prop-label">Смещение ряда, %</div><div class="prop-field-compact"><input id="layoutShiftPercentInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="-100" max="100" step="1" value="${shiftPercentValue}"${_lockedAttr}></div></div>`
+            : `<div class="prop-row prop-row-compact"><div class="prop-label">Ряды</div><div class="prop-field-compact"><input id="layoutRowsInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="1" max="20" step="1" value="${rowsValue}"${_lockedAttr}></div></div>
+               <div class="prop-row prop-row-compact"><div class="prop-label">Колонки</div><div class="prop-field-compact"><input id="layoutColsInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="1" max="20" step="1" value="${colsValue}"${_lockedAttr}></div></div>`}
+          <div class="prop-row prop-row-compact"><div class="prop-label">Зазор X, мм</div><div class="prop-field-compact"><input id="layoutGapXInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="0" max="1000" step="1" value="${gapXValue}"${_lockedAttr}></div></div>
+          <div class="prop-row prop-row-compact"><div class="prop-label">Зазор Y, мм</div><div class="prop-field-compact"><input id="layoutGapYInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="0" max="1000" step="1" value="${gapYValue}"${_lockedAttr}></div></div>
+          ${(currentLayoutMode === "transverse" || currentLayoutMode === "radial") ? "" : `<div class="prop-row prop-row-compact"><div class="prop-label">Скругление, мм</div><div class="prop-field-compact"><input id="layoutCornerRadiusInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="0" max="1000" step="1" value="${cornerRadiusValue}"${_lockedAttr}></div></div>`}
+        `
+        : (() => {
+          const furCatalog = Array.isArray(state.furMaterialsCatalog) ? state.furMaterialsCatalog : [];
+          const currentFurFilter = String(state.manualFurMaterialFilterId || "");
+          const furOptions = furCatalog.map((m) => {
+            const sel = String(m.id || "") === currentFurFilter ? " selected" : "";
+            return `<option value="${String(m.id || "").replace(/"/g, "&quot;")}"${sel}>${String(m.name || m.id || "").replace(/</g, "&lt;")}</option>`;
+          }).join("");
+          return `
+          <div class="prop-row prop-row-compact">
+            <div class="prop-label">Мех</div>
+            <div class="prop-field-compact">
+              <select id="manualFurFilterSelect" class="prop-input prop-input-compact"${lockManualInventoryParams ? " disabled" : ""}>
+                <option value=""${currentFurFilter === "" ? " selected" : ""}>Неважно</option>
+                ${furOptions}
+              </select>
+            </div>
+          </div>
+          <div class="prop-row prop-row-compact">
+            <div class="prop-label">Резерв припуска, мм</div>
+            <div class="prop-field-compact"><input id="layoutAllowanceInput" class="prop-input prop-input-compact prop-input-numeric" type="number" min="0" max="200" step="0.5" value="${Number(allowanceValue).toFixed(1)}"${!layoutEditEnabled ? " disabled" : ""}></div>
+          </div>
+          <div class="prop-actions prop-actions-stack">
+            <button class="prop-btn prop-btn--primary" id="inventoryPickBtn">${actionTitle}</button>
+          </div>
+          ${layoutActionSectionHint}
+        `;
+        })();
+
+      const layoutHeaderActions = selectedLayout ? `
+        <div class="prop-title-row">
+          <div class="prop-title">Выкладка</div>
+          <div class="prop-title-actions">
+            <button class="prop-icon-btn${layoutEditEnabled ? " is-active" : ""}" id="layoutEditBtn" type="button" title="${layoutEditEnabled ? "Заблокировать редактирование" : "Редактировать"}">
+              <img src="${layoutEditEnabled ? "/assets/panel-icons/edit-active.svg" : "/assets/panel-icons/edit.svg"}" alt="">
+            </button>
+            <button class="prop-icon-btn" id="layoutSaveBtn" type="button" title="Сохранить выкладку">
+              <img src="/assets/panel-icons/save.svg" alt="">
+            </button>
+          </div>
+        </div>
+      ` : `<div class="prop-title">Выкладка</div>`;
+
+      const svgImportedFrags = Array.isArray(state.intarsiaSvgFragments) ? state.intarsiaSvgFragments : [];
+      const svgFileName = state.intarsiaSvgFileName || "";
+      const hasSvg = svgImportedFrags.length > 0 && svgFileName;
+      const intarsiaImportSection = isIntarsiaMode ? renderEditorSection("layout_intarsia_import", "Импорт контуров", `
+        <input id="intarsiaSvgFileInputProp" type="file" accept=".svg,image/svg+xml" style="display:none"/>
+        ${hasSvg ? `
+        <div class="layout-list-card" style="margin:0;">
+          <div class="layout-list-text" style="min-width:0;overflow:hidden;">
+            <div class="layout-list-title" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${svgFileName.replace(/"/g,'&quot;')}">${svgFileName.replace(/</g,'&lt;')}</div>
+          </div>
+          <div class="layout-list-actions">
+            <button class="layout-list-action-btn" id="intarsiaSvgPickBtnProp" type="button" title="Заменить файл"><span class="material-symbols-outlined" aria-hidden="true">grid_view</span></button>
+            <button class="layout-list-action-btn danger" id="intarsiaSvgClearBtnProp" type="button" title="Удалить"><span class="material-symbols-outlined" aria-hidden="true">delete</span></button>
+          </div>
+        </div>
+        ` : `<div class="prop-actions prop-actions-stack"><button class="prop-btn" id="intarsiaSvgPickBtnProp" type="button">+ Выбрать</button></div>`}
+      `, true) : "";
 
       root.innerHTML = `
-        <div class="prop-title">Выкладка</div>
+        ${layoutHeaderActions}
         ${renderEditorSection("layout_info", "Информация", `
-          <div class="prop-row"><div class="prop-label">Название</div><div><input id="layoutNameInput" class="prop-input" type="text" placeholder="(Пусто)" ${nameInputReadonly}></div></div>
+          <div class="prop-row"><div class="prop-label">Название</div><div><input id="layoutNameInput" class="prop-input${!layoutEditEnabled ? " prop-input--locked" : ""}" type="text" placeholder="(Пусто)" ${nameInputReadonly}></div></div>
           <div class="prop-row"><div class="prop-label">Тип</div><div>${typeValue}</div></div>
         `, true)}
-        ${renderEditorSection("layout_inventory", "Инвентарь", `
-          <div class="prop-actions prop-actions-stack">
-            <button class="prop-btn" id="inventoryPickBtn">${actionTitle}</button>
-            ${isManualLayoutSelected && selectedLayout ? `<button class="prop-btn" id="manualSaveNowBtn">Сохранить сейчас</button>` : ""}
-          </div>
-          ${isManualLayoutSelected ? "" : `<div class="tree-empty" style="margin-top:6px;">Настройки подбора, preview и применение</div>`}
+        ${intarsiaImportSection}
+        ${isIntarsiaMode ? "" : renderEditorSection("layout_inventory", layoutActionSectionTitle, layoutActionSectionBody, true)}
+        ${(isFragmentOnlyRegularLayoutSelected || isManualLayoutSelected) ? "" : renderEditorSection("layout_params", "Параметры выкладки", `
+          <div class="prop-row"><div class="prop-label">Резерв под припуски, мм</div><div><input id="layoutAllowanceInput" class="prop-input${!layoutEditEnabled ? " prop-input--locked" : ""}" type="number" min="0" max="200" step="0.5" value="${Number(allowanceValue).toFixed(1)}"${!layoutEditEnabled ? " disabled" : ""}></div></div>
         `, true)}
-        ${renderEditorSection("layout_params", "Параметры", `
-          <div class="prop-row"><div class="prop-label">Резерв припуска, мм</div><div><input id="layoutAllowanceInput" class="prop-input" type="number" min="0" max="200" step="0.5" value="${Number(allowanceValue).toFixed(1)}"></div></div>
-        `, true)}
+        ${(isFragmentOnlyRegularLayoutSelected && showLongitudinalDebug) ? renderEditorSection("layout_debug", "Диагностика", diagnosticRows, true) : ""}
       `;
       bindSectionToggles(root);
+
+      // Intarsia SVG import buttons in property editor
+      const svgPickBtnProp = byId("intarsiaSvgPickBtnProp");
+      const svgFileInputProp = byId("intarsiaSvgFileInputProp");
+      const svgClearBtnProp = byId("intarsiaSvgClearBtnProp");
+      if (svgPickBtnProp && svgFileInputProp && typeof importSvgContours === "function") {
+        svgPickBtnProp.onclick = () => svgFileInputProp.click();
+        svgFileInputProp.onchange = () => {
+          const file = svgFileInputProp.files && svgFileInputProp.files[0];
+          if (!file) return;
+          state.intarsiaSvgFileName = file.name;
+          importSvgContours(file, 1);
+          svgFileInputProp.value = "";
+        };
+      }
+      if (svgClearBtnProp && typeof importSvgContours === "function") {
+        svgClearBtnProp.onclick = () => {
+          state.intarsiaSvgFileName = null;
+          importSvgContours(null, 1);
+        };
+      }
+
+
+      const layoutEditBtn = byId("layoutEditBtn");
+      if (layoutEditBtn && selectedLayout) {
+        layoutEditBtn.onclick = () => {
+          setLayoutEditEnabled(selectedLayout.id, !layoutEditEnabled);
+          renderPropertyEditor();
+        };
+      }
+      const layoutSaveBtn = byId("layoutSaveBtn");
+      if (layoutSaveBtn) {
+        layoutSaveBtn.disabled = !selectedLayout || typeof saveLayoutEntry !== "function";
+        layoutSaveBtn.onclick = async () => {
+          if (!selectedLayout || typeof saveLayoutEntry !== "function") return;
+          layoutSaveBtn.disabled = true;
+          try {
+            await saveLayoutEntry(selectedLayout);
+            showPropToast(`Выкладка «${selectedLayout.name || "-"}» сохранена.`, false);
+          } catch (e) {
+            showPropToast("Ошибка сохранения выкладки.", true);
+          } finally {
+            layoutSaveBtn.disabled = false;
+          }
+        };
+      }
+      const furFilterSel = byId("manualFurFilterSelect");
+      if (furFilterSel) {
+        furFilterSel.value = String(state.manualFurMaterialFilterId || "");
+        furFilterSel.onchange = () => {
+          state.manualFurMaterialFilterId = furFilterSel.value;
+        };
+        if (!Array.isArray(state.furMaterialsCatalog) || state.furMaterialsCatalog.length === 0) {
+          api("/api/fur-materials", "GET", null, 20000).then((json) => {
+            if (json && json.ok && Array.isArray(json.items) && json.items.length > 0) {
+              state.furMaterialsCatalog = json.items
+                .map((item) => ({ id: String(item && item.id || "").trim(), name: String(item && item.name || "").trim() }))
+                .filter((m) => m.id);
+              const sel = byId("manualFurFilterSelect");
+              if (sel) {
+                sel.innerHTML = `<option value="">Неважно</option>` +
+                  state.furMaterialsCatalog.map((m) =>
+                    `<option value="${String(m.id).replace(/"/g, "&quot;")}">${String(m.name || m.id).replace(/</g, "&lt;")}</option>`
+                  ).join("");
+                sel.value = String(state.manualFurMaterialFilterId || "");
+              }
+            }
+          }).catch(() => {});
+        }
+      }
       const btn = byId("inventoryPickBtn");
       if (btn) {
         const hasAnyZone = Array.isArray(state.zones) && state.zones.length > 0;
-        btn.disabled = !hasAnyZone || lockManualInventoryParams;
+        btn.disabled = !hasAnyZone || lockManualInventoryParams || !layoutEditEnabled;
         btn.onclick = () => openInventoryStep1(currentLayoutMode);
-      }
-      const manualSaveNowBtn = byId("manualSaveNowBtn");
-      if (manualSaveNowBtn) {
-        const hasManualPlacements = Array.isArray(state.layoutRun && state.layoutRun.placements) && state.layoutRun.placements.length > 0;
-        manualSaveNowBtn.disabled = !selectedLayout || !hasManualPlacements || typeof saveLayoutEntry !== "function";
-        manualSaveNowBtn.onclick = async () => {
-          if (!selectedLayout || typeof saveLayoutEntry !== "function") return;
-          manualSaveNowBtn.disabled = true;
-          try {
-            await saveLayoutEntry(selectedLayout);
-          } finally {
-            manualSaveNowBtn.disabled = false;
-          }
-        };
       }
       const layoutNameInput = byId("layoutNameInput");
       if (layoutNameInput) {
         layoutNameInput.value = selectedLayoutName;
+        layoutNameInput.disabled = !layoutEditEnabled;
+        layoutNameInput.readOnly = !layoutEditEnabled;
         if (selectedLayout) {
           layoutNameInput.oninput = () => {
+            if (!layoutEditEnabled) return;
             selectedLayout.name = String(layoutNameInput.value || "");
+            if (typeof markLayoutDirty === "function") markLayoutDirty(selectedLayout, true);
             renderDetailZoneTree();
           };
         }
       }
       const layoutAllowanceInput = byId("layoutAllowanceInput");
       if (layoutAllowanceInput) {
-        layoutAllowanceInput.disabled = lockManualInventoryParams;
-        layoutAllowanceInput.readOnly = lockManualInventoryParams;
+        const allowanceLocked = isManualLayoutSelected ? !layoutEditEnabled : (lockManualInventoryParams || !layoutEditEnabled);
+        layoutAllowanceInput.disabled = allowanceLocked;
+        layoutAllowanceInput.readOnly = allowanceLocked;
         layoutAllowanceInput.oninput = () => {
-          if (lockManualInventoryParams) return;
+          if (allowanceLocked) return;
           const v = parseLocaleNumber(layoutAllowanceInput.value, null);
           if (!Number.isFinite(v)) return;
           state.layoutRun.allowanceMm = Math.max(0, Math.min(200, v));
+          if (typeof markLayoutDirty === "function") markLayoutDirty(selectedLayout, true);
           const invAllowance = byId("invAllowanceMm");
           if (invAllowance) invAllowance.value = Number(state.layoutRun.allowanceMm).toFixed(1);
         };
         layoutAllowanceInput.onblur = () => {
-          if (lockManualInventoryParams) return;
+          if (allowanceLocked) return;
           const v = parseLocaleNumber(layoutAllowanceInput.value, null);
           const n = Number.isFinite(v) ? Math.max(0, Math.min(200, v)) : 12;
           state.layoutRun.allowanceMm = n;
           layoutAllowanceInput.value = n.toFixed(1);
+          if (typeof markLayoutDirty === "function") markLayoutDirty(selectedLayout, true);
           const invAllowance = byId("invAllowanceMm");
           if (invAllowance) invAllowance.value = n.toFixed(1);
         };
+      }
+      const bindMirrorNumberInput = (localId, sharedId, min, max, fallback, decimals = 0) => {
+        const localEl = byId(localId);
+        const sharedEl = byId(sharedId);
+        if (!localEl || !sharedEl) return;
+        localEl.disabled = !layoutEditEnabled;
+        localEl.readOnly = !layoutEditEnabled;
+        const scheduleRegularPreview = () => {
+          if (!isFragmentOnlyRegularLayoutSelected) return;
+          if (typeof markLayoutDirty === "function") markLayoutDirty(selectedLayout, true);
+          if (regularLayoutPreviewTimer) clearTimeout(regularLayoutPreviewTimer);
+          regularLayoutPreviewTimer = setTimeout(() => {
+            regularLayoutPreviewTimer = null;
+            openInventoryStep1(currentLayoutMode);
+          }, 180);
+        };
+        const normalize = () => {
+          if (!layoutEditEnabled) return;
+          const raw = parseLocaleNumber(localEl.value, null);
+          const next = Number.isFinite(raw) ? Math.max(min, Math.min(max, raw)) : fallback;
+          sharedEl.value = decimals > 0 ? Number(next).toFixed(decimals) : String(Math.round(next));
+          localEl.value = decimals > 0 ? Number(next).toFixed(decimals) : String(Math.round(next));
+          scheduleRegularPreview();
+        };
+        localEl.oninput = () => {
+          if (!layoutEditEnabled) return;
+          const raw = parseLocaleNumber(localEl.value, null);
+          if (!Number.isFinite(raw)) return;
+          const next = Math.max(min, Math.min(max, raw));
+          sharedEl.value = decimals > 0 ? Number(next).toFixed(decimals) : String(Math.round(next));
+          scheduleRegularPreview();
+        };
+        localEl.onblur = normalize;
+      };
+      bindMirrorNumberInput("layoutRowsInput", "fillRows", 1, 20, 5, 0);
+      bindMirrorNumberInput("layoutColsInput", "fillCols", 1, 20, 5, 0);
+      bindMirrorNumberInput("layoutShiftPercentInput", "fillShiftPercent", -100, 100, 50, 0);
+      bindMirrorNumberInput("layoutAxisCountInput", "fillAxisCount", 0, 6, 1, 0);
+      bindMirrorNumberInput("layoutBandStepInput", "fillBandStep", 10, 5000, 120, 0);
+      bindMirrorNumberInput("layoutAngleDegInput", "fillAngleDeg", -89, 89, 45, 0);
+      bindMirrorNumberInput("layoutRingCountInput", "fillRingCount", 1, 20, 4, 0);
+      bindMirrorNumberInput("layoutSectorCountInput", "fillSectorCount", 1, 36, 8, 0);
+      bindMirrorNumberInput("layoutSectorRotationInput", "fillSectorRotationDeg", -360, 360, 0, 0);
+      bindMirrorNumberInput("layoutInnerRadiusInput", "fillInnerRadiusMm", 0, 5000, 0, 0);
+      bindMirrorNumberInput("layoutCenterXInput", "fillCenterX", -100000, 100000, 0, 0);
+      bindMirrorNumberInput("layoutCenterYInput", "fillCenterY", -100000, 100000, 0, 0);
+      bindMirrorNumberInput("layoutGapXInput", "fillGapX", 0, 1000, 0, 0);
+      bindMirrorNumberInput("layoutGapYInput", "fillGapY", 0, 1000, 0, 0);
+      bindMirrorNumberInput("layoutCornerRadiusInput", "fillCornerRadius", 0, 1000, 0, 0);
+      const layoutCenterModeInput = byId("layoutCenterModeInput");
+      const fillCenterMode = byId("fillCenterMode");
+      const layoutCenterXInput = byId("layoutCenterXInput");
+      const layoutCenterYInput = byId("layoutCenterYInput");
+      const syncRadialCenterInputs = () => {
+        const manual = !!(layoutCenterModeInput && String(layoutCenterModeInput.value || "auto") === "manual");
+        if (layoutCenterXInput) {
+          layoutCenterXInput.disabled = !layoutEditEnabled || !manual;
+          layoutCenterXInput.readOnly = !layoutEditEnabled || !manual;
+        }
+        if (layoutCenterYInput) {
+          layoutCenterYInput.disabled = !layoutEditEnabled || !manual;
+          layoutCenterYInput.readOnly = !layoutEditEnabled || !manual;
+        }
+      };
+      if (layoutCenterModeInput && fillCenterMode) {
+        layoutCenterModeInput.disabled = !layoutEditEnabled;
+        layoutCenterModeInput.onchange = () => {
+          if (!layoutEditEnabled) return;
+          fillCenterMode.value = String(layoutCenterModeInput.value || "auto");
+          if (String(fillCenterMode.value || "auto") === "manual" && typeof getRadialAutoCenter === "function") {
+            const autoCenter = getRadialAutoCenter();
+            if (autoCenter && Number.isFinite(Number(autoCenter.x)) && Number.isFinite(Number(autoCenter.y))) {
+              const nextX = Math.round(Number(autoCenter.x) * 10) / 10;
+              const nextY = Math.round(Number(autoCenter.y) * 10) / 10;
+              const fillCenterX = byId("fillCenterX");
+              const fillCenterY = byId("fillCenterY");
+              if (fillCenterX) fillCenterX.value = String(nextX);
+              if (fillCenterY) fillCenterY.value = String(nextY);
+              if (layoutCenterXInput) layoutCenterXInput.value = String(nextX);
+              if (layoutCenterYInput) layoutCenterYInput.value = String(nextY);
+            }
+          }
+          syncRadialCenterInputs();
+          if (typeof markLayoutDirty === "function") markLayoutDirty(selectedLayout, true);
+          if (regularLayoutPreviewTimer) clearTimeout(regularLayoutPreviewTimer);
+          regularLayoutPreviewTimer = setTimeout(() => {
+            regularLayoutPreviewTimer = null;
+            openInventoryStep1(currentLayoutMode);
+          }, 180);
+        };
+        syncRadialCenterInputs();
       }
       renderManualTrayIntoRoot();
     }
