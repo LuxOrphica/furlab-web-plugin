@@ -262,6 +262,11 @@
     function buildReportsModel() {
       const zones = Array.isArray(state && state.zones) ? state.zones : [];
       const zoneById = new Map(zones.map((z) => [Number(z && z.id || 0), z]));
+      const materialNamesMap = new Map(
+        (Array.isArray(state.projectMaterials) ? state.projectMaterials : [])
+          .filter(m => m && m.id)
+          .map(m => [String(m.id), String(m.name || m.id)])
+      );
       const rows = [];
       let hiddenSmallCount = 0;
       let hiddenSmallAreaMm2 = 0;
@@ -354,7 +359,21 @@
             hiddenSmallAreaMm2 += areaMm2;
             continue;
           }
-          const cutAreaMm2 = Math.max(areaMm2, Math.abs(polygonArea(cutPts) || areaMm2));
+          let cutAreaMm2 = Math.max(areaMm2, Math.abs(polygonArea(cutPts) || areaMm2));
+          // When cutPoints are missing but seam allowance is set, estimate cut area via perimeter formula
+          if (!hasFragCutPoints && cutPts === pts) {
+            const snapAllowanceMm = Number(snapshot.layoutRun && snapshot.layoutRun.allowanceMm || 0);
+            if (snapAllowanceMm > 0) {
+              let perim = 0;
+              for (let pi = 0; pi < pts.length; pi++) {
+                const a = pts[pi], b = pts[(pi + 1) % pts.length];
+                const dx = (b.x || b[0] || 0) - (a.x || a[0] || 0);
+                const dy = (b.y || b[1] || 0) - (a.y || a[1] || 0);
+                perim += Math.sqrt(dx * dx + dy * dy);
+              }
+              cutAreaMm2 = areaMm2 + perim * snapAllowanceMm + Math.PI * snapAllowanceMm * snapAllowanceMm;
+            }
+          }
           const fragNo = i + 1;
           rows.push({
             index: rows.length + 1,
@@ -363,7 +382,7 @@
             layoutMode,
             fragmentNo: fragNo,
             fragmentCode: `${detailForRow}-${zoneId}-${fragNo}`,
-            materialName: String(zoneForRow && (zoneForRow.materialName || zoneForRow.materialId) || "-"),
+            materialName: (() => { const mid = String(zoneForRow && zoneForRow.materialId || ""); return mid ? (materialNamesMap.get(mid) || mid) : "-"; })(),
             napSymbol: napSymbolByDeg(napDegNorm),
             napLabel: `${napSymbolByDeg(napDegNorm)} ${Math.round(napDegNorm)}°`,
             napDeg: Math.round(napDegNorm),
@@ -571,6 +590,50 @@
       }
       renderReportsScheme(rows, currentDetailId);
     }
+    function renderReportsPrintAll(model) {
+      const container = byId("reportsPrintAll");
+      if (!container || !model) return;
+      const showInventoryCol = model.rows.some((r) => String(r && r.inventoryTag || "").trim().length > 0);
+      container.innerHTML = model.detailIds.map((detailId) => {
+        const rows = model.rows.filter((r) => Number(r.detailId) === detailId);
+        if (!rows.length) return "";
+        const totalArea = rows.reduce((acc, r) => acc + Number(r.areaMm2 || 0), 0);
+        const totalCutArea = rows.reduce((acc, r) => acc + Number(r.cutAreaMm2 || r.areaMm2 || 0), 0);
+        const zoneId = rows[0] ? rows[0].zoneId : "-";
+        const grouped = [];
+        const seen = new Map();
+        for (const r of rows) {
+          const k = `${r.materialName}|${r.napDeg}|${Math.round(r.areaMm2 * 10)}`;
+          if (seen.has(k)) { const g = seen.get(k); g.qty += 1; g.allCodes.push(r.fragmentCode); }
+          else { const g = { ...r, qty: 1, allCodes: [r.fragmentCode] }; seen.set(k, g); grouped.push(g); }
+        }
+        const rowsHtml = grouped.map((r) => {
+          const codesHtml = r.qty === 1 ? escapeHtml(r.fragmentCode) : r.allCodes.map((c) => escapeHtml(c)).join("<br>");
+          return `<tr>
+            <td>${renderReportsThumb(r.points, r.cutPoints, r.pieceContour)}</td>
+            <td>${escapeHtml(r.napLabel || "↓")}</td>
+            <td style="line-height:1.5">${codesHtml}</td>
+            <td>${escapeHtml(r.materialName || "-")}</td>
+            <td>${r.qty}</td>
+            <td>${Number(r.areaMm2 || 0).toFixed(1)}</td>
+            <td>${Number(r.cutAreaMm2 || r.areaMm2 || 0).toFixed(1)}</td>
+            ${showInventoryCol ? `<td>${escapeHtml(r.inventoryTag)}</td>` : ""}
+          </tr>`;
+        }).join("");
+        return `<div class="reports-print-section">
+          <div class="reports-detail-heading">Деталь ${detailId}</div>
+          <div class="reports-summary">Зона: ${zoneId} | Фрагментов: ${rows.length} | Пл. ядра: ${totalArea.toFixed(1)} мм² | Пл. раскроя: ${totalCutArea.toFixed(1)} мм²</div>
+          <table class="reports-table">
+            <thead><tr>
+              <th>Рис.</th><th>Направление ворса</th><th>Фрагмент</th><th>Материал меха</th>
+              <th>Кол-во, шт</th><th>Пл. ядра, мм²</th><th>Пл. раскроя, мм²</th>
+              ${showInventoryCol ? "<th>Инвентарный кусок</th>" : ""}
+            </tr></thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>`;
+      }).join("");
+    }
     function updateReportsButtonState() {
       const btn = byId("reportsBtn");
       if (!btn) return;
@@ -593,6 +656,7 @@
         reportsState.model = buildReportsModel() || { rows: [], detailIds: [], selectedDetailId: null, hasAnyInventory: false, hiddenSmallCount: 0, hiddenSmallAreaMm2: 0 };
         const preferredDetailId = reportsState.model.selectedDetailId || reportsState.model.detailIds[0] || null;
         renderReportsView(preferredDetailId);
+        renderReportsPrintAll(reportsState.model);
         if (backdrop) backdrop.style.display = "flex";
       } catch (err) {
         console.error("[reports/open] failed:", err);
@@ -833,6 +897,9 @@
           const zone = resolveCurrentRadialZone();
           return zone ? getZoneCenterPoint(zone) : null;
         },
+        applyIntarsiaFragmentsToZone: (zoneId) => applyIntarsiaFragmentsToZone(zoneId),
+        applyIntarsiaFragmentToZone: (fragmentId, zoneId) => applyIntarsiaFragmentToZone(fragmentId, zoneId),
+        previewIntarsiaFragmentsDraft: () => previewIntarsiaFragmentsDraft(),
         importSvgContours: (file, scale) => {
           const rerenderPropEditor = () => {
             if (propertyEditorView && typeof propertyEditorView.renderPropertyEditor === "function") {
@@ -874,7 +941,10 @@
                 const dx = zCx - cCx, dy = zCy - cCy;
                 contours = contours.map((pts) => pts.map((p) => ({ x: p.x + dx, y: p.y + dy })));
               }
-              state.intarsiaSvgFragments = contours.map((pts, idx) => ({ id: idx + 1, points: pts }));
+              const existing = Array.isArray(state.intarsiaSvgFragments) ? state.intarsiaSvgFragments : [];
+              const maxId = existing.reduce((m, f) => Math.max(m, Number(f && f.id || 0)), 0);
+              const newFrags = contours.map((pts, idx) => ({ id: maxId + idx + 1, points: pts }));
+              state.intarsiaSvgFragments = existing.concat(newFrags);
               state.layoutRun.fillType = "import_svg";
               const modeEl = byId("fillGridMode");
               if (modeEl) { modeEl.value = "import_svg"; syncGridModeUi(); }
@@ -2213,6 +2283,9 @@
       return points;
     }
 
+    // Cache: Map<key, HTMLCanvasElement> — keyed by (zoneId|materialId|zoomBucket|layerIndex|diag)
+    const _hatchCanvasCache = new Map();
+
     function addParallelHatch(hatchGroup, centerX, centerY, diag, visual, options) {
       const opts = options && typeof options === 'object' ? options : {};
       const spacing = Math.max(5, Number(opts.spacing || visual.spacing));
@@ -2311,9 +2384,16 @@
       const diag = Math.sqrt(width * width + height * height) + 30;
       const centerX = (minX + maxX) / 2;
       const centerY = (minY + maxY) / 2;
-      const layers = Array.isArray(visual.layers) ? visual.layers : [];
-      for (const layerSpec of layers) {
-        addParallelHatch(hatchGroup, centerX, centerY, diag, visual, {
+      // Zoom bucket: quantize to 0.05 steps so minor sub-pixel zoom diffs don't bust cache
+      const zoomBucket = Math.round((state.zoom || 1) / 0.05) * 0.05;
+      const diagBucket = Math.ceil(diag / 4) * 4;
+      const zoneId = zone.id || 0;
+      const materialId = zone.materialId || '';
+      const visualKey = visual.hatchStroke + '|' + (visual.angleRad || 0).toFixed(3) + '|' + (visual.spacing || 0).toFixed(1);
+      const layerSpecs = Array.isArray(visual.layers) ? visual.layers : [];
+      for (let li = 0; li < layerSpecs.length; li++) {
+        const layerSpec = layerSpecs[li];
+        const opts = {
           spacing: Number(layerSpec.spacing || visual.spacing),
           stroke: visual.hatchStroke,
           strokeWidth: Number(layerSpec.strokeWidth || visual.strokeWidth),
@@ -2325,7 +2405,34 @@
           clusterSpreadPx: Number(layerSpec.clusterSpreadPx || visual.clusterSpreadPx || 0),
           segmentationScale: Number(layerSpec.segmentationScale || 0),
           softnessScale: Number(layerSpec.softnessScale || 0)
-        });
+        };
+        const cacheKey = `${zoneId}|${materialId}|${zoomBucket}|${diagBucket}|${li}|${visualKey}`;
+        let offscreen = _hatchCanvasCache.get(cacheKey);
+        if (!offscreen) {
+          // Build a temporary group to capture the canvas from addParallelHatch
+          const tempGroup = { _canvas: null, add(img) { this._canvas = img.attrs && img.attrs.image; } };
+          addParallelHatch(tempGroup, 0, 0, diagBucket, visual, opts);
+          offscreen = tempGroup._canvas;
+          if (offscreen) {
+            if (_hatchCanvasCache.size > 400) {
+              // Evict oldest entries to prevent unbounded growth
+              const firstKey = _hatchCanvasCache.keys().next().value;
+              _hatchCanvasCache.delete(firstKey);
+            }
+            _hatchCanvasCache.set(cacheKey, offscreen);
+          }
+        }
+        if (offscreen) {
+          const size = offscreen.width;
+          hatchGroup.add(new Konva.Image({
+            image: offscreen,
+            x: centerX - size / 2,
+            y: centerY - size / 2,
+            width: size,
+            height: size,
+            listening: false
+          }));
+        }
       }
       layer.add(hatchGroup);
     }
@@ -3295,7 +3402,7 @@
       renderPropertyEditor();
     }
 
-    async function deleteZoneEntry(zone) {
+    async function deleteZoneEntry(zone, options) {
       const z = zone && typeof zone === "object" ? zone : null;
       if (!z) return false;
       const zoneId = Number(z.id || 0) || 0;
@@ -3321,7 +3428,8 @@
         : (dependentLayouts.length
           ? `Отменить разбиение и восстановить "${parentZoneName}"? Связанные выкладки (${dependentLayouts.length}) будут удалены.`
           : `Отменить разбиение и восстановить "${parentZoneName}"?`);
-      if (typeof window.confirm === "function" && !window.confirm(message)) return false;
+      const skipConfirm = options && options.skipConfirm;
+      if (!skipConfirm && typeof window.confirm === "function" && !window.confirm(message)) return false;
       hideZoneContextMenu();
       // Silently remove dependent layouts without intermediate renders
       for (const entry of dependentLayouts.slice()) {
@@ -3375,6 +3483,167 @@
       renderPropertyEditor();
       renderScene();
       return true;
+    }
+
+    async function applyIntarsiaFragmentsToZone(zoneId) {
+      const zone = state.zones.find((z) => Number(z && z.id || 0) === Number(zoneId || 0));
+      if (!zone || !Array.isArray(zone.points) || zone.points.length < 3) {
+        byId("workspaceInfo").textContent = "Зона не найдена";
+        return;
+      }
+      const fragments = Array.isArray(state.intarsiaSvgFragments) ? state.intarsiaSvgFragments : [];
+      if (fragments.length === 0) {
+        byId("workspaceInfo").textContent = "Нет фрагментов для применения";
+        return;
+      }
+      byId("workspaceInfo").textContent = "Разбиение зоны…";
+      const res = await api("/api/intarsia/apply-fragments", "POST", {
+        zonePoints: zone.points,
+        fragments: fragments.map((f) => ({ points: f.points }))
+      });
+      if (!res || !res.ok) {
+        byId("workspaceInfo").textContent = `Ошибка: ${String(res && res.error || "unknown")}`;
+        return;
+      }
+      const detailId = Number(zone.detailId || state.selectedDetailId || 0) || null;
+      const parentSnapshot = { id: zone.id, name: zone.name, points: zone.points.slice() };
+      let firstNewZoneId = null;
+      // Create sub-zones for each fragment clipped to zone
+      for (const sz of (res.subZones || [])) {
+        if (Array.isArray(sz.points) && sz.points.length >= 3) {
+          const idBefore = state.nextZoneId;
+          createZoneFromPoints(sz.points, { detailId, originType: "split", parentZoneId: zone.id, parentZoneSnapshot: parentSnapshot });
+          if (!firstNewZoneId && state.nextZoneId > idBefore) firstNewZoneId = idBefore;
+        }
+      }
+      // Create remainder zone(s)
+      for (const rz of (res.remainderZones || [])) {
+        if (Array.isArray(rz.points) && rz.points.length >= 3) {
+          const idBefore = state.nextZoneId;
+          createZoneFromPoints(rz.points, { detailId, originType: "split", parentZoneId: zone.id, parentZoneSnapshot: parentSnapshot });
+          if (!firstNewZoneId && state.nextZoneId > idBefore) firstNewZoneId = idBefore;
+        }
+      }
+      // Rebind intarsia layout to first new sub-zone so it's not deleted with the original zone
+      if (firstNewZoneId) {
+        const intarsiaEntry = (Array.isArray(state.layouts) ? state.layouts : [])
+          .find((e) => String(e && e.mode || "") === "intarsia" && Number(e && e.boundZoneId || 0) === Number(zone.id || 0));
+        if (intarsiaEntry) {
+          intarsiaEntry.boundZoneId = firstNewZoneId;
+          state.layoutRun.selectedZoneId = firstNewZoneId;
+        }
+      }
+      // Delete original zone (no confirm — user already triggered this via context menu)
+      await deleteZoneEntry(zone, { skipConfirm: true });
+      byId("workspaceInfo").textContent = `Зона разбита: ${(res.subZones || []).length} фрагм. + ${(res.remainderZones || []).length} остаток`;
+      renderScene();
+      renderDetailZoneTree();
+    }
+
+    async function applyIntarsiaFragmentToZone(fragmentId, zoneId) {
+      const zone = state.zones.find((z) => Number(z && z.id || 0) === Number(zoneId || 0));
+      if (!zone || !Array.isArray(zone.points) || zone.points.length < 3) {
+        byId("workspaceInfo").textContent = "Зона не найдена";
+        return;
+      }
+      const frag = (Array.isArray(state.intarsiaSvgFragments) ? state.intarsiaSvgFragments : [])
+        .find((f) => Number(f && f.id || 0) === Number(fragmentId || 0));
+      if (!frag || !Array.isArray(frag.points) || frag.points.length < 3) {
+        byId("workspaceInfo").textContent = "Фрагмент не найден";
+        return;
+      }
+      byId("workspaceInfo").textContent = "Преобразование фрагмента в зону…";
+      const res = await api("/api/intarsia/apply-fragments", "POST", {
+        zonePoints: zone.points,
+        fragments: [{ points: frag.points }]
+      });
+      if (!res || !res.ok) {
+        byId("workspaceInfo").textContent = `Ошибка: ${String(res && res.error || "unknown")}`;
+        return;
+      }
+      const detailId = Number(zone.detailId || state.selectedDetailId || 0) || null;
+      const parentSnapshot = { id: zone.id, name: zone.name, points: zone.points.slice() };
+      // Create sub-zone for this fragment
+      for (const sz of (res.subZones || [])) {
+        if (Array.isArray(sz.points) && sz.points.length >= 3) {
+          createZoneFromPoints(sz.points, { detailId, originType: "split", parentZoneId: zone.id, parentZoneSnapshot: parentSnapshot });
+        }
+      }
+      // Update original zone to remainder (diff of zone minus this fragment)
+      const remainders = (res.remainderZones || []).filter((rz) => Array.isArray(rz.points) && rz.points.length >= 3);
+      if (remainders.length === 1) {
+        // Update zone in-place
+        zone.points = remainders[0].points;
+        void persistZonesForCurrentWorkspace();
+      } else if (remainders.length > 1) {
+        // Zone split into multiple pieces — replace with new zones
+        for (const rz of remainders) {
+          createZoneFromPoints(rz.points, { detailId, originType: "split", parentZoneId: zone.id, parentZoneSnapshot: parentSnapshot });
+        }
+        await deleteZoneEntry(zone, { skipConfirm: true });
+      }
+      // Remove this fragment from intarsia list
+      state.intarsiaSvgFragments = (Array.isArray(state.intarsiaSvgFragments) ? state.intarsiaSvgFragments : [])
+        .filter((f) => Number(f && f.id || 0) !== Number(fragmentId || 0));
+      state.layoutRun.fragments = (Array.isArray(state.layoutRun.fragments) ? state.layoutRun.fragments : [])
+        .filter((f) => Number(f && f.id || 0) !== Number(fragmentId || 0));
+      state.selectedFragmentId = null;
+      byId("workspaceInfo").textContent = `Фрагмент ${fragmentId} преобразован в зону`;
+      renderScene();
+      renderDetailZoneTree();
+      renderPropertyEditor();
+    }
+
+    function openIntarsiaFragmentContextMenu(payload) {
+      const zoneId = Number(payload && payload.zoneId || 0);
+      const menu = ensureZoneContextMenu();
+      menu.innerHTML = "";
+      const addItem = (label, onClick, options) => {
+        const cfg = options && typeof options === "object" ? options : {};
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "zone-context-menu-btn";
+        btn.disabled = !!cfg.disabled;
+        btn.innerHTML = `<span>${escapeHtml(label)}</span>`;
+        if (typeof onClick === "function" && !cfg.disabled) {
+          btn.addEventListener("click", async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            try { await onClick(); } finally { hideZoneContextMenu(); }
+          });
+        }
+        menu.appendChild(btn);
+      };
+      const addSeparator = () => {
+        const sep = document.createElement("div");
+        sep.className = "zone-context-menu-sep";
+        menu.appendChild(sep);
+      };
+
+      addItem("Удалить фрагмент", () => {
+        const delId = Number(state.selectedFragmentId);
+        if (Array.isArray(state.intarsiaSvgFragments)) {
+          state.intarsiaSvgFragments = state.intarsiaSvgFragments.filter((f) => Number(f && f.id || 0) !== delId);
+        }
+        if (Array.isArray(state.layoutRun && state.layoutRun.fragments)) {
+          state.layoutRun.fragments = state.layoutRun.fragments.filter((f) => Number(f && f.id || 0) !== delId);
+        }
+        state.selectedFragmentId = null;
+        renderScene();
+      });
+      addSeparator();
+      addItem("Разбить зону по всем фрагментам", () => applyIntarsiaFragmentsToZone(zoneId), { disabled: !zoneId });
+
+      menu.classList.add("open");
+      menu.style.left = "0px";
+      menu.style.top = "0px";
+      const vw = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
+      const vh = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
+      const rect = menu.getBoundingClientRect();
+      const left = Math.max(6, Math.min(Number(payload && payload.x || 0), vw - rect.width - 6));
+      const top = Math.max(6, Math.min(Number(payload && payload.y || 0), vh - rect.height - 6));
+      menu.style.left = `${left}px`;
+      menu.style.top = `${top}px`;
     }
 
     function openZoneContextMenu(payload) {
@@ -7552,8 +7821,15 @@ function renderSplitEvents(events) {
         candidatePool: [],
         manual: {}
       };
+      // Интарсия — отдельный режим: не переносим её active=true в другие раскладки
+      if (normalizedMode !== "intarsia" && !nextLayoutRunRaw.active) {
+        state.layoutRun.active = false;
+      }
       if (snap.intarsiaSvgFragments !== undefined) {
         state.intarsiaSvgFragments = Array.isArray(snap.intarsiaSvgFragments) ? snap.intarsiaSvgFragments : null;
+        if (Array.isArray(state.intarsiaSvgFragments) && state.intarsiaSvgFragments.length > 0) {
+          state.layoutRun.fillType = "import_svg";
+        }
       }
       if (snap.intarsiaSvgFileName !== undefined) {
         state.intarsiaSvgFileName = snap.intarsiaSvgFileName || null;
@@ -7719,6 +7995,7 @@ function renderSplitEvents(events) {
       renderLayoutModeSwitch();
       renderDetailZoneTree();
       renderPropertyEditor();
+      renderZoneToolPalette();
       renderScene();
       if (isFragmentOnlyLayoutMode(e.mode)) {
         const boundZone = resolveZoneById(e.boundZoneId || state.selectedZoneId || 0);
@@ -7740,6 +8017,9 @@ function renderSplitEvents(events) {
             renderScene();
           }
         }
+      }
+      if (String(e.mode || "") === "intarsia" && Array.isArray(state.intarsiaSvgFragments) && state.intarsiaSvgFragments.length > 0) {
+        previewIntarsiaFragmentsDraft();
       }
     }
     async function deleteLayoutEntry(entry) {
@@ -8130,8 +8410,11 @@ function renderSplitEvents(events) {
               if (statusEl) statusEl.textContent = "Контуры не найдены в SVG";
               return;
             }
-            state.intarsiaSvgFragments = result.contours.map((pts, i) => ({ id: i + 1, points: pts }));
-            if (statusEl) statusEl.textContent = `Загружено ${result.contours.length} контуров (масштаб ${result.autoScale.toFixed(4)} мм/ед.)`;
+            const existingFrags = Array.isArray(state.intarsiaSvgFragments) ? state.intarsiaSvgFragments : [];
+            const maxFragId = existingFrags.reduce((m, f) => Math.max(m, Number(f && f.id || 0)), 0);
+            const addedFrags = result.contours.map((pts, i) => ({ id: maxFragId + i + 1, points: pts }));
+            state.intarsiaSvgFragments = existingFrags.concat(addedFrags);
+            if (statusEl) statusEl.textContent = `Добавлено ${result.contours.length} контуров, всего ${state.intarsiaSvgFragments.length} (масштаб ${result.autoScale.toFixed(4)} мм/ед.)`;
             if (svgClearBtn) svgClearBtn.style.display = "";
             if (state.layoutMode === "intarsia") previewIntarsiaFragmentsDraft();
           };
@@ -9193,6 +9476,7 @@ function renderSplitEvents(events) {
 
       if (showLabelsEffective && state.details.length > 0) {
         for (const d of state.details) {
+          if (!d.bbox) continue;
           const cx = d.bbox.minX + d.bbox.width / 2;
           const cy = d.bbox.minY + d.bbox.height / 2;
           const s = worldToScreen({ x: cx, y: cy });
@@ -9211,7 +9495,8 @@ function renderSplitEvents(events) {
       }
 
       const activeLayoutZoneId = Number(state.layoutRun && state.layoutRun.selectedZoneId || 0);
-      const hasActiveLayoutOnZone = !!(state.layoutRun.active && activeLayoutZoneId > 0);
+      const hasManualPlacements = isManualInventoryMode() && Array.isArray(state.layoutRun.placements) && state.layoutRun.placements.length > 0;
+      const hasActiveLayoutOnZone = !!(state.layoutRun.active && activeLayoutZoneId > 0) || hasManualPlacements;
       let deferredManualSeamSegments = [];
 
       function drawSnapshotFragments(snapshot, options = {}) {
@@ -10576,6 +10861,21 @@ function refreshSelectionInfo() {
     if (uiBindings && typeof uiBindings.bindMainControls === "function") {
       uiBindings.bindMainControls();
     }
+    // Sync layer state from DOM checkboxes (checked attr = default visible)
+    {
+      const layerMap = [
+        ["layerPattern", "pattern"], ["layerZones", "zones"], ["layerZoneMaterials", "zoneMaterials"],
+        ["layerSelection", "selection"], ["layerGuides", "guides"], ["layerVisibleArea", "visibleArea"],
+        ["layerPieceIntersections", "pieceIntersections"], ["layerPieceBorders", "pieceBorders"],
+        ["layerAssignedPieces", "assignedPieces"], ["layerPfullZ", "pfullZ"],
+        ["layerUsedGain", "usedGain"], ["layerPcoreZ", "pcoreZ"], ["layerVisibleCore", "visibleCore"],
+        ["layerSplitLeftovers", "splitLeftovers"], ["layerCoverageHoles", "coverageHoles"],
+      ];
+      for (const [id, key] of layerMap) {
+        const el = byId(id);
+        if (el) state.layers[key] = !!el.checked;
+      }
+    }
     const reportsBtn = byId("reportsBtn");
     if (reportsBtn) reportsBtn.onclick = () => openReportsModal();
     const reportsCloseBtn = byId("reportsCloseBtn");
@@ -10721,6 +11021,26 @@ function refreshSelectionInfo() {
         if ((e.key === "Delete" || e.key === "Backspace") && isVertexEditingTool(state.tool)) {
           if (removeSelectedZoneVertex()) {
             e.preventDefault();
+            return;
+          }
+        }
+        if ((e.key === "Delete" || e.key === "Backspace") && state.layoutMode === "intarsia" && state.selectedFragmentId != null) {
+          const delId = Number(state.selectedFragmentId);
+          let deleted = false;
+          if (Array.isArray(state.intarsiaSvgFragments)) {
+            const before = state.intarsiaSvgFragments.length;
+            state.intarsiaSvgFragments = state.intarsiaSvgFragments.filter((f) => Number(f && f.id || 0) !== delId);
+            if (state.intarsiaSvgFragments.length < before) deleted = true;
+          }
+          if (Array.isArray(state.layoutRun && state.layoutRun.fragments)) {
+            const before = state.layoutRun.fragments.length;
+            state.layoutRun.fragments = state.layoutRun.fragments.filter((f) => Number(f && f.id || 0) !== delId);
+            if (state.layoutRun.fragments.length < before) deleted = true;
+          }
+          if (deleted) {
+            state.selectedFragmentId = null;
+            e.preventDefault();
+            renderScene();
             return;
           }
         }
@@ -10882,6 +11202,7 @@ function refreshSelectionInfo() {
         onZoneGeometryChanged: () => { void persistZonesForCurrentWorkspace(); },
         requestZoneSplit: async (fromPoint, toPoint) => splitSelectedZoneByLine(fromPoint, toPoint),
         openZoneContextMenuAt: (payload) => openZoneContextMenu(payload),
+        openIntarsiaFragmentContextMenuAt: (payload) => openIntarsiaFragmentContextMenu(payload),
         setWorkspaceInfo: (text) => {
           const info = byId("workspaceInfo");
           if (info) info.textContent = String(text || "");
@@ -10889,6 +11210,9 @@ function refreshSelectionInfo() {
         onZoneSelected: (zone) => {
           const zoneId = Number(zone && zone.id || 0);
           if (!zoneId) return;
+          if (detailZoneTreeView && typeof detailZoneTreeView.scrollSelectedZoneIntoView === "function") {
+            detailZoneTreeView.scrollSelectedZoneIntoView();
+          }
           // Don't auto-switch layout while in manual mode or active layout editing —
           // openLayoutEntry reloads snapshot and would discard unsaved placements.
           if (isManualInventoryMode()) return;
@@ -11089,6 +11413,7 @@ function refreshSelectionInfo() {
     }
 
     function buildProjectPayload(name, existingId) {
+      saveCurrentLayoutRuntimeSnapshot();
       const workspaceKey = buildZonesWorkspaceKey();
       const parts = (Array.isArray(state.details) ? state.details : []).map((d) => ({
         id: Number(d && d.id || 0),
@@ -11097,13 +11422,19 @@ function refreshSelectionInfo() {
       }));
       const zones = (Array.isArray(state.zones) ? state.zones : []).map((z) => ({ ...z }));
       const layouts = (Array.isArray(state.layouts) ? state.layouts : []).map(serializeLayoutForProject);
+      const patternGeometry = state.patternGeometry && Array.isArray(state.patternGeometry.entities)
+        ? state.patternGeometry
+        : null;
+      const projectMaterials = Array.isArray(state.projectMaterials) ? state.projectMaterials : [];
       return {
         id: existingId || undefined,
         name,
         workspaceKey,
         parts,
         zones,
-        layouts
+        layouts,
+        patternGeometry,
+        projectMaterials
       };
     }
 
@@ -11132,16 +11463,41 @@ function refreshSelectionInfo() {
             id: Number(p.id),
             name: String(p.name || `Деталь ${p.id}`),
             entity: { points: p.points, closed: true },
-            bbox: null, area: 0, points: p.points.length
+            bbox: (() => {
+              const pts = p.points;
+              let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+              for (const pt of pts) { minX = Math.min(minX, pt.x); minY = Math.min(minY, pt.y); maxX = Math.max(maxX, pt.x); maxY = Math.max(maxY, pt.y); }
+              return Number.isFinite(minX) ? { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY } : null;
+            })(),
+            area: 0, points: p.points.length
           }));
       }
+
+      // Restore pattern geometry (лекала) if saved with the project
+      if (project.patternGeometry && Array.isArray(project.patternGeometry.entities)) {
+        state.patternGeometry = project.patternGeometry;
+      }
+
+      // Restore project materials
+      if (Array.isArray(project.projectMaterials) && project.projectMaterials.length > 0) {
+        state.projectMaterials = project.projectMaterials;
+      }
+      // Migrate: resolve any materialIds on zones that are missing from projectMaterials
+      void (async () => {
+        const existing = new Set((Array.isArray(state.projectMaterials) ? state.projectMaterials : []).map(m => String(m.id || "")));
+        const missing = [...new Set((Array.isArray(project.zones) ? project.zones : []).map(z => String(z.materialId || "")).filter(id => id && !existing.has(id)))];
+        for (const mid of missing) {
+          const mat = typeof getFurMaterialById === "function" ? await getFurMaterialById(mid) : null;
+          ensureProjectMaterialEntry(mat || { id: mid, name: mid });
+        }
+      })();
 
       // Restore zones and lock workspace key so zone operations use the correct store key
       // even when pattern geometry is not loaded in this session
       state.loadedProjectWorkspaceKey = String(project.workspaceKey || "") || null;
       state.zones = Array.isArray(project.zones) ? project.zones.map((z) => ({ ...z })) : [];
       state.nextZoneId = state.zones.reduce((max, z) => Math.max(max, Number(z.id || 0)), 0) + 1;
-      state.selectedZoneId = state.zones.length ? state.zones[0].id : null;
+      state.selectedZoneId = null;
       state.selectedFragmentId = null;
       // Sync loaded zones into zone_store so server-side operations (delete, validate) work correctly
       if (state.loadedProjectWorkspaceKey && state.zones.length > 0) {
@@ -11198,6 +11554,18 @@ function refreshSelectionInfo() {
         if (firstLayout.runtimeSnapshot) {
           applyFragmentOnlyLayoutSnapshot(String(firstLayout.mode || ""), firstLayout.runtimeSnapshot, firstLayout);
         }
+        // Kick stale-check re-preview so cutPoints are populated on load
+        if (isFragmentOnlyLayoutMode(String(firstLayout.mode || ""))) {
+          const _mode = String(firstLayout.mode || "");
+          if (isFragmentOnlySnapshotStale(_mode, firstLayout.runtimeSnapshot)) {
+            void previewFragmentOnlyLayout(_mode).then(() => {
+              if (Number(state.selectedLayoutId) === Number(firstLayout.id)) {
+                firstLayout.runtimeSnapshot = buildFragmentOnlyLayoutSnapshot(_mode);
+                renderScene();
+              }
+            });
+          }
+        }
       }
 
       state.activeProjectId = project.id;
@@ -11207,6 +11575,15 @@ function refreshSelectionInfo() {
       renderDetailZoneTree();
       renderPropertyEditor();
       renderScene();
+      // Fit all zone/detail geometry into view after loading
+      {
+        const allPoints = (Array.isArray(state.zones) ? state.zones : [])
+          .flatMap((z) => Array.isArray(z && z.points) ? z.points : []);
+        const allDetailPoints = (Array.isArray(state.details) ? state.details : [])
+          .flatMap((d) => Array.isArray(d && d.entity && d.entity.points) ? d.entity.points : []);
+        const pts = allPoints.length >= 3 ? allPoints : allDetailPoints;
+        if (pts.length >= 3) { fitPointsToView(pts); renderScene(); }
+      }
 
       // Pre-load snapshots for all layouts so they are all visible on canvas simultaneously
       for (const entry of state.layouts) {
