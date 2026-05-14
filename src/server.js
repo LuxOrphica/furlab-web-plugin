@@ -1564,27 +1564,90 @@ function applyNormalizeRules(rawFragments, normalizeRules, axis) {
   const minW = safeNum(rules.minFragmentWidthMm);
   const minL = safeNum(rules.minFragmentLengthMm);
   const simplifyTol = safeNum(rules.simplifyToleranceMm);
+  const minAlongMm = safeNum(rules.fragmentMinAlongMm);
+  const minAcrossMm = safeNum(rules.fragmentMinAcrossMm);
+  const maxAlongMm = safeNum(rules.fragmentMaxAlongMm);
+  const maxAcrossMm = safeNum(rules.fragmentMaxAcrossMm);
 
-  // Determine size threshold for merge: a fragment is "small" if either dimension is below threshold.
   const threshW = minW !== null ? minW : 0;
   const threshL = minL !== null ? minL : 0;
-  const hasThreshold = threshW > 0 || threshL > 0;
+  const threshAlong = minAlongMm !== null ? minAlongMm : 0;
+  const threshAcross = minAcrossMm !== null ? minAcrossMm : 0;
+  const effectiveThreshAlong = Math.max(threshL, threshAlong);
+  const effectiveThreshAcross = Math.max(threshW, threshAcross);
+  const hasThreshold = effectiveThreshAlong > 0 || effectiveThreshAcross > 0;
+
+  function fragAlong(bbox) { return axis === "x" ? bbox.width : bbox.height; }
+  function fragAcross(bbox) { return axis === "x" ? bbox.height : bbox.width; }
 
   function isSmall(pts) {
     if (!hasThreshold) return false;
     const bbox = polygonBBox(pts);
     if (!bbox) return true;
-    const along = axis === "x" ? bbox.width : bbox.height;
-    const across = axis === "x" ? bbox.height : bbox.width;
-    if (threshL > 0 && along < threshL) return true;
-    if (threshW > 0 && across < threshW) return true;
+    if (effectiveThreshAlong > 0 && fragAlong(bbox) < effectiveThreshAlong) return true;
+    if (effectiveThreshAcross > 0 && fragAcross(bbox) < effectiveThreshAcross) return true;
     return false;
   }
 
-  // Separate valid from small fragments.
+  function splitToMaxSize(pts, depth) {
+    if (depth > 6) return [pts];
+    const bbox = polygonBBox(pts);
+    if (!bbox) return [pts];
+    const along = fragAlong(bbox);
+    const across = fragAcross(bbox);
+    const overAlong = maxAlongMm !== null && maxAlongMm > 0 && along > maxAlongMm;
+    const overAcross = maxAcrossMm !== null && maxAcrossMm > 0 && across > maxAcrossMm;
+    if (!overAlong && !overAcross) return [pts];
+    let splitParts;
+    if (overAlong) {
+      const mid = axis === "x"
+        ? (bbox.minX + bbox.maxX) / 2
+        : (bbox.minY + bbox.maxY) / 2;
+      if (axis === "x") {
+        splitParts = splitPolygonByLine(pts, mid, 0, 0, 1);
+      } else {
+        splitParts = splitPolygonByLine(pts, 0, mid, 1, 0);
+      }
+    } else {
+      const mid = axis === "x"
+        ? (bbox.minY + bbox.maxY) / 2
+        : (bbox.minX + bbox.maxX) / 2;
+      if (axis === "x") {
+        splitParts = splitPolygonByLine(pts, 0, mid, 1, 0);
+      } else {
+        splitParts = splitPolygonByLine(pts, mid, 0, 0, 1);
+      }
+    }
+    if (!splitParts || splitParts.length < 2) return [pts];
+    const result = [];
+    for (const part of splitParts) {
+      const sub = splitToMaxSize(part, depth + 1);
+      for (const s of sub) result.push(s);
+    }
+    return result;
+  }
+
+  const expandedFragments = [];
+  let nextId = rawFragments.reduce((mx, f) => Math.max(mx, Number(f.id || 0)), 0) + 1;
+  for (const f of rawFragments) {
+    if (!Array.isArray(f.points) || f.points.length < 3) continue;
+    if (maxAlongMm !== null || maxAcrossMm !== null) {
+      const parts = splitToMaxSize(f.points, 0);
+      if (parts.length === 1) {
+        expandedFragments.push(f);
+      } else {
+        for (const part of parts) {
+          expandedFragments.push({ ...f, id: nextId++, points: part, areaMm2: polygonArea(part) });
+        }
+      }
+    } else {
+      expandedFragments.push(f);
+    }
+  }
+
   const large = [];
   const small = [];
-  for (const f of rawFragments) {
+  for (const f of expandedFragments) {
     if (!Array.isArray(f.points) || f.points.length < 3) continue;
     if (isSmall(f.points)) {
       small.push(f);
@@ -1593,7 +1656,6 @@ function applyNormalizeRules(rawFragments, normalizeRules, axis) {
     }
   }
 
-  // Merge each small fragment into the large neighbor with the closest centroid.
   let mergedCount = 0;
   for (const sf of small) {
     if (!large.length) break;
@@ -1607,7 +1669,6 @@ function applyNormalizeRules(rawFragments, normalizeRules, axis) {
       const d = dx * dx + dy * dy;
       if (d < bestDist) { bestDist = d; bestIdx = i; }
     }
-    // Union geometries: treat both as single-ring multipolygons.
     const sfMp = pointsToMultiPolygon(sf.points);
     const lfMp = pointsToMultiPolygon(large[bestIdx].points);
     if (sfMp && lfMp) {
@@ -1619,11 +1680,9 @@ function applyNormalizeRules(rawFragments, normalizeRules, axis) {
         continue;
       }
     }
-    // Union failed (non-adjacent slivers) — keep small fragment as-is rather than drop it.
     large.push({ ...sf, areaMm2: polygonArea(sf.points) });
   }
 
-  // Apply simplification and emit.
   const seamReserve = safeNum(rules.seamAllowanceReserveMm);
   const out = [];
   for (const f of large) {

@@ -3174,6 +3174,14 @@
           state.zones = savedZones;
           state.nextZoneId = savedZones.reduce((maxId, item) => Math.max(maxId, Number(item && item.id || 0)), 0) + 1;
           if (materialId) ensureProjectMaterialEntry({ id: materialId, name: materialName });
+          const changedZoneId = Number(z.id || 0) || 0;
+          if (changedZoneId > 0 && Array.isArray(state.layouts)) {
+            for (const le of state.layouts) {
+              if (isFragmentOnlyLayoutMode(String(le && le.mode || "")) && Number(le.boundZoneId || 0) === changedZoneId) {
+                le.isDirty = true;
+              }
+            }
+          }
           await validateZonesForCurrentWorkspace();
           renderDetailZoneTree();
           renderPropertyEditor();
@@ -7569,6 +7577,11 @@ function renderSplitEvents(events) {
       if (byId("fillCornerRadius") && Number.isFinite(Number(options.cornerRadius))) byId("fillCornerRadius").value = String(Number(options.cornerRadius));
       if (byId("fillAngleDeg") && Number.isFinite(Number(options.angleDeg))) byId("fillAngleDeg").value = String(Number(options.angleDeg));
       if (byId("fillShiftPercent") && Number.isFinite(Number(options.shiftPercent))) byId("fillShiftPercent").value = String(Number(options.shiftPercent));
+      const nr = snapshot && snapshot.layoutRun && snapshot.layoutRun.paramsSnapshot && snapshot.layoutRun.paramsSnapshot.inputs && snapshot.layoutRun.paramsSnapshot.inputs.normalizeRules;
+      if (nr && typeof nr === "object") {
+        if (byId("fragmentMinAlongMm") && Number.isFinite(Number(nr.fragmentMinAlongMm))) byId("fragmentMinAlongMm").value = String(Number(nr.fragmentMinAlongMm));
+        if (byId("fragmentMinAcrossMm") && Number.isFinite(Number(nr.fragmentMinAcrossMm))) byId("fragmentMinAcrossMm").value = String(Number(nr.fragmentMinAcrossMm));
+      }
     }
     function hasFragmentOnlySnapshotData(snapshot) {
       const frags = Array.isArray(snapshot && snapshot.layoutRun && snapshot.layoutRun.fragments)
@@ -8240,6 +8253,19 @@ function renderSplitEvents(events) {
       const gapY = Math.max(0, Number(byId("fillGapY").value || 0));
       const cornerRadius = Math.max(0, Number(byId("fillCornerRadius").value || 0));
       const allowanceMm = Number(parseLocaleNumber(state.layoutRun && state.layoutRun.allowanceMm, 12) || 12);
+      const zoneMaterial = zone.materialId ? getFurMaterialById(zone.materialId) : null;
+      const matMaxAlongMm = zoneMaterial && Number.isFinite(Number(zoneMaterial.maxLengthMm)) ? Number(zoneMaterial.maxLengthMm) : null;
+      const matMaxAcrossMm = zoneMaterial && Number.isFinite(Number(zoneMaterial.maxWidthMm)) ? Number(zoneMaterial.maxWidthMm) : null;
+      const constraintsRow = byId("fragmentSizeConstraintsRow");
+      if (constraintsRow) constraintsRow.style.display = "";
+      const maxAlongEl = byId("fragmentMaxAlongMm");
+      const maxAcrossEl = byId("fragmentMaxAcrossMm");
+      if (maxAlongEl) { if (matMaxAlongMm !== null) { maxAlongEl.value = String(matMaxAlongMm); } else { maxAlongEl.value = ""; } }
+      if (maxAcrossEl) { if (matMaxAcrossMm !== null) { maxAcrossEl.value = String(matMaxAcrossMm); } else { maxAcrossEl.value = ""; } }
+      const fragmentMinAlongMm = Math.max(0, Number((byId("fragmentMinAlongMm") && byId("fragmentMinAlongMm").value) || 60));
+      const fragmentMinAcrossMm = Math.max(0, Number((byId("fragmentMinAcrossMm") && byId("fragmentMinAcrossMm").value) || 60));
+      const fragmentMaxAlongMm = matMaxAlongMm !== null ? matMaxAlongMm : null;
+      const fragmentMaxAcrossMm = matMaxAcrossMm !== null ? matMaxAcrossMm : null;
       const payload = {
         layoutType: normalizedMode,
         zone: {
@@ -8251,7 +8277,11 @@ function renderSplitEvents(events) {
             minFragmentWidthMm: 0,
             minFragmentLengthMm: 0,
             mergeSmallFragments: false,
-            seamAllowanceReserveMm: allowanceMm
+            seamAllowanceReserveMm: allowanceMm,
+            fragmentMinAlongMm,
+            fragmentMinAcrossMm,
+            fragmentMaxAlongMm,
+            fragmentMaxAcrossMm
           }
         },
         options: {

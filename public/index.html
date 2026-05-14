@@ -264,6 +264,12 @@
             </div>
           </div>
         </div>
+        <div id="fragmentSizeConstraintsRow" style="display:none; margin-top:8px; border-top:1px solid #ddd; padding-top:8px;">
+          <div class="field-row"><label>Вдоль ворса мин, мм</label><input id="fragmentMinAlongMm" type="number" min="0" max="10000" value="60" /></div>
+          <div class="field-row"><label>Вдоль ворса макс, мм</label><input id="fragmentMaxAlongMm" type="number" min="0" max="10000" readonly placeholder="из материала" /></div>
+          <div class="field-row"><label>Поперёк ворса мин, мм</label><input id="fragmentMinAcrossMm" type="number" min="0" max="10000" value="60" /></div>
+          <div class="field-row"><label>Поперёк ворса макс, мм</label><input id="fragmentMaxAcrossMm" type="number" min="0" max="10000" readonly placeholder="из материала" /></div>
+        </div>
         <div id="intarsiaStep2CandidateFields">
           <div class="field-row" id="invFurFilterRow"><label>Мех</label><select id="invFurMaterialFilter"><option value="">Неважно</option></select></div>
           <div class="field-row"><label>Лимит кандидатов</label><input id="invLimit" type="number" min="10" max="2000" value="300" /></div>
