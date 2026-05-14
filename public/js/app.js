@@ -1,4 +1,4 @@
-﻿// In FurLab, default grain/nap direction in 2D is vertical down.
+// In FurLab, default grain/nap direction in 2D is vertical down.
     const DEFAULT_NAP_DIRECTION_DEG = 90;
     const INVENTORY_OPTIMIZATION_DEFAULT = "sew_quality_economy";
     const INVENTORY_OPTIMIZATION_PROFILE = {
@@ -2968,6 +2968,20 @@
         const reconciledZones = reconcileZonesWithDetails(savedZones);
         const needsReconcilePersist = reconciledZones.length !== savedZones.length;
         state.zones = reconciledZones;
+        // Sync zone materialIds into projectMaterials so the Мех tab shows names not GUIDs
+        for (const zone of reconciledZones) {
+          const mid = String(zone && zone.materialId || "").trim();
+          if (!mid) continue;
+          const already = (Array.isArray(state.projectMaterials) ? state.projectMaterials : []).find((m) => String(m && m.id || "") === mid);
+          if (!already) {
+            const name = String(zone.materialName || "").trim();
+            ensureProjectMaterialEntry({ id: mid, name: name || mid });
+            if (!name) {
+              // resolve name from server async, update when ready
+              void loadFurMaterialDetails(mid).then((mat) => { if (mat && mat.name) ensureProjectMaterialEntry(mat); });
+            }
+          }
+        }
         state.nextZoneId = reconciledZones.reduce((maxId, zone) => Math.max(maxId, Number(zone && zone.id || 0)), 0) + 1;
         if (!reconciledZones.some((zone) => Number(zone && zone.id || 0) === Number(state.selectedZoneId || 0))) {
           state.selectedZoneId = Number(reconciledZones[0] && reconciledZones[0].id || 0) || null;
@@ -3680,7 +3694,7 @@
         const cfg = options && typeof options === "object" ? options : {};
         const btn = document.createElement("button");
         btn.type = "button";
-        btn.className = "zone-context-menu-btn";
+        btn.className = "zone-context-menu-btn" + (cfg.danger ? " zone-context-menu-btn--danger" : "");
         btn.disabled = !!cfg.disabled;
         btn.innerHTML = `<span>${escapeHtml(label)}</span>${cfg.shortcut ? `<span class="zone-context-menu-shortcut">${escapeHtml(cfg.shortcut)}</span>` : ""}`;
         if (typeof onClick === "function" && !cfg.disabled) {
@@ -3706,11 +3720,15 @@
         selectZoneForEditing(zone);
       });
       addItem("Объединить зоны", () => deleteZoneEntry(zone), { disabled: !canRestoreParentZone(zone) });
-      addItem("Удалить зону", () => deleteZoneEntry(zone), { disabled: !canDeleteZone(zone) });
       addSeparator();
       addItem("Выбрать меховой материал", async () => {
         await openMaterialLibrary(zone);
       }, { shortcut: "Ctrl+Shift+M" });
+      if (zone.materialId) {
+        addItem("Убрать мех", async () => {
+          await assignMaterialToZone(zone, null);
+        });
+      }
       addItem("Выбрать обработку", null, { disabled: true, shortcut: "Ctrl+Shift+O" });
       addItem("Выбрать выкладку", () => {
         state.uiPanel = "layouts";
@@ -3719,6 +3737,8 @@
         renderPropertyEditor();
         openLayoutTypePicker();
       }, { shortcut: "Ctrl+Shift+V" });
+      addSeparator();
+      addItem("Удалить зону", () => deleteZoneEntry(zone), { disabled: !canDeleteZone(zone), danger: true });
 
       menu.classList.add("open");
       menu.style.left = "0px";
@@ -11531,9 +11551,17 @@ function refreshSelectionInfo() {
         const existing = new Set((Array.isArray(state.projectMaterials) ? state.projectMaterials : []).map(m => String(m.id || "")));
         const missing = [...new Set((Array.isArray(project.zones) ? project.zones : []).map(z => String(z.materialId || "")).filter(id => id && !existing.has(id)))];
         for (const mid of missing) {
-          const mat = typeof getFurMaterialById === "function" ? await getFurMaterialById(mid) : null;
+          // Try zone's own materialName first (already stored on the zone)
+          const zoneWithName = (Array.isArray(project.zones) ? project.zones : []).find(z => String(z.materialId || "") === mid && String(z.materialName || "").trim());
+          if (zoneWithName) {
+            ensureProjectMaterialEntry({ id: mid, name: String(zoneWithName.materialName) });
+            continue;
+          }
+          // Fall back to loading from server
+          const mat = typeof loadFurMaterialDetails === "function" ? await loadFurMaterialDetails(mid) : null;
           ensureProjectMaterialEntry(mat || { id: mid, name: mid });
         }
+        renderDetailZoneTree();
       })();
 
       // Restore zones and lock workspace key so zone operations use the correct store key

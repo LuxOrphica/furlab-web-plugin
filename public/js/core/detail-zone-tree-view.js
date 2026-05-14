@@ -1,4 +1,4 @@
-﻿(function registerFurLabDetailZoneTreeView(globalObj) {
+(function registerFurLabDetailZoneTreeView(globalObj) {
   const root = globalObj || (typeof window !== "undefined" ? window : globalThis);
 
   function createDetailZoneTreeView(deps) {
@@ -204,7 +204,7 @@
       _scrollToSelectedOnNextRender = false;
       treeRoot.innerHTML = "";
 
-      if (state.uiPanel === "materials") {
+      function renderMaterialsTab() {
         const addWrap = document.createElement("div");
         addWrap.className = "row";
         addWrap.style.marginBottom = "8px";
@@ -220,6 +220,12 @@
         addWrap.appendChild(addBtn);
         treeRoot.appendChild(addWrap);
 
+        const resolveMaterialName = (materialId, fallbackName) => {
+          if (fallbackName && fallbackName !== materialId) return fallbackName;
+          const fromCatalog = typeof getFurMaterialById === "function" ? getFurMaterialById(materialId) : null;
+          if (fromCatalog && fromCatalog.name && fromCatalog.name !== materialId) return fromCatalog.name;
+          return fallbackName || materialId;
+        };
         const zoneMaterials = new Map();
         const projectMaterials = Array.isArray(state.projectMaterials) ? state.projectMaterials : [];
         for (const item of projectMaterials) {
@@ -227,7 +233,7 @@
           if (!materialId) continue;
           zoneMaterials.set(materialId, {
             id: materialId,
-            name: String(item && item.name || materialId),
+            name: resolveMaterialName(materialId, String(item && item.name || "")),
             zoneCount: 0
           });
         }
@@ -236,12 +242,15 @@
           if (!materialId) continue;
           const existing = zoneMaterials.get(materialId);
           if (existing) {
+            if (existing.name === materialId && zone.materialName && zone.materialName !== materialId) {
+              existing.name = resolveMaterialName(materialId, String(zone.materialName));
+            }
             existing.zoneCount += 1;
             continue;
           }
           zoneMaterials.set(materialId, {
             id: materialId,
-            name: String(zone && zone.materialName || materialId),
+            name: resolveMaterialName(materialId, String(zone && zone.materialName || "")),
             zoneCount: 1
           });
         }
@@ -273,12 +282,6 @@
           openBtn.draggable = true;
           openBtn.addEventListener("click", async () => {
             state.selectedMaterialId = String(item.id || "");
-            const zone = Array.isArray(state.zones)
-              ? (state.zones.find((z) => Number(z && z.id || 0) === Number(state.selectedZoneId || 0)) || null)
-              : null;
-            if (zone && typeof assignMaterialToZone === "function") {
-              await assignMaterialToZone(zone, { id: item.id, name: item.name });
-            }
             renderDetailZoneTree();
             renderPropertyEditor();
             renderScene();
@@ -331,10 +334,9 @@
           card.appendChild(actions);
           treeRoot.appendChild(card);
         }
-        return;
       }
 
-      if (state.uiPanel === "layouts") {
+      function renderLayoutsTab() {
         const addWrap = document.createElement("div");
         addWrap.className = "row";
         addWrap.style.marginBottom = "8px";
@@ -363,9 +365,9 @@
           const openBtn = document.createElement("button");
           openBtn.type = "button";
           openBtn.className = "layout-list-main";
-          openBtn.addEventListener("click", () => {
+          openBtn.addEventListener("click", async () => {
             if (typeof openLayoutEntry === "function") {
-              void openLayoutEntry(entry);
+              await openLayoutEntry(entry);
               return;
             }
             state.selectedLayoutId = entry.id;
@@ -428,8 +430,10 @@
           card.appendChild(actions);
           treeRoot.appendChild(card);
         }
-        return;
       }
+
+      if (state.uiPanel === "materials") { renderMaterialsTab(); return; }
+      if (state.uiPanel === "layouts") { renderLayoutsTab(); return; }
 
       if (!Array.isArray(state.details) || state.details.length === 0) {
         const empty = document.createElement("div");

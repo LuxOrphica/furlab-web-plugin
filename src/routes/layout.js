@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 
 const fs = require("fs");
 const path = require("path");
@@ -1347,7 +1347,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
       if (!progressToken || typeof emitLayoutProgress !== "function") return;
       try { emitLayoutProgress(progressToken, payload); } catch (_) {}
     };
-    pushProgress({ type: "phase", phase: "server_prepare", percent: 69, title: "РЎРµСЂРІРµСЂ / РїРѕРґРіРѕС‚РѕРІРєР° РґР°РЅРЅС‹С…" });
+    pushProgress({ type: "phase", phase: "server_prepare", percent: 69, title: "Сервер / подготовка данных" });
     const zone = body.zone || {};
     const zonePoints = normalizePolygonInput(zone.points);
     if (zonePoints.length < 3) return jsonReply(res, 400, { ok: false, error: "zone_points_required" });
@@ -1355,7 +1355,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
     if (areaMm2 <= 0) return jsonReply(res, 400, { ok: false, error: "invalid_zone_polygon" });
     const zBBox = polygonBBox(zonePoints);
     if (!zBBox) return jsonReply(res, 400, { ok: false, error: "zone_bbox_invalid" });
-    pushProgress({ type: "phase", phase: "server_zone_geometry", percent: 72, title: "РЎРµСЂРІРµСЂ / РіРµРѕРјРµС‚СЂРёСЏ Р·РѕРЅС‹" });
+    pushProgress({ type: "phase", phase: "server_zone_geometry", percent: 72, title: "Сервер / геометрия зоны" });
 
     const fillType = String(body.fillType || "voronoi").toLowerCase();
     if (fillType !== "voronoi" && fillType !== "regular") {
@@ -1501,7 +1501,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
       type: "phase",
       phase: "server_candidate_filter",
       percent: 76,
-      title: "РЎРµСЂРІРµСЂ / С„РёР»СЊС‚СЂР°С†РёСЏ РєР°РЅРґРёРґР°С‚РѕРІ",
+      title: "Сервер / фильтрация кандидатов",
       candidatesInput: candidates.length
     });
     const looksLikeInventoryFlow =
@@ -1578,7 +1578,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
     }
 
     if (assignOnly) {
-      pushProgress({ type: "phase", phase: "server_assign_prepare", percent: 80, title: "РЎРµСЂРІРµСЂ / РїРѕРґРіРѕС‚РѕРІРєР° РїРѕРґР±РѕСЂР° РїРѕ С„СЂР°РіРјРµРЅС‚Р°Рј" });
+      pushProgress({ type: "phase", phase: "server_assign_prepare", percent: 80, title: "Сервер / подготовка подбора по фрагментам" });
       const inFrags = Array.isArray(body.fragments) ? body.fragments : [];
       const fragments = inFrags
         .map((f, i) => {
@@ -1599,7 +1599,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
         iter: 0,
         fragmentsTotal: fragments.length,
         candidatesInput: Array.isArray(candidates) ? candidates.length : 0,
-        title: "РРЅС‚Р°СЂСЃРёСЏ / РїРѕРґР±РѕСЂ РїРѕ С„СЂР°РіРјРµРЅС‚Р°Рј"
+        title: "Интарсия / подбор по фрагментам"
       });
       const tAssign0 = Date.now();
       const effectivePlacementStrategy = (fillType === "regular")
@@ -1668,7 +1668,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
           phase: "intarsia_assign_fallback_bestfit",
           percent: 86,
           iter: 1,
-          title: "РРЅС‚Р°СЂСЃРёСЏ / fallback bestFit"
+          title: "Интарсия / fallback bestFit"
         });
         const fallbackBest = intarsiaMode.assign({
           fragments,
@@ -1693,7 +1693,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
           phase: "intarsia_assign_fallback_greedy",
           percent: 89,
           iter: 2,
-          title: "РРЅС‚Р°СЂСЃРёСЏ / fallback greedy"
+          title: "Интарсия / fallback greedy"
         });
         const fallbackGreedy = intarsiaMode.assign({
           fragments,
@@ -1937,7 +1937,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
         phase: "intarsia_assign_done",
         percent: 94,
         iter: 3,
-        title: "РРЅС‚Р°СЂСЃРёСЏ / РїРѕРґР±РѕСЂ Р·Р°РІРµСЂС€РµРЅ",
+        title: "Интарсия / подбор завершён",
         matched: stats.placementsMatched,
         fragmentsTotal: stats.fragmentsTotal,
         uncovered: stats.uncovered
@@ -2008,7 +2008,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
 
     if (directInventory) {
       const tDirect0 = Date.now();
-      pushProgress({ type: "phase", phase: "server_place", percent: 81, title: "РЎРµСЂРІРµСЂ / СЂР°Р·РјРµС‰РµРЅРёРµ РєСѓСЃРєРѕРІ" });
+      pushProgress({ type: "phase", phase: "server_place", percent: 81, title: "Сервер / размещение кусков" });
       const directMode = modeRegistry.require(splitReturnEnabled ? "inventory_split_return" : "inventory_direct");
       const direct = await directMode.preview({ zonePoints, candidates, axis, filters, constraints, options });
       direct.placements = enrichPlacementContoursForZone(direct.placements, zonePoints);
@@ -2150,7 +2150,7 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
         type: "phase",
         phase: "server_coverage",
         percent: 90,
-        title: "РЎРµСЂРІРµСЂ / РїСЂРѕРІРµСЂРєР° РїРѕРєСЂС‹С‚РёСЏ",
+        title: "Сервер / проверка покрытия",
         pieces: Array.isArray(direct.placements) ? direct.placements.length : 0,
         coverage: Number(direct.coveragePercent || 0),
         residualAreaMm2: Number(direct.residualAreaMm2 || 0)
@@ -2185,13 +2185,13 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
         type: "phase",
         phase: "server_diag",
         percent: 94,
-        title: "РЎРµСЂРІРµСЂ / СЃР±РѕСЂ РґРёР°РіРЅРѕСЃС‚РёРєРё",
+        title: "Сервер / сбор диагностики",
         pieces: Array.isArray(direct.placements) ? direct.placements.length : 0,
         coverage: Number(direct.coveragePercent || 0),
         utilization: visibleUtilizationPct,
         tail: visibleWastePct
       });
-      pushProgress({ type: "done", percent: 99, title: "РЎРµСЂРІРµСЂ / РѕС‚РІРµС‚ РіРѕС‚РѕРІ" });
+      pushProgress({ type: "done", percent: 99, title: "Сервер / ответ готов" });
       return jsonReply(res, 200, {
         ok: true,
         resultStatus,

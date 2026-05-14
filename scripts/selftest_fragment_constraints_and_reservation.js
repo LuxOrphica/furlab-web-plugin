@@ -109,6 +109,14 @@ function apiRequest(method, urlPath, body) {
       }, project23143.id);
       await page.waitForTimeout(1200);
 
+      // Wait for project picker modal to close after project load
+      await page.waitForSelector('#projectPickerBackdrop', { state: 'hidden', timeout: 5000 }).catch(() => {});
+      // If it did not close by itself — close programmatically
+      await page.evaluate(() => {
+        const b = document.getElementById('projectPickerBackdrop');
+        if (b && b.style.display !== 'none') b.style.display = 'none';
+      });
+
       const loadedState = await page.evaluate(() => ({
         zones: Array.isArray(state.zones) ? state.zones.length : -1,
         layouts: Array.isArray(state.layouts) ? state.layouts.length : -1,
@@ -389,13 +397,15 @@ function apiRequest(method, urlPath, body) {
     if (!reportsDisabled) {
       await reportsBtn.click();
       await page.waitForSelector("#reportsBackdrop", { state: "visible", timeout: 10000 });
+      await page.waitForSelector('#reportsTableBody tr', { timeout: 8000 }).catch(() => {});
       await page.waitForTimeout(400);
       await page.screenshot({ path: shot3, fullPage: false });
 
-      // Check column headers
-      const hasAreaCol = await page.locator("#reportsTableHead th, #reportsTableBody th")
+      // Check column headers — titles are in thead th of .reports-table
+      // Expected text contains "Пл. ядра, мм²" and "Пл. раскроя, мм²"
+      const hasAreaCol = await page.locator(".reports-table thead tr th")
         .filter({ hasText: /Пл\. ядра/ }).count().catch(() => 0);
-      const hasCutAreaCol = await page.locator("#reportsTableHead th, #reportsTableBody th")
+      const hasCutAreaCol = await page.locator(".reports-table thead tr th")
         .filter({ hasText: /Пл\. раскроя/ }).count().catch(() => 0);
 
       results.push(hasAreaCol > 0

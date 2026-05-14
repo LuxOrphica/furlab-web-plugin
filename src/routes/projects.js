@@ -17,11 +17,17 @@ function collectLayoutReservations(layouts) {
   if (!Array.isArray(layouts)) return result;
   for (const layout of layouts) {
     const layoutId = String(layout && layout.id || "");
-    const placements = Array.isArray(layout && layout.placements) ? layout.placements : [];
-    const ids = placements
-      .filter((p) => p && String(p.status || "") === "matched" && String(p.scrapPieceId || ""))
-      .map((p) => String(p.scrapPieceId));
-    if (ids.length > 0) result.set(layoutId, ids);
+    const ids = new Set();
+    // runs[].scrapPlacements[] — serialized project format
+    const runs = Array.isArray(layout && layout.runs) ? layout.runs : [];
+    for (const run of runs) {
+      const sp = Array.isArray(run && run.scrapPlacements) ? run.scrapPlacements : [];
+      for (const p of sp) {
+        const pid = String(p && p.scrapPieceId || "").trim();
+        if (pid) ids.add(pid);
+      }
+    }
+    if (ids.size > 0) result.set(layoutId, Array.from(ids));
   }
   return result;
 }
@@ -127,7 +133,13 @@ async function handleProjectRoutes(req, res, reqUrl, deps) {
     if (!id) { jsonReply(res, 400, { ok: false, error: "id_required" }); return true; }
     const dir = getProjectsDir(ROOT_DIR);
     const filePath = path.join(dir, `${id}.json`);
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    if (fs.existsSync(filePath)) {
+      try {
+        fs.unlinkSync(filePath);
+      } catch (e) {
+        console.error(`[projects] Failed to delete project file ${filePath}:`, e && e.message || e);
+      }
+    }
 
     // Release all active reservations for the deleted project (non-fatal).
     try { releaseScrapReservations(id, null, deps); } catch (_) {}

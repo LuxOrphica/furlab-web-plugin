@@ -1,4 +1,4 @@
-﻿// Extracted from app.js: stage pointer/wheel interactions and drag lifecycle.
+// Extracted from app.js: stage pointer/wheel interactions and drag lifecycle.
 (function (global) {
   function createStageInteractions(options) {
     const opts = options && typeof options === "object" ? options : {};
@@ -373,7 +373,7 @@
             const stepDeg = e.evt.deltaY < 0 ? 5 : -5;
             const center = centroid(selPlacement.alignedContour);
             rotatePlacementGeometry(selPlacement, (stepDeg * Math.PI) / 180, center);
-            if (manual) manual.statusNote = "РєСѓСЃРѕРє РїРѕРІРµСЂРЅСѓС‚";
+            if (manual) manual.statusNote = "кусок повернут";
             renderInventoryManualPanel();
             renderScene();
             return;
@@ -414,7 +414,7 @@
           if (hitPl && Number.isFinite(Number(hitPl.placementIndex))) {
             state.layoutRun.manual = state.layoutRun.manual || { suggestions: [], lastMetrics: null, selectedCandidateTag: "", activePiece: null, lastEvalContours: null, statusNote: "", selectedPlacementIndex: -1 };
             state.layoutRun.manual.selectedPlacementIndex = Number(hitPl.placementIndex);
-            state.layoutRun.manual.statusNote = "РєСѓСЃРѕРє РІС‹Р±СЂР°РЅ";
+            state.layoutRun.manual.statusNote = "кусок выбран";
             state.drag.mode = "manual-placement-move";
             state.drag.manualMoved = false;
             state.drag.manualPointerStart = world;
@@ -873,7 +873,7 @@
         if (state.drag.mode === "manual-placement-move") {
           const idx = Number(state.drag.manualPlacementIndex);
           if (state.layoutRun && state.layoutRun.manual) state.layoutRun.manual.selectedPlacementIndex = Number.isFinite(idx) ? idx : -1;
-          if (state.layoutRun && state.layoutRun.manual) state.layoutRun.manual.statusNote = "РєСѓСЃРѕРє РїРµСЂРµРјРµС‰РµРЅ";
+          if (state.layoutRun && state.layoutRun.manual) state.layoutRun.manual.statusNote = "кусок перемещён";
           try {
             if (state.drag.manualMoved && state.drag.manualPlacementGeomStart) {
               const placements = Array.isArray(state.layoutRun && state.layoutRun.placements) ? state.layoutRun.placements : [];

@@ -1647,42 +1647,12 @@ function applyNormalizeRules(rawFragments, normalizeRules, axis) {
   }
 
   const large = [];
-  const small = [];
   for (const f of expandedFragments) {
     if (!Array.isArray(f.points) || f.points.length < 3) continue;
-    if (isSmall(f.points)) {
-      small.push(f);
-    } else {
-      large.push({ ...f, areaMm2: polygonArea(f.points) });
-    }
+    large.push({ ...f, areaMm2: polygonArea(f.points) });
   }
 
-  let mergedCount = 0;
-  for (const sf of small) {
-    if (!large.length) break;
-    const sc = centroid(sf.points);
-    let bestIdx = 0;
-    let bestDist = Infinity;
-    for (let i = 0; i < large.length; i++) {
-      const lc = centroid(large[i].points);
-      const dx = sc.x - lc.x;
-      const dy = sc.y - lc.y;
-      const d = dx * dx + dy * dy;
-      if (d < bestDist) { bestDist = d; bestIdx = i; }
-    }
-    const sfMp = pointsToMultiPolygon(sf.points);
-    const lfMp = pointsToMultiPolygon(large[bestIdx].points);
-    if (sfMp && lfMp) {
-      const merged = unionMulti(sfMp, lfMp);
-      const ring = largestOuterRingPoints(merged);
-      if (ring && ring.length >= 3) {
-        large[bestIdx] = { ...large[bestIdx], points: ring, areaMm2: polygonArea(ring) };
-        mergedCount += 1;
-        continue;
-      }
-    }
-    large.push({ ...sf, areaMm2: polygonArea(sf.points) });
-  }
+  const mergedCount = 0;
 
   const seamReserve = safeNum(rules.seamAllowanceReserveMm);
   const out = [];
@@ -3997,7 +3967,7 @@ const server = http.createServer(async (req, res) => {
       else if (ext === ".jpg" || ext === ".jpeg") ctype = "image/jpeg";
       else if (ext === ".gif") ctype = "image/gif";
       else if (ext === ".webp") ctype = "image/webp";
-      res.writeHead(200, { "Content-Type": ctype });
+      res.writeHead(200, { "Content-Type": ctype, "Cache-Control": "no-cache, no-store, must-revalidate" });
       fs.createReadStream(full).pipe(res);
       return;
     }

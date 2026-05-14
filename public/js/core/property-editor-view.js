@@ -1,4 +1,4 @@
-﻿(function registerFurLabPropertyEditorView(globalObj) {
+(function registerFurLabPropertyEditorView(globalObj) {
   const root = globalObj || (typeof window !== "undefined" ? window : globalThis);
 
   function createPropertyEditorView(deps) {
@@ -16,11 +16,11 @@
     const openReplaceCandidateModal = deps && deps.openReplaceCandidateModal;
     const renderPlacementRows = deps && deps.renderPlacementRows;
     const renderDetailZoneTree = deps && deps.renderDetailZoneTree;
-      const renderScene = deps && deps.renderScene;
-      const openInventoryStep1 = deps && deps.openInventoryStep1;
-      const renderManualTrayIntoRoot = deps && deps.renderManualTrayIntoRoot;
-      const saveLayoutEntry = deps && deps.saveLayoutEntry;
-      const markLayoutDirty = deps && deps.markLayoutDirty;
+    const renderScene = deps && deps.renderScene;
+    const openInventoryStep1 = deps && deps.openInventoryStep1;
+    const renderManualTrayIntoRoot = deps && deps.renderManualTrayIntoRoot;
+    const saveLayoutEntry = deps && deps.saveLayoutEntry;
+    const markLayoutDirty = deps && deps.markLayoutDirty;
     const getRadialAutoCenter = deps && deps.getRadialAutoCenter;
     const getFurMaterialById = deps && deps.getFurMaterialById;
     const ensureFurMaterialLoaded = deps && deps.ensureFurMaterialLoaded;
@@ -28,7 +28,114 @@
     const applyIntarsiaFragmentsToZone = deps && deps.applyIntarsiaFragmentsToZone;
     const applyIntarsiaFragmentToZone = deps && deps.applyIntarsiaFragmentToZone;
     const previewIntarsiaFragmentsDraft = deps && deps.previewIntarsiaFragmentsDraft;
-      let regularLayoutPreviewTimer = null;
+    let regularLayoutPreviewTimer = null;
+
+    function computeFragmentSizeHint(zone, napDeg, mode, params) {
+      if (!zone || !Array.isArray(zone.points) || zone.points.length < 3) return null;
+      const minAlong = Number(params.minAlong) || 0;
+      const minAcross = Number(params.minAcross) || 0;
+      const maxAlong = Number(params.maxAlong) || 0;
+      const maxAcross = Number(params.maxAcross) || 0;
+      if (!minAlong && !minAcross && !maxAlong && !maxAcross) return null;
+      const rad = ((napDeg || 90) * Math.PI) / 180;
+      const ux = Math.cos(rad), uy = Math.sin(rad);
+      const px = -uy, py = ux;
+      let minA = Infinity, maxA = -Infinity, minP = Infinity, maxP = -Infinity;
+      for (const pt of zone.points) {
+        const a = pt.x * ux + pt.y * uy;
+        const p = pt.x * px + pt.y * py;
+        if (a < minA) minA = a; if (a > maxA) maxA = a;
+        if (p < minP) minP = p; if (p > maxP) maxP = p;
+      }
+      const extentAlong = maxA - minA;
+      const extentAcross = maxP - minP;
+      let fragAlong, fragAcross;
+      if (mode === "longitudinal" || mode === "shifted") {
+        fragAlong = extentAlong / Math.max(1, params.rows || 1);
+        fragAcross = extentAcross / Math.max(1, params.cols || 1);
+      } else if (mode === "transverse") {
+        fragAlong = extentAlong;
+        fragAcross = Math.max(1, params.bandStep || 120);
+      } else if (mode === "radial") {
+        const outerR = extentAlong / 2;
+        const innerR = Math.min(Math.max(0, params.innerRadius || 0), outerR * 0.9);
+        fragAlong = (outerR - innerR) / Math.max(1, params.ringCount || 1);
+        fragAcross = extentAcross / Math.max(1, params.sectorCount || 1);
+      } else {
+        return null;
+      }
+      const violations = [];
+      const suggestions = {};
+      if (minAlong > 0 && fragAlong < minAlong) {
+        violations.push({ dim: "along", type: "min", frag: fragAlong, limit: minAlong });
+        if (mode === "longitudinal" || mode === "shifted") {
+          suggestions.rows = Math.max(1, Math.floor(extentAlong / minAlong));
+        } else if (mode === "radial") {
+          const outerR = extentAlong / 2;
+          const innerR = Math.min(Math.max(0, params.innerRadius || 0), outerR * 0.9);
+          suggestions.ringCount = Math.max(1, Math.floor((outerR - innerR) / minAlong));
+        }
+      }
+      if (maxAlong > 0 && fragAlong > maxAlong) {
+        violations.push({ dim: "along", type: "max", frag: fragAlong, limit: maxAlong });
+        if (mode === "longitudinal" || mode === "shifted") {
+          suggestions.rows = Math.max(1, Math.ceil(extentAlong / maxAlong));
+        } else if (mode === "radial") {
+          const outerR = extentAlong / 2;
+          const innerR = Math.min(Math.max(0, params.innerRadius || 0), outerR * 0.9);
+          suggestions.ringCount = Math.max(1, Math.ceil((outerR - innerR) / maxAlong));
+        } else if (mode === "transverse") {
+          violations[violations.length - 1].noFix = true;
+        }
+      }
+      if (minAcross > 0 && fragAcross < minAcross) {
+        violations.push({ dim: "across", type: "min", frag: fragAcross, limit: minAcross });
+        if (mode === "longitudinal" || mode === "shifted") {
+          suggestions.cols = Math.max(1, Math.floor(extentAcross / minAcross));
+        } else if (mode === "transverse") {
+          suggestions.bandStep = Math.ceil(minAcross);
+        } else if (mode === "radial") {
+          suggestions.sectorCount = Math.max(1, Math.floor(extentAcross / minAcross));
+        }
+      }
+      if (maxAcross > 0 && fragAcross > maxAcross) {
+        violations.push({ dim: "across", type: "max", frag: fragAcross, limit: maxAcross });
+        if (mode === "longitudinal" || mode === "shifted") {
+          suggestions.cols = Math.max(1, Math.ceil(extentAcross / maxAcross));
+        } else if (mode === "transverse") {
+          suggestions.bandStep = Math.floor(maxAcross);
+        } else if (mode === "radial") {
+          suggestions.sectorCount = Math.max(1, Math.ceil(extentAcross / maxAcross));
+        }
+      }
+      if (!violations.length) return null;
+      return { violations, suggestions, fragAlong, fragAcross };
+    }
+
+    function buildFragmentHintHtml(hint, mode) {
+      if (!hint) return "";
+      const fmt = (n) => Math.round(n);
+      const dimLabel = (dim) => dim === "along" ? "вдоль" : "поперёк";
+      const lines = hint.violations.map((v) => {
+        const fragStr = `${fmt(v.frag)} мм`;
+        const limitStr = `${fmt(v.limit)} мм`;
+        if (v.type === "min") return `Фрагмент <b>${fragStr}</b> меньше min ${limitStr} (${dimLabel(v.dim)})`;
+        if (v.noFix) return `Фрагмент <b>${fragStr}</b> > max ${limitStr} (${dimLabel(v.dim)}) — используйте продольную выкладку`;
+        return `Фрагмент <b>${fragStr}</b> > max ${limitStr} (${dimLabel(v.dim)})`;
+      });
+      const hasFix = Object.keys(hint.suggestions).length > 0;
+      const suggParts = [];
+      if (hint.suggestions.rows != null) suggParts.push(`рядов: ${hint.suggestions.rows}`);
+      if (hint.suggestions.cols != null) suggParts.push(`колонок: ${hint.suggestions.cols}`);
+      if (hint.suggestions.bandStep != null) suggParts.push(`шаг: ${hint.suggestions.bandStep} мм`);
+      if (hint.suggestions.ringCount != null) suggParts.push(`колец: ${hint.suggestions.ringCount}`);
+      if (hint.suggestions.sectorCount != null) suggParts.push(`секторов: ${hint.suggestions.sectorCount}`);
+      const suggStr = suggParts.length ? ` Рекомендуется: ${suggParts.join(", ")}.` : "";
+      return `<div class="prop-frag-hint${hint.violations.some(v => v.type === "max") ? " prop-frag-hint--max" : " prop-frag-hint--min"}">
+        <div class="prop-frag-hint-text">${lines.join("<br>")}${suggStr}</div>
+        ${hasFix ? `<button type="button" class="prop-frag-hint-apply" id="fragSizeHintApply">Применить</button>` : ""}
+      </div>`;
+    }
 
     function ensurePropertyEditorUi() {
       if (!state.propertyEditorUi || typeof state.propertyEditorUi !== "object") {
@@ -150,7 +257,7 @@
       const targetNapDeg = ((targetNapRaw % 360) + 360) % 360;
       const napTolRaw = state.layoutRun && state.layoutRun.lastConstraints && Number.isFinite(Number(state.layoutRun.lastConstraints.napToleranceDeg))
         ? Number(state.layoutRun.lastConstraints.napToleranceDeg)
-        : Number((byId("invNapTol") && byId("invNapTol").value) || 15);
+        : Number((byId("invNapTol") || {}).value || 15);
       const napTolDeg = Math.max(0, Math.min(180, Number.isFinite(napTolRaw) ? napTolRaw : 3));
       const napDeltaAbs = selectedPlacement
         ? Math.min(
@@ -216,7 +323,7 @@
         ? getFurMaterialById(String(state.selectedMaterialId || ""))
         : null;
 
-      if (state.uiPanel === "materials") {
+      function renderMaterialsPanel() {
         const selectedMaterialId = String(state.selectedMaterialId || "");
         if (selectedMaterialId && typeof ensureFurMaterialLoaded === "function") {
           void ensureFurMaterialLoaded(selectedMaterialId);
@@ -270,10 +377,9 @@
           `, true)}
         `;
         bindSectionToggles(root);
-        return;
       }
 
-      if (state.uiPanel === "zones") {
+      function renderZoneDetailPanel() {
         if (zone) {
           const zoneNapDeg = typeof getZoneNapDirectionDeg === "function"
             ? Number(getZoneNapDirectionDeg(zone))
@@ -322,8 +428,10 @@
           return;
         }
         root.innerHTML = '<div class="tree-empty">Нет выбранного объекта</div>';
-        return;
       }
+
+      if (state.uiPanel === "materials") { renderMaterialsPanel(); return; }
+      if (state.uiPanel === "zones") { renderZoneDetailPanel(); return; }
 
       if (!selectedLayout) {
         root.innerHTML = '<div class="tree-empty">Выкладка не выбрана</div>';
@@ -569,6 +677,13 @@
       const _matMaxAcrossMm = _zoneMaterial && Number.isFinite(Number(_zoneMaterial.maxWidthMm)) ? Number(_zoneMaterial.maxWidthMm) : null;
       const _fragMinAlongValue = Math.max(10, Number((byId("fragmentMinAlongMm") && byId("fragmentMinAlongMm").value) || 60));
       const _fragMinAcrossValue = Math.max(10, Number((byId("fragmentMinAcrossMm") && byId("fragmentMinAcrossMm").value) || 60));
+      const _napDeg = zone ? Number(zone.napDirectionDeg != null ? zone.napDirectionDeg : (DEFAULT_NAP_DIRECTION_DEG != null ? DEFAULT_NAP_DIRECTION_DEG : 90)) : 90;
+      const _fragHint = isFragmentOnlyRegularLayoutSelected && zone ? computeFragmentSizeHint(zone, _napDeg, currentLayoutMode, {
+        rows: rowsValue, cols: colsValue, bandStep: bandStepValue,
+        ringCount: ringCountValue, sectorCount: sectorCountValue, innerRadius: innerRadiusValue,
+        minAlong: _fragMinAlongValue, minAcross: _fragMinAcrossValue,
+        maxAlong: _matMaxAlongMm || 0, maxAcross: _matMaxAcrossMm || 0
+      }) : null;
       const layoutActionSectionHint = isFragmentOnlyRegularLayoutSelected
         ? ""
         : (isManualLayoutSelected ? "" : `<div class="tree-empty" style="margin-top:6px;">Настройки подбора, preview и применение</div>`);
@@ -579,6 +694,7 @@
           <div class="prop-row prop-row-compact"><div class="prop-label">Резерв под припуски, мм</div><div class="prop-field-compact"><input id="layoutAllowanceInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="0" max="200" step="0.5" value="${Number(allowanceValue).toFixed(1)}"${_lockedAttr}></div></div>
           <div class="prop-row prop-row-compact prop-row-minmax"><div class="prop-label">Вдоль ворса, мм</div><div class="prop-field-minmax"><span class="prop-minmax-lbl">min</span><input id="fragmentMinAlongMm" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="10" max="10000" value="${_fragMinAlongValue}"${_lockedAttr}><span class="prop-minmax-lbl">max</span><input id="fragmentMaxAlongMm" class="prop-input prop-input-compact prop-input-numeric prop-input--locked" type="number" min="0" max="10000" value="${_matMaxAlongMm !== null ? _matMaxAlongMm : ""}" placeholder="из материала" readonly></div></div>
           <div class="prop-row prop-row-compact prop-row-minmax"><div class="prop-label">Поперёк ворса, мм</div><div class="prop-field-minmax"><span class="prop-minmax-lbl">min</span><input id="fragmentMinAcrossMm" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="10" max="10000" value="${_fragMinAcrossValue}"${_lockedAttr}><span class="prop-minmax-lbl">max</span><input id="fragmentMaxAcrossMm" class="prop-input prop-input-compact prop-input-numeric prop-input--locked" type="number" min="0" max="10000" value="${_matMaxAcrossMm !== null ? _matMaxAcrossMm : ""}" placeholder="из материала" readonly></div></div>
+          ${buildFragmentHintHtml(_fragHint, currentLayoutMode)}
           ${currentLayoutMode === "transverse"
             ? `<div class="prop-row prop-row-compact"><div class="prop-label">Оси</div><div class="prop-field-compact"><input id="layoutAxisCountInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="0" max="6" step="1" value="${axisCountValue}"${_lockedAttr}></div></div>
                <div class="prop-row prop-row-compact"><div class="prop-label">Шаг, мм</div><div class="prop-field-compact"><input id="layoutBandStepInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="10" max="5000" step="5" value="${bandStepValue}"${_lockedAttr}></div></div>
@@ -803,21 +919,21 @@
           if (invAllowance) invAllowance.value = n.toFixed(1);
         };
       }
+      const scheduleRegularPreview = () => {
+        if (!isFragmentOnlyRegularLayoutSelected) return;
+        if (typeof markLayoutDirty === "function") markLayoutDirty(selectedLayout, true);
+        if (regularLayoutPreviewTimer) clearTimeout(regularLayoutPreviewTimer);
+        regularLayoutPreviewTimer = setTimeout(() => {
+          regularLayoutPreviewTimer = null;
+          openInventoryStep1(currentLayoutMode);
+        }, 180);
+      };
       const bindMirrorNumberInput = (localId, sharedId, min, max, fallback, decimals = 0) => {
         const localEl = byId(localId);
         const sharedEl = byId(sharedId);
         if (!localEl || !sharedEl) return;
         localEl.disabled = !layoutEditEnabled;
         localEl.readOnly = !layoutEditEnabled;
-        const scheduleRegularPreview = () => {
-          if (!isFragmentOnlyRegularLayoutSelected) return;
-          if (typeof markLayoutDirty === "function") markLayoutDirty(selectedLayout, true);
-          if (regularLayoutPreviewTimer) clearTimeout(regularLayoutPreviewTimer);
-          regularLayoutPreviewTimer = setTimeout(() => {
-            regularLayoutPreviewTimer = null;
-            openInventoryStep1(currentLayoutMode);
-          }, 180);
-        };
         const normalize = () => {
           if (!layoutEditEnabled) return;
           const raw = parseLocaleNumber(localEl.value, null);
@@ -885,14 +1001,27 @@
             }
           }
           syncRadialCenterInputs();
-          if (typeof markLayoutDirty === "function") markLayoutDirty(selectedLayout, true);
-          if (regularLayoutPreviewTimer) clearTimeout(regularLayoutPreviewTimer);
-          regularLayoutPreviewTimer = setTimeout(() => {
-            regularLayoutPreviewTimer = null;
-            openInventoryStep1(currentLayoutMode);
-          }, 180);
+          scheduleRegularPreview();
         };
         syncRadialCenterInputs();
+      }
+      const fragSizeHintApply = byId("fragSizeHintApply");
+      if (fragSizeHintApply && _fragHint && _fragHint.suggestions) {
+        fragSizeHintApply.onclick = () => {
+          const s = _fragHint.suggestions;
+          const setInputPair = (localId, sharedId, val) => {
+            const le = byId(localId), se = byId(sharedId);
+            if (le) le.value = String(val);
+            if (se) se.value = String(val);
+          };
+          if (s.rows != null) setInputPair("layoutRowsInput", "fillRows", s.rows);
+          if (s.cols != null) setInputPair("layoutColsInput", "fillCols", s.cols);
+          if (s.bandStep != null) setInputPair("layoutBandStepInput", "fillBandStep", s.bandStep);
+          if (s.ringCount != null) setInputPair("layoutRingCountInput", "fillRingCount", s.ringCount);
+          if (s.sectorCount != null) setInputPair("layoutSectorCountInput", "fillSectorCount", s.sectorCount);
+          if (typeof markLayoutDirty === "function") markLayoutDirty(selectedLayout, true);
+          if (typeof openInventoryStep1 === "function") openInventoryStep1(currentLayoutMode);
+        };
       }
       renderManualTrayIntoRoot();
     }

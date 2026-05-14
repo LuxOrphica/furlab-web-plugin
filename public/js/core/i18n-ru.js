@@ -100,7 +100,26 @@
     reports_col_inventory: "\u0418\u043d\u0432\u0435\u043d\u0442\u0430\u0440\u043d\u044b\u0439 \u043d\u043e\u043c\u0435\u0440",
     reports_scheme_title_empty: "\u0414\u0435\u0442\u0430\u043b\u044c: -",
     reports_scheme_zone_empty: "\u0417\u043e\u043d\u0430: -",
-    unit_cm: "\u0441\u043c"
+    unit_cm: "\u0441\u043c",
+    display_settings_title: "\u041d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438 \u043e\u0442\u043e\u0431\u0440\u0430\u0436\u0435\u043d\u0438\u044f",
+    display_group_details: "\u0414\u0435\u0442\u0430\u043b\u0438",
+    display_layer_pattern: "\u041a\u043e\u043d\u0442\u0443\u0440\u044b \u043b\u0435\u043a\u0430\u043b",
+    display_layer_minor_contours: "\u041c\u0435\u043b\u043a\u0438\u0435 \u043a\u043e\u043d\u0442\u0443\u0440\u044b",
+    display_layer_detail_labels: "\u041f\u043e\u0434\u043f\u0438\u0441\u0438 \u0434\u0435\u0442\u0430\u043b\u0435\u0439",
+    display_group_fur: "\u041c\u0435\u0445",
+    display_layer_fur: "\u041c\u0435\u0445",
+    display_group_zones: "\u0417\u043e\u043d\u044b",
+    display_layer_zones: "\u0417\u043e\u043d\u044b",
+    display_group_layout: "\u0412\u044b\u043a\u043b\u0430\u0434\u043a\u0430",
+    display_layer_fragments: "\u0424\u0440\u0430\u0433\u043c\u0435\u043d\u0442\u044b",
+    display_layer_seams: "\u0428\u0432\u044b",
+    display_layer_piece_contours: "\u041a\u043e\u043d\u0442\u0443\u0440\u044b \u043a\u0443\u0441\u043a\u043e\u0432",
+    display_layer_piece_seam_reserve: "\u041f\u0440\u0438\u043f\u0443\u0441\u043a \u043a\u0443\u0441\u043a\u0430",
+    display_group_canvas: "\u0425\u043e\u043b\u0441\u0442",
+    display_layer_grid: "\u0421\u0435\u0442\u043a\u0430",
+    display_group_check: "\u041f\u0440\u043e\u0432\u0435\u0440\u043a\u0430",
+    display_layer_holes: "\u0414\u044b\u0440\u043a\u0438",
+    display_layer_intersections: "\u041f\u0435\u0440\u0435\u0441\u0435\u0447\u0435\u043d\u0438\u044f"
   };
 
   function format(template, vars) {

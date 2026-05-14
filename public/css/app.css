@@ -1,4 +1,4 @@
-﻿body { font-family: "Iosevka", "Iosevka Fixed", monospace; margin: 10px; color: #111; padding-bottom: 0; overflow: hidden; }
+body { font-family: "Iosevka", "Iosevka Fixed", monospace; margin: 10px; color: #111; padding-bottom: 0; overflow: hidden; }
     .row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; align-items: center; }
     input[type="text"] { padding: 8px; }
     button, select { padding: 6px 8px; cursor: pointer; }
@@ -341,6 +341,13 @@
       color: #999;
       cursor: default;
       background: #fff;
+    }
+    .zone-context-menu-btn--danger {
+      color: #c0392b;
+    }
+    .zone-context-menu-btn--danger:hover:not(:disabled) {
+      background: #fdf0ef;
+      color: #a93226;
     }
     .zone-context-menu-shortcut {
       color: #777;
@@ -993,6 +1000,34 @@
     .prop-row-minmax { grid-template-columns: minmax(0, 1fr) auto; }
     .prop-field-minmax { display: flex; align-items: center; gap: 3px; }
     .prop-minmax-lbl { font-size: 11px; color: #888; white-space: nowrap; }
+    .prop-frag-hint {
+      margin: 4px 0 2px;
+      padding: 6px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .prop-frag-hint--min {
+      background: #fff8e1;
+      border: 1px solid #f0c040;
+      color: #7a5c00;
+    }
+    .prop-frag-hint--max {
+      background: #fff0ed;
+      border: 1px solid #e8a090;
+      color: #8b2500;
+    }
+    .prop-frag-hint-text { margin-bottom: 4px; }
+    .prop-frag-hint-apply {
+      margin-top: 2px;
+      padding: 2px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      border: 1px solid #888;
+      border-radius: 3px;
+      background: #fff;
+    }
+    .prop-frag-hint-apply:hover { background: #f0f0f0; }
     .prop-row-diagnostic {
       grid-template-columns: 150px minmax(0, 1fr);
       align-items: start;

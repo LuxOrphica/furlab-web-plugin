@@ -122,51 +122,51 @@
         </div>
         <div class="workspace-overlay-tools">
           <details id="displaySettingsPanel">
-            <summary><h3 style="display:inline;">Настройки отображения</h3></summary>
+            <summary><h3 style="display:inline;" data-i18n="display_settings_title">Настройки отображения</h3></summary>
             <div class="row">
               <div class="display-group">
-                <div class="display-group-title">Детали</div>
+                <div class="display-group-title" data-i18n="display_group_details">Детали</div>
                 <ul class="display-list">
-                  <li><label><input id="layerPattern" type="checkbox" checked /><span>Контуры лекал</span></label></li>
-                  <li><label><input id="majorContoursOnly" type="checkbox" /><span>Мелкие контуры</span></label></li>
-                  <li><label><input id="showDetailLabels" type="checkbox" /><span>Подписи деталей</span></label></li>
+                  <li><label><input id="layerPattern" type="checkbox" checked /><span data-i18n="display_layer_pattern">Контуры лекал</span></label></li>
+                  <li><label><input id="majorContoursOnly" type="checkbox" /><span data-i18n="display_layer_minor_contours">Мелкие контуры</span></label></li>
+                  <li><label><input id="showDetailLabels" type="checkbox" /><span data-i18n="display_layer_detail_labels">Подписи деталей</span></label></li>
                 </ul>
               </div>
               <div class="display-group">
-                <div class="display-group-title">Мех</div>
+                <div class="display-group-title" data-i18n="display_group_fur">Мех</div>
                 <ul class="display-list">
-                  <li><label><input id="layerZoneMaterials" type="checkbox" checked /><span>Мех</span></label></li>
+                  <li><label><input id="layerZoneMaterials" type="checkbox" checked /><span data-i18n="display_layer_fur">Мех</span></label></li>
                 </ul>
               </div>
               <div class="display-group">
-                <div class="display-group-title">Зоны</div>
+                <div class="display-group-title" data-i18n="display_group_zones">Зоны</div>
                 <ul class="display-list">
-                  <li><label><input id="layerZones" type="checkbox" checked /><span>Зоны</span></label></li>
+                  <li><label><input id="layerZones" type="checkbox" checked /><span data-i18n="display_layer_zones">Зоны</span></label></li>
                 </ul>
               </div>
               <div class="display-group">
-                <div class="display-group-title">Выкладка</div>
+                <div class="display-group-title" data-i18n="display_group_layout">Выкладка</div>
                 <ul class="display-list">
-                  <li><label><input id="layerPieceBorders" type="checkbox" checked /><span id="layerPieceBordersLabel">Фрагменты</span></label></li>
-                  <li><label><input id="layerVisibleCore" type="checkbox" /><span>Швы</span></label></li>
-                  <li><label><input id="layerPfullZ" type="checkbox" /><span>Контуры кусков</span></label></li>
-                  <li><label><input id="layerPcoreZ" type="checkbox" /><span>Припуск куска</span></label></li>
+                  <li><label><input id="layerPieceBorders" type="checkbox" checked /><span id="layerPieceBordersLabel" data-i18n="display_layer_fragments">Фрагменты</span></label></li>
+                  <li><label><input id="layerVisibleCore" type="checkbox" /><span data-i18n="display_layer_seams">Швы</span></label></li>
+                  <li><label><input id="layerPfullZ" type="checkbox" /><span data-i18n="display_layer_piece_contours">Контуры кусков</span></label></li>
+                  <li><label><input id="layerPcoreZ" type="checkbox" /><span data-i18n="display_layer_piece_seam_reserve">Припуск куска</span></label></li>
                   <li style="display:none;"><label><input id="layerAssignedPieces" type="checkbox" checked /><span id="layerAssignedPiecesLabel"></span></label></li>
                 </ul>
               </div>
               <div class="display-group">
-                <div class="display-group-title">Холст</div>
+                <div class="display-group-title" data-i18n="display_group_canvas">Холст</div>
                 <ul class="display-list">
-                  <li><label><input id="layerGuides" type="checkbox" checked /><span>Сетка</span></label></li>
+                  <li><label><input id="layerGuides" type="checkbox" checked /><span data-i18n="display_layer_grid">Сетка</span></label></li>
                 </ul>
               </div>
               <div class="display-group">
-                <div class="display-group-title">Проверка</div>
+                <div class="display-group-title" data-i18n="display_group_check">Проверка</div>
                 <ul class="display-list">
                   <input id="layerUsedGain" type="checkbox" style="display:none" />
                   <input id="layerVisibleArea" type="checkbox" style="display:none" />
-                  <li><label><input id="layerCoverageHoles" type="checkbox" /><span>Дырки</span></label></li>
-                  <li><label><input id="layerPieceIntersections" type="checkbox" /><span>Пересечения</span></label></li>
+                  <li><label><input id="layerCoverageHoles" type="checkbox" /><span data-i18n="display_layer_holes">Дырки</span></label></li>
+                  <li><label><input id="layerPieceIntersections" type="checkbox" /><span data-i18n="display_layer_intersections">Пересечения</span></label></li>
                 </ul>
               </div>
               <input id="layerSelection" type="checkbox" checked style="display:none" />
