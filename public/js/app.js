@@ -11546,6 +11546,10 @@ function refreshSelectionInfo() {
       if (Array.isArray(project.projectMaterials) && project.projectMaterials.length > 0) {
         state.projectMaterials = project.projectMaterials;
       }
+      // Pre-load fur catalog if any zones have materials so rendering doesn't lag on first renderScene
+      if ((Array.isArray(project.zones) ? project.zones : []).some((z) => z && z.materialId)) {
+        void loadFurMaterialsCatalog();
+      }
       // Migrate: resolve any materialIds on zones that are missing from projectMaterials
       void (async () => {
         const existing = new Set((Array.isArray(state.projectMaterials) ? state.projectMaterials : []).map(m => String(m.id || "")));
