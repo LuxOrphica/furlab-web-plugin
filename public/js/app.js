@@ -3164,6 +3164,20 @@
       const materialName = material && material.name !== undefined && material.name !== null && String(material.name).trim()
         ? String(material.name).trim()
         : null;
+      const zoneId = Number(z.id || 0) || 0;
+      if (zoneId > 0 && z.materialId && Array.isArray(state.layouts)) {
+        const hasFragments = state.layouts.some(
+          (le) => isFragmentOnlyLayoutMode(String(le && le.mode || "")) &&
+            Number(le.boundZoneId || 0) === zoneId &&
+            Array.isArray(le.layoutRun && le.layoutRun.fragments) &&
+            le.layoutRun.fragments.length > 0
+        );
+        if (hasFragments) {
+          if (!confirm("Материал меха изменён. Фрагменты выкладки будут пересчитаны. Продолжить?")) {
+            return { ok: false, error: "cancelled_by_user" };
+          }
+        }
+      }
       const json = await api(`/api/project/zones/${encodeURIComponent(String(Number(z.id || 0) || 0))}/material`, "POST", {
         workspaceKey,
         materialId,
