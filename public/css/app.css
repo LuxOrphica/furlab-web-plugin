@@ -990,6 +990,9 @@
       align-items: center;
       justify-content: flex-end;
     }
+    .prop-row-minmax { grid-template-columns: minmax(0, 1fr) auto; }
+    .prop-field-minmax { display: flex; align-items: center; gap: 3px; }
+    .prop-minmax-lbl { font-size: 11px; color: #888; white-space: nowrap; }
     .prop-row-diagnostic {
       grid-template-columns: 150px minmax(0, 1fr);
       align-items: start;

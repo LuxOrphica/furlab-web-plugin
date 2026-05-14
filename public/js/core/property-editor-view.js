@@ -564,6 +564,11 @@
         `
         : "";
       const layoutActionSectionTitle = isFragmentOnlyRegularLayoutSelected ? "Параметры выкладки" : "Инвентарь";
+      const _zoneMaterial = (zone && zone.materialId && typeof getFurMaterialById === "function") ? getFurMaterialById(zone.materialId) : null;
+      const _matMaxAlongMm = _zoneMaterial && Number.isFinite(Number(_zoneMaterial.maxLengthMm)) ? Number(_zoneMaterial.maxLengthMm) : null;
+      const _matMaxAcrossMm = _zoneMaterial && Number.isFinite(Number(_zoneMaterial.maxWidthMm)) ? Number(_zoneMaterial.maxWidthMm) : null;
+      const _fragMinAlongValue = Math.max(10, Number((byId("fragmentMinAlongMm") && byId("fragmentMinAlongMm").value) || 60));
+      const _fragMinAcrossValue = Math.max(10, Number((byId("fragmentMinAcrossMm") && byId("fragmentMinAcrossMm").value) || 60));
       const layoutActionSectionHint = isFragmentOnlyRegularLayoutSelected
         ? ""
         : (isManualLayoutSelected ? "" : `<div class="tree-empty" style="margin-top:6px;">Настройки подбора, preview и применение</div>`);
@@ -572,6 +577,8 @@
       const layoutActionSectionBody = isFragmentOnlyRegularLayoutSelected
         ? `
           <div class="prop-row prop-row-compact"><div class="prop-label">Резерв под припуски, мм</div><div class="prop-field-compact"><input id="layoutAllowanceInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="0" max="200" step="0.5" value="${Number(allowanceValue).toFixed(1)}"${_lockedAttr}></div></div>
+          <div class="prop-row prop-row-compact prop-row-minmax"><div class="prop-label">Вдоль ворса, мм</div><div class="prop-field-minmax"><span class="prop-minmax-lbl">min</span><input id="fragmentMinAlongMm" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="10" max="10000" value="${_fragMinAlongValue}"${_lockedAttr}><span class="prop-minmax-lbl">max</span><input id="fragmentMaxAlongMm" class="prop-input prop-input-compact prop-input-numeric prop-input--locked" type="number" min="0" max="10000" value="${_matMaxAlongMm !== null ? _matMaxAlongMm : ""}" placeholder="из материала" readonly></div></div>
+          <div class="prop-row prop-row-compact prop-row-minmax"><div class="prop-label">Поперёк ворса, мм</div><div class="prop-field-minmax"><span class="prop-minmax-lbl">min</span><input id="fragmentMinAcrossMm" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="10" max="10000" value="${_fragMinAcrossValue}"${_lockedAttr}><span class="prop-minmax-lbl">max</span><input id="fragmentMaxAcrossMm" class="prop-input prop-input-compact prop-input-numeric prop-input--locked" type="number" min="0" max="10000" value="${_matMaxAcrossMm !== null ? _matMaxAcrossMm : ""}" placeholder="из материала" readonly></div></div>
           ${currentLayoutMode === "transverse"
             ? `<div class="prop-row prop-row-compact"><div class="prop-label">Оси</div><div class="prop-field-compact"><input id="layoutAxisCountInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="0" max="6" step="1" value="${axisCountValue}"${_lockedAttr}></div></div>
                <div class="prop-row prop-row-compact"><div class="prop-label">Шаг, мм</div><div class="prop-field-compact"><input id="layoutBandStepInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="10" max="5000" step="5" value="${bandStepValue}"${_lockedAttr}></div></div>
