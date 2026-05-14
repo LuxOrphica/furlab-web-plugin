@@ -705,9 +705,11 @@
                <div class="prop-row prop-row-compact"><div class="prop-label">Поворот, °</div><div class="prop-field-compact"><input id="layoutSectorRotationInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="-360" max="360" step="1" value="${sectorRotationValue}"${_lockedAttr}></div></div>
                <div class="prop-row prop-row-compact"><div class="prop-label">Внутренний радиус, мм</div><div class="prop-field-compact"><input id="layoutInnerRadiusInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="0" max="5000" step="1" value="${innerRadiusValue}"${_lockedAttr}></div></div>
                <div class="prop-row prop-row-compact"><div class="prop-label">Центр</div><div class="prop-field-compact"><select id="layoutCenterModeInput" class="prop-input prop-input-compact${_lockedCls}"${_lockedAttr}><option value="auto"${centerModeValue === "auto" ? " selected" : ""}>Авто</option><option value="manual"${centerModeValue === "manual" ? " selected" : ""}>Вручную</option></select></div></div>
+               <div id="radialCenterManualFields" style="${centerModeValue === "manual" ? "" : "display:none;"}">
                <div class="tree-empty" style="margin:2px 0 6px; font-size:11px;">При режиме «Вручную» это координаты центра рисунка в мм на рабочем поле.</div>
                <div class="prop-row prop-row-compact"><div class="prop-label">Координата X, мм</div><div class="prop-field-compact"><input id="layoutCenterXInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="-100000" max="100000" step="1" value="${centerXValue}"${_lockedAttr}></div></div>
-               <div class="prop-row prop-row-compact"><div class="prop-label">Координата Y, мм</div><div class="prop-field-compact"><input id="layoutCenterYInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="-100000" max="100000" step="1" value="${centerYValue}"${_lockedAttr}></div></div>`
+               <div class="prop-row prop-row-compact"><div class="prop-label">Координата Y, мм</div><div class="prop-field-compact"><input id="layoutCenterYInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="-100000" max="100000" step="1" value="${centerYValue}"${_lockedAttr}></div></div>
+               </div>`
             : currentLayoutMode === "shifted"
             ? `<div class="prop-row prop-row-compact"><div class="prop-label">Ряды</div><div class="prop-field-compact"><input id="layoutRowsInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="1" max="20" step="1" value="${rowsValue}"${_lockedAttr}></div></div>
                <div class="prop-row prop-row-compact"><div class="prop-label">Колонки</div><div class="prop-field-compact"><input id="layoutColsInput" class="prop-input prop-input-compact prop-input-numeric${_lockedCls}" type="number" min="1" max="20" step="1" value="${colsValue}"${_lockedAttr}></div></div>
@@ -973,13 +975,15 @@
       const layoutCenterYInput = byId("layoutCenterYInput");
       const syncRadialCenterInputs = () => {
         const manual = !!(layoutCenterModeInput && String(layoutCenterModeInput.value || "auto") === "manual");
+        const manualFields = byId("radialCenterManualFields");
+        if (manualFields) manualFields.style.display = manual ? "" : "none";
         if (layoutCenterXInput) {
-          layoutCenterXInput.disabled = !layoutEditEnabled || !manual;
-          layoutCenterXInput.readOnly = !layoutEditEnabled || !manual;
+          layoutCenterXInput.disabled = !layoutEditEnabled;
+          layoutCenterXInput.readOnly = !layoutEditEnabled;
         }
         if (layoutCenterYInput) {
-          layoutCenterYInput.disabled = !layoutEditEnabled || !manual;
-          layoutCenterYInput.readOnly = !layoutEditEnabled || !manual;
+          layoutCenterYInput.disabled = !layoutEditEnabled;
+          layoutCenterYInput.readOnly = !layoutEditEnabled;
         }
       };
       if (layoutCenterModeInput && fillCenterMode) {

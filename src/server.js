@@ -1509,10 +1509,16 @@ function generateRadialFragments(zonePoints, options) {
       const baseMp = pointsToMultiPolygon(base);
       const mp = intersectMulti(baseMp, zoneMp);
       const pieces = multiPolygonOuterRingsToPoints(mp);
+      if (!pieces.length) continue;
+      // Keep only the largest piece per sector — secondary pieces from concave zones
+      // are thin slivers that render as stray lines.
+      let largest = null;
+      let largestArea = 0;
       for (const piece of pieces) {
-        if (polygonArea(piece) < minArea) continue;
-        frags.push(piece);
+        const a = polygonArea(piece);
+        if (a > largestArea) { largestArea = a; largest = piece; }
       }
+      if (largest && largestArea >= minArea) frags.push(largest);
     }
   }
 
