@@ -279,20 +279,17 @@
           const openBtn = document.createElement("button");
           openBtn.type = "button";
           openBtn.className = "layout-list-main";
-          openBtn.draggable = true;
           openBtn.addEventListener("click", async () => {
             state.selectedMaterialId = String(item.id || "");
+            const selectedZone = (Array.isArray(state.zones) ? state.zones : []).find(
+              (z) => Number(z && z.id || 0) === Number(state.selectedZoneId || 0)
+            ) || null;
+            if (selectedZone && typeof assignMaterialToZone === "function") {
+              await assignMaterialToZone(selectedZone, { id: item.id, name: item.name });
+            }
             renderDetailZoneTree();
             renderPropertyEditor();
             renderScene();
-          });
-          openBtn.addEventListener("dragstart", (e) => {
-            const dt = e && e.dataTransfer ? e.dataTransfer : null;
-            if (!dt) return;
-            dt.setData("text/fur-material-id", String(item.id || ""));
-            dt.setData("text/fur-material-name", String(item.name || item.id || ""));
-            dt.effectAllowed = "copy";
-            state.selectedMaterialId = String(item.id || "");
           });
 
           const thumb = document.createElement("div");

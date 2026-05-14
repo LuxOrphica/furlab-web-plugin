@@ -240,6 +240,14 @@
       const selectedPlacement = findPlacementForFragment(selectedFrag || selectedFragId);
       const fragArea = selectedFrag ? polygonArea(selectedFrag.points || []) : 0;
       const fragPerim = selectedFrag ? polylineLength(selectedFrag.points || [], true) : 0;
+      const fragBbox = (() => {
+        const pts = selectedFrag && selectedFrag.points || [];
+        if (!pts.length) return null;
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const p of pts) { if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x; if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y; }
+        return { w: maxX - minX, h: maxY - minY };
+      })();
+      const fragSizeRow = fragBbox ? `<div class="prop-row"><div class="prop-label">Размер, мм</div><div>${fragBbox.w.toFixed(1)} × ${fragBbox.h.toFixed(1)}</div></div>` : "";
       const allowance = parseLocaleNumber(state.layoutRun && state.layoutRun.allowanceMm, null);
       const baseNapDeg = selectedPlacement && Number.isFinite(Number(selectedPlacement.napDirectionDeg))
         ? Number(selectedPlacement.napDirectionDeg)
@@ -448,6 +456,7 @@
             <div class="prop-row"><div class="prop-label">ID фрагмента</div><div>${selectedFragId}</div></div>
             <div class="prop-row"><div class="prop-label">Площадь, мм²</div><div>${fragArea.toFixed(1)}</div></div>
             <div class="prop-row"><div class="prop-label">Периметр, мм</div><div>${fragPerim.toFixed(1)}</div></div>
+            ${fragSizeRow}
           `, true)}
           ${renderEditorSection("fragment_params", "Параметры", `
             <div class="prop-row"><div class="prop-label">Резерв под припуск, мм</div><div>${allowanceText}</div></div>
@@ -473,6 +482,7 @@
             <div class="prop-row"><div class="prop-label">ID фрагмента</div><div>${selectedFragId}</div></div>
             <div class="prop-row"><div class="prop-label">Площадь, мм²</div><div>${fragArea.toFixed(1)}</div></div>
             <div class="prop-row"><div class="prop-label">Периметр, мм</div><div>${fragPerim.toFixed(1)}</div></div>
+            ${fragSizeRow}
             <div class="prop-row"><div class="prop-label">Резерв под припуск, мм</div><div>${allowanceText}</div></div>
             <div class="prop-row"><div class="prop-label">Режим</div><div>${selectedLayoutModeTitle}</div></div>
           `, true)}
@@ -483,6 +493,7 @@
             <div class="prop-row"><div class="prop-label">ID фрагмента</div><div>${selectedFragId}</div></div>
             <div class="prop-row"><div class="prop-label">Площадь, мм²</div><div>${fragArea.toFixed(1)}</div></div>
             <div class="prop-row"><div class="prop-label">Периметр, мм</div><div>${fragPerim.toFixed(1)}</div></div>
+            ${fragSizeRow}
           `, true)}
           ${renderEditorSection("fragment_inventory", "Инвентарь", `
             <div class="prop-row"><div class="prop-label">Инвентарный номер</div><div>${selectedPlacement && selectedPlacement.inventoryTag ? selectedPlacement.inventoryTag : "-"}</div></div>

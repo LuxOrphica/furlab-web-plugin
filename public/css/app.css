@@ -1828,16 +1828,22 @@ body { font-family: "Iosevka", "Iosevka Fixed", monospace; margin: 10px; color: 
 
     .reports-print-all { display: none; }
     .reports-print-section { margin-bottom: 32px; }
+    .reports-print-header { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 8px; }
+    .reports-print-header-text { flex: 1; }
+    .reports-print-scheme { flex-shrink: 0; }
 
     @media print {
+      @page { size: A4 portrait; margin: 12mm; }
       body > *:not(#reportsBackdrop) { display: none !important; }
       #reportsBackdrop { display: block !important; position: static !important; background: none !important; }
       .reports-modal { width: 100% !important; max-height: none !important; border: none !important; box-shadow: none !important; }
-      .reports-modal-head, .reports-modal-actions, .reports-topbar, .reports-scheme-wrap, .reports-content, .reports-detail-heading, .reports-summary { display: none !important; }
+      .reports-modal-head, .reports-modal-actions, .reports-topbar, .reports-scheme-wrap, .reports-content, #reportsDetailHeading, #reportsSummary { display: none !important; }
       .reports-modal-body { overflow: visible !important; max-height: none !important; padding: 0 !important; }
       .reports-print-all { display: block !important; }
       .reports-print-section { page-break-after: always; }
       .reports-print-section:last-child { page-break-after: avoid; }
+      .reports-print-header { display: flex !important; flex-direction: row-reverse !important; align-items: flex-start !important; gap: 16px !important; }
+      .reports-print-header-text { flex: 1 !important; }
       .reports-detail-heading { display: block !important; margin: 8px 0 4px !important; }
       .reports-summary { display: block !important; margin-bottom: 8px !important; }
     }

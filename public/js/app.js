@@ -458,6 +458,36 @@
         : "";
       return `<svg class="reports-thumb" viewBox="0 0 44 34" aria-hidden="true">${piecePath}${cutPath}${corePath}</svg>`;
     }
+    function buildReportsSchemeSvg(rows, vw, vh) {
+      const list = Array.isArray(rows) ? rows : [];
+      const first = list[0] || null;
+      if (!first || !Array.isArray(first.zonePoints) || first.zonePoints.length < 3) return "";
+      const zonePts = normalizeContourArrayForReports(first.zonePoints) || [];
+      const allPts = zonePts.concat(...list.map((r) => Array.isArray(r.points) ? r.points : []));
+      let minX = Number.POSITIVE_INFINITY, minY = Number.POSITIVE_INFINITY;
+      let maxX = Number.NEGATIVE_INFINITY, maxY = Number.NEGATIVE_INFINITY;
+      for (const p of allPts) {
+        const x = Number(p && p.x), y = Number(p && p.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+        minX = Math.min(minX, x); minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
+      }
+      if (!Number.isFinite(minX)) return "";
+      const w = Math.max(1, maxX - minX), h = Math.max(1, maxY - minY);
+      const pad = 12;
+      const s = Math.min((vw - pad * 2) / w, (vh - pad * 2) / h);
+      const mapPt = (p) => ({ x: ((Number(p.x) - minX) * s + pad), y: ((maxY - Number(p.y)) * s + pad) });
+      const pathOf = (pts) => pts.map((p, i) => { const q = mapPt(p); return `${i === 0 ? "M" : "L"}${q.x.toFixed(2)},${q.y.toFixed(2)}`; }).join(" ") + " Z";
+      const zonePath = pathOf(zonePts);
+      const clipId = `zclip_p_${Math.random().toString(36).slice(2)}`;
+      const fragPaths = list.map((r) => {
+        const d = pathOf(r.points);
+        const c = centroid(r.points);
+        const cc = mapPt(c);
+        return `<path d="${d}" fill="#ececec" stroke="#555" stroke-width="0.7"/><text x="${cc.x.toFixed(2)}" y="${cc.y.toFixed(2)}" font-size="10" text-anchor="middle" dominant-baseline="middle" fill="#111">${r.fragmentNo}</text>`;
+      }).join("");
+      return `<svg class="reports-scheme-svg" viewBox="0 0 ${vw} ${vh}" style="width:${vw}px;height:${vh}px"><defs><clipPath id="${clipId}"><path d="${zonePath}"/></clipPath></defs><path d="${zonePath}" fill="#f8f8f8" stroke="#111" stroke-width="1.5"/><g clip-path="url(#${clipId})">${fragPaths}</g><path d="${zonePath}" fill="none" stroke="#111" stroke-width="1.5"/></svg>`;
+    }
     function renderReportsScheme(rows, detailId) {
       const box = byId("reportsSchemeBox");
       const title = byId("reportsSchemeTitle");
@@ -620,9 +650,15 @@
             ${showInventoryCol ? `<td>${escapeHtml(r.inventoryTag)}</td>` : ""}
           </tr>`;
         }).join("");
+        const schemeSvg = buildReportsSchemeSvg(rows, 220, 300);
         return `<div class="reports-print-section">
-          <div class="reports-detail-heading">Деталь ${detailId}</div>
-          <div class="reports-summary">Зона: ${zoneId} | Фрагментов: ${rows.length} | Пл. ядра: ${totalArea.toFixed(1)} мм² | Пл. раскроя: ${totalCutArea.toFixed(1)} мм²</div>
+          <div class="reports-print-header">
+            <div class="reports-print-header-text">
+              <div class="reports-detail-heading">Деталь ${detailId}</div>
+              <div class="reports-summary">Зона: ${zoneId} | Фрагментов: ${rows.length} | Пл. ядра: ${totalArea.toFixed(1)} мм² | Пл. раскроя: ${totalCutArea.toFixed(1)} мм²</div>
+            </div>
+            ${schemeSvg ? `<div class="reports-print-scheme">${schemeSvg}</div>` : ""}
+          </div>
           <table class="reports-table">
             <thead><tr>
               <th>Рис.</th><th>Направление ворса</th><th>Фрагмент</th><th>Материал меха</th>
@@ -3198,9 +3234,11 @@
         materialName
       }, 20000);
         if (json && json.ok) {
-          const savedZones = Array.isArray(json.zones) ? json.zones : [];
-          state.zones = savedZones;
-          state.nextZoneId = savedZones.reduce((maxId, item) => Math.max(maxId, Number(item && item.id || 0)), 0) + 1;
+          const targetZone = state.zones.find((z2) => Number(z2 && z2.id || 0) === zoneId);
+          if (targetZone) {
+            targetZone.materialId = materialId || undefined;
+            targetZone.materialName = materialName || undefined;
+          }
           if (materialId) ensureProjectMaterialEntry({ id: materialId, name: materialName });
           const changedZoneId = Number(z.id || 0) || 0;
           if (changedZoneId > 0 && Array.isArray(state.layouts)) {
@@ -3243,7 +3281,7 @@
       ensureProjectMaterialEntry(material);
       state.selectedMaterialId = id;
       await loadFurMaterialDetails(id);
-      const zoneId = Number(state.pendingZoneMaterialZoneId || 0) || 0;
+      const zoneId = Number(state.pendingZoneMaterialZoneId || state.selectedZoneId || 0) || 0;
       if (zoneId > 0) {
         const zone = state.zones.find((item) => Number(item && item.id || 0) === zoneId) || null;
         if (zone) {
@@ -8754,10 +8792,10 @@ function renderSplitEvents(events) {
             napPolicy: "normal",
             napWeight: 1.0,
             allowFlip180: false,
-            minAlongMm: null,
-            maxAlongMm: null,
-            minAcrossMm: null,
-            maxAcrossMm: null,
+            minAlongMm: fragmentMinAlongMm || null,
+            maxAlongMm: fragmentMaxAlongMm || null,
+            minAcrossMm: fragmentMinAcrossMm || null,
+            maxAcrossMm: fragmentMaxAcrossMm || null,
             minAreaMm2: Number(byId("invMinArea").value || 0),
             maxAreaMm2: null,
             minCoverageRatio: 0.75
@@ -8839,10 +8877,10 @@ function renderSplitEvents(events) {
           napPolicy: "normal",
           napWeight: 1.0,
           allowFlip180: false,
-          minAlongMm: null,
-          maxAlongMm: null,
-          minAcrossMm: null,
-          maxAcrossMm: null,
+          minAlongMm: fragmentMinAlongMm || null,
+          maxAlongMm: fragmentMaxAlongMm || null,
+          minAcrossMm: fragmentMinAcrossMm || null,
+          maxAcrossMm: fragmentMaxAcrossMm || null,
           minAreaMm2: Number(byId("invMinArea").value || 0),
           maxAreaMm2: null,
           minCoverageRatio: 0.75,
@@ -10102,7 +10140,7 @@ function renderSplitEvents(events) {
 
       if (state.layers.zones) {
         if (state.layers.zoneMaterials && (!Array.isArray(state.furMaterialsCatalog) || state.furMaterialsCatalog.length === 0) && state.zones.some((z) => z && z.materialId)) {
-          loadFurMaterialsCatalog().then(() => renderScene()).catch(() => {});
+          loadFurMaterialsCatalog().then(() => { renderScene(); renderPropertyEditor(); }).catch(() => {});
         }
         for (const z of state.zones) {
           const zoneMaterial = state.layers.zoneMaterials ? getFurMaterialById(z && z.materialId) : null;
@@ -10589,6 +10627,7 @@ function refreshSelectionInfo() {
         renderDetailZoneTree();
         renderPropertyEditor();
         renderScene();
+        void persistZonesForCurrentWorkspace();
         return true;
       } catch (e) {
         state.patternGeometry = null;
@@ -11302,54 +11341,6 @@ function refreshSelectionInfo() {
       stageInteractions.attach();
     }
 
-    (function bindMaterialAssignmentDnD() {
-      const workspace = byId("workspace");
-      if (!workspace || workspace.__furMaterialDndBound) return;
-      workspace.addEventListener("dragover", (e) => {
-        const dt = e.dataTransfer;
-        const types = dt && dt.types ? Array.from(dt.types) : [];
-        if (!types.includes("text/fur-material-id")) return;
-        e.preventDefault();
-        if (dt) dt.dropEffect = "copy";
-        const rect = workspace.getBoundingClientRect();
-        const sx = Number(e.clientX) - Number(rect.left);
-        const sy = Number(e.clientY) - Number(rect.top);
-        const world = screenToWorld(sx, sy);
-        const hitZone = findZoneAt(world);
-        if (hitZone && Number(hitZone.id || 0) > 0) {
-          state.selectedZoneId = Number(hitZone.id || 0) || null;
-          if (Number(hitZone.detailId || 0) > 0) state.selectedDetailId = Number(hitZone.detailId || 0);
-          const info = byId("workspaceInfo");
-          if (info) info.textContent = `Назначить мех "${String(dt.getData("text/fur-material-name") || dt.getData("text/fur-material-id") || "").trim()}" зоне "${String(hitZone.name || `Зона ${hitZone.id}`)}"`;
-          renderScene();
-        }
-      });
-      workspace.addEventListener("drop", async (e) => {
-        const dt = e.dataTransfer;
-        if (!dt) return;
-        const materialId = String(dt.getData("text/fur-material-id") || "").trim();
-        if (!materialId) return;
-        e.preventDefault();
-        const rect = workspace.getBoundingClientRect();
-        const sx = Number(e.clientX) - Number(rect.left);
-        const sy = Number(e.clientY) - Number(rect.top);
-        const world = screenToWorld(sx, sy);
-        const hitZone = findZoneAt(world);
-        if (!hitZone || Number(hitZone.id || 0) <= 0) {
-          const info = byId("workspaceInfo");
-          if (info) info.textContent = "Мех не назначен: бросьте карточку прямо на зону.";
-          return;
-        }
-        state.selectedZoneId = Number(hitZone.id || 0) || null;
-        if (Number(hitZone.detailId || 0) > 0) state.selectedDetailId = Number(hitZone.detailId || 0);
-        const materialName = String(dt.getData("text/fur-material-name") || materialId).trim() || materialId;
-        await assignMaterialToZone(hitZone, { id: materialId, name: materialName });
-        renderDetailZoneTree();
-        renderPropertyEditor();
-        renderScene();
-      });
-      workspace.__furMaterialDndBound = true;
-    })();
 
     const importPreviewControllerApi = window.FurLabImportPreviewController || {};
     const importPreviewController = (typeof importPreviewControllerApi.createImportPreviewController === "function")
