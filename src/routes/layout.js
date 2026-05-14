@@ -2762,12 +2762,39 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
 
     const zoneMp = pointsToMultiPolygon(zonePoints);
 
+    function ringToPoints(ring) {
+      return (ring || []).map((p) => Array.isArray(p) ? { x: p[0], y: p[1] } : p)
+        .filter((p) => Number.isFinite(Number(p.x)) && Number.isFinite(Number(p.y)));
+    }
+    function bridgeHoles(outer, holes) {
+      // Convert polygon-with-holes to a simple polygon by bridging each hole
+      // to the outer ring at the nearest pair of points.
+      let result = outer.slice();
+      for (const hole of holes) {
+        if (!hole || hole.length < 3) continue;
+        let bestDist = Infinity, bestOi = 0, bestHi = 0;
+        for (let oi = 0; oi < result.length; oi++) {
+          for (let hi = 0; hi < hole.length; hi++) {
+            const dx = result[oi].x - hole[hi].x, dy = result[oi].y - hole[hi].y;
+            const d = dx * dx + dy * dy;
+            if (d < bestDist) { bestDist = d; bestOi = oi; bestHi = hi; }
+          }
+        }
+        // Insert bridge: outer[0..oi] + hole[hi..end] + hole[0..hi] + outer[oi..end]
+        const rotatedHole = hole.slice(bestHi).concat(hole.slice(0, bestHi + 1));
+        result = result.slice(0, bestOi + 1).concat(rotatedHole).concat(result.slice(bestOi));
+      }
+      return result;
+    }
     function mpToPointsArray(mp) {
       const result = [];
       if (!Array.isArray(mp)) return result;
       for (const poly of mp) {
-        const ring = Array.isArray(poly) && Array.isArray(poly[0]) ? poly[0] : (Array.isArray(poly) ? poly : []);
-        const flat = ring.map((p) => Array.isArray(p) ? { x: p[0], y: p[1] } : p).filter((p) => Number.isFinite(Number(p.x)) && Number.isFinite(Number(p.y)));
+        if (!Array.isArray(poly) || !poly.length) continue;
+        const outer = ringToPoints(poly[0]);
+        if (outer.length < 3) continue;
+        const holes = poly.slice(1).map(ringToPoints).filter((h) => h.length >= 3);
+        const flat = holes.length ? bridgeHoles(outer, holes) : outer;
         if (flat.length >= 3) result.push(flat);
       }
       return result;
