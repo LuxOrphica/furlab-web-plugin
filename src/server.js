@@ -12,6 +12,7 @@ const { handleDictRoutes } = require("./routes/dicts");
 const { handleFurMaterialRoutes } = require("./routes/fur_materials");
 const { handleZoneRoutes } = require("./routes/zones");
 const { handleProjectRoutes } = require("./routes/projects");
+const { handleInventoryReservationRoutes } = require("./routes/inventory_reservation");
 const { handleExportRoutes } = require("./routes/export");
 const { createZoneStore } = require("./services/zone_store");
 const {
@@ -3863,7 +3864,24 @@ const server = http.createServer(async (req, res) => {
       await handleProjectRoutes(req, res, reqUrl, {
         jsonReply,
         readBodyJson,
-        ROOT_DIR
+        ROOT_DIR,
+        TMP_DIR,
+        DB_PATH,
+        runCscript,
+        parseScriptJson
+      });
+      if (res.writableEnded) return;
+    }
+
+    {
+      await handleInventoryReservationRoutes(req, res, reqUrl, {
+        jsonReply,
+        readBodyJson,
+        ROOT_DIR,
+        TMP_DIR,
+        DB_PATH,
+        runCscript,
+        parseScriptJson
       });
       if (res.writableEnded) return;
     }

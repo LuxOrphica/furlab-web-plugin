@@ -4,7 +4,27 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
+const { reserveScrapPieces, releaseScrapReservations } = require("./inventory_reservation");
+
 const PROJECTS_DIR = "projects";
+
+/**
+ * Collect all scrapPieceIds from layouts that have inventory placements.
+ * Returns Map<layoutId, string[]>.
+ */
+function collectLayoutReservations(layouts) {
+  const result = new Map();
+  if (!Array.isArray(layouts)) return result;
+  for (const layout of layouts) {
+    const layoutId = String(layout && layout.id || "");
+    const placements = Array.isArray(layout && layout.placements) ? layout.placements : [];
+    const ids = placements
+      .filter((p) => p && String(p.status || "") === "matched" && String(p.scrapPieceId || ""))
+      .map((p) => String(p.scrapPieceId));
+    if (ids.length > 0) result.set(layoutId, ids);
+  }
+  return result;
+}
 
 function getProjectsDir(rootDir) {
   const dir = path.join(rootDir, "data", PROJECTS_DIR);
@@ -44,6 +64,7 @@ function listProjects(rootDir) {
 
 async function handleProjectRoutes(req, res, reqUrl, deps) {
   const { jsonReply, readBodyJson, ROOT_DIR } = deps;
+  // deps may optionally carry DB_PATH, TMP_DIR, runCscript, parseScriptJson for reservation calls
 
   if (req.method === "GET" && reqUrl.pathname === "/api/projects") {
     jsonReply(res, 200, { ok: true, items: listProjects(ROOT_DIR) });
@@ -73,6 +94,16 @@ async function handleProjectRoutes(req, res, reqUrl, deps) {
       try { fs.copyFileSync(filePath, backup); } catch (_) {}
     }
     fs.writeFileSync(filePath, JSON.stringify(project, null, 2), "utf8");
+
+    // Reserve scrap pieces referenced by inventory placements in all layouts.
+    // Runs asynchronously after save response is sent — errors are non-fatal.
+    try {
+      const layoutReservations = collectLayoutReservations(project.layouts);
+      for (const [layoutId, pieceIds] of layoutReservations) {
+        reserveScrapPieces(id, layoutId, pieceIds, deps);
+      }
+    } catch (_) {}
+
     jsonReply(res, 200, { ok: true, id, updatedAt: now });
     return true;
   }
@@ -97,6 +128,10 @@ async function handleProjectRoutes(req, res, reqUrl, deps) {
     const dir = getProjectsDir(ROOT_DIR);
     const filePath = path.join(dir, `${id}.json`);
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+    // Release all active reservations for the deleted project (non-fatal).
+    try { releaseScrapReservations(id, null, deps); } catch (_) {}
+
     jsonReply(res, 200, { ok: true });
     return true;
   }
