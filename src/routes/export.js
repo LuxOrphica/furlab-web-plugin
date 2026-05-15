@@ -369,7 +369,8 @@ async function handleExportRoutes(req, res, reqUrl, deps) {
         materialId: f.materialId,
         napDirectionDeg: f.napDirectionDeg,
         areaMm2: f.areaMm2,
-        dxfPath: `fragments/${String((zoneMap.get(f.zoneId) && zoneMap.get(f.zoneId).name || `zone_${f.zoneId}`)).replace(/[^a-zA-Z0-9а-яА-Я_\-]/g, "_")}/${f.id}.dxf`
+        dxfPath: `fragments/${String((zoneMap.get(f.zoneId) && zoneMap.get(f.zoneId).name || `zone_${f.zoneId}`)).replace(/[^a-zA-Z0-9а-яА-Я_\-]/g, "_")}/${f.id}.dxf`,
+        points: f.points
       })),
       seams: seams.map((s) => ({
         fragmentIds: s.fragmentIds,
