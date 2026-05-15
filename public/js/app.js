@@ -3980,6 +3980,20 @@
         byId("workspaceInfo").textContent = "Линия не разделила зону на две корректные части.";
         return false;
       }
+      const boundLayouts = (Array.isArray(state.layouts) ? state.layouts : []).filter(
+        (l) => l && Number(l.boundZoneId || 0) === Number(zone.id)
+      );
+      if (boundLayouts.length > 0) {
+        const names = boundLayouts.map((l) => String(l.name || l.mode || l.id)).join(", ");
+        const ok = window.confirm(
+          `У зоны «${zone.name || zone.id}» есть выкладк${boundLayouts.length === 1 ? "а" : "и"}: ${names}.\n\nПри разделении зоны ${boundLayouts.length === 1 ? "она будет удалена" : "они будут удалены"}. Продолжить?`
+        );
+        if (!ok) {
+          state.draftSplitLine = [];
+          renderScene();
+          return false;
+        }
+      }
       const [newIdA, newIdB] = zoneSplitDerivedIds(zone.id);
       state.nextZoneId = Math.max(Number(state.nextZoneId || 1), newIdA + 1, newIdB + 1);
       const sortedParts = parts
@@ -11764,9 +11778,31 @@ function refreshSelectionInfo() {
     byId("openProjectBtn").onclick = () => openProjectPicker();
     byId("projectPickerCloseBtn").onclick = () => { byId("projectPickerBackdrop").style.display = "none"; };
     byId("projectPickerCancelBtn").onclick = () => { byId("projectPickerBackdrop").style.display = "none"; };
-    byId("projectPickerNewBtn").onclick = () => {
+    byId("projectPickerNewBtn").onclick = async () => {
       byId("projectPickerBackdrop").style.display = "none";
-      byId("importTopBtn").click();
+      try {
+        // Open native Windows file dialog via server (always appears on top)
+        const pickRes = await api("/api/import/dxf/pick-files", "POST", {}, 5 * 60 * 1000);
+        if (!pickRes || !pickRes.ok || !Array.isArray(pickRes.files) || !pickRes.files.length) return;
+        // Run preview with server-side file paths directly
+        const previewRes = await api("/api/import/dxf/preview", "POST", { files: pickRes.files });
+        if (!previewRes || !previewRes.ok) {
+          const wi = byId("workspaceInfo"); if (wi) wi.textContent = `Ошибка preview: ${previewRes && previewRes.error || "unknown"}`;
+          return;
+        }
+        previewToken = previewRes.token || "";
+        previewItems = Array.isArray(previewRes.items) ? previewRes.items : [];
+        discoveredFiles = pickRes.files;
+        previewSourceType = "dxf";
+        selectedIndexes = new Set(); activePreviewIndex = null;
+        updateModeUi();
+        renderPreviewTable();
+        const firstReady = previewItems.filter((x) => x && x.isReadyForCommit === true);
+        if (firstReady.length) await autoLoadFirstGeometry(firstReady);
+        else { state.patternGeometry = null; renderScene(); }
+      } catch (e) {
+        const wi = byId("workspaceInfo"); if (wi) wi.textContent = `Ошибка импорта: ${e && e.message ? e.message : "unknown"}`;
+      }
     };
 
     byId("saveProjectBtn").onclick = () => {
