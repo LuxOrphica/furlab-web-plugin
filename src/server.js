@@ -3865,7 +3865,10 @@ const server = http.createServer(async (req, res) => {
     {
       await handleExportRoutes(req, res, reqUrl, {
         jsonReply,
-        readBodyJson
+        readBodyJson,
+        ROOT_DIR,
+        psPathLiteral,
+        runPowerShell
       });
       if (res.writableEnded) return;
     }

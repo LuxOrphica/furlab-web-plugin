@@ -68,6 +68,46 @@ function listProjects(rootDir) {
   return projects.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 }
 
+function syncLayoutsToDb(project, deps) {
+  const { ROOT_DIR, TMP_DIR, DB_PATH, runCscript, parseScriptJson } = deps || {};
+  if (!DB_PATH || !fs.existsSync(DB_PATH)) return;
+  const layouts = Array.isArray(project && project.layouts) ? project.layouts : [];
+  const parts   = Array.isArray(project && project.parts)   ? project.parts   : [];
+  const zones   = Array.isArray(project && project.zones)   ? project.zones   : [];
+  if (!parts.length && !zones.length && !layouts.length) return;
+
+  // Pre-serialize nested objects so CScript (WSH JScript) doesn't need JSON.stringify
+  const normalizedLayouts = layouts.map((lay) => ({
+    id: lay.id,
+    zoneId: lay.zoneId,
+    layoutType: lay.layoutType,
+    paramsJson: lay.params != null ? JSON.stringify(lay.params) : null,
+    runs: (Array.isArray(lay.runs) ? lay.runs : []).map((run) => ({
+      id: run.id,
+      startedAt: run.startedAt,
+      paramsSnapshot: run.paramsSnapshot != null ? JSON.stringify(run.paramsSnapshot) : null,
+      resultSnapshot: run.resultSnapshot != null ? JSON.stringify(run.resultSnapshot) : null,
+      scrapPlacements: Array.isArray(run.scrapPlacements) ? run.scrapPlacements : []
+    }))
+  }));
+
+  const payloadPath = path.join(TMP_DIR || ROOT_DIR, `layout_sync_${Date.now()}.json`);
+  fs.writeFileSync(payloadPath, JSON.stringify({ parts, zones, layouts: normalizedLayouts }), "utf8");
+  const scriptPath = path.join(ROOT_DIR, "scripts", "access_upsert_layout_run.js");
+  const exec = runCscript(scriptPath, [DB_PATH, payloadPath], 60000);
+  try { fs.unlinkSync(payloadPath); } catch (_) {}
+  try {
+    const result = parseScriptJson && parseScriptJson(exec.stdout);
+    if (result && result.ok) {
+      console.log(`[projects] DB layout sync: parts=${result.parts} zones=${result.zones} layouts=${result.layouts} runs=${result.runs} placements=${result.placements}`);
+    } else {
+      console.warn("[projects] DB layout sync failed:", exec.stderr || exec.stdout || (result && result.error));
+    }
+  } catch (e) {
+    console.warn("[projects] DB layout sync parse error:", e && e.message, "stdout:", exec.stdout);
+  }
+}
+
 async function handleProjectRoutes(req, res, reqUrl, deps) {
   const { jsonReply, readBodyJson, ROOT_DIR } = deps;
   // deps may optionally carry DB_PATH, TMP_DIR, runCscript, parseScriptJson for reservation calls
@@ -109,6 +149,9 @@ async function handleProjectRoutes(req, res, reqUrl, deps) {
         reserveScrapPieces(id, layoutId, pieceIds, deps);
       }
     } catch (_) {}
+
+    // Sync parts, zones, layouts to Access DB — non-fatal.
+    try { syncLayoutsToDb(project, deps); } catch (_) {}
 
     jsonReply(res, 200, { ok: true, id, updatedAt: now });
     return true;

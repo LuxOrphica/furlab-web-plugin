@@ -168,7 +168,7 @@ function makeZipEntry(name, data) {
 
   const localHeader = Buffer.concat([
     Buffer.from("504b0304", "hex"),
-    uint16LE(20), uint16LE(0), uint16LE(8),
+    uint16LE(20), uint16LE(0x0800), uint16LE(8),
     uint16LE(dosTime), uint16LE(dosDate),
     uint32LE(crc),
     uint32LE(compressed.length),
@@ -199,7 +199,7 @@ function buildZip(files) {
     const e = entries[i];
     const cd = Buffer.concat([
       Buffer.from("504b0102", "hex"),
-      uint16LE(20), uint16LE(20), uint16LE(0), uint16LE(8),
+      uint16LE(20), uint16LE(20), uint16LE(0x0800), uint16LE(8),
       uint16LE(e.dosTime), uint16LE(e.dosDate),
       uint32LE(e.crc),
       uint32LE(e.compressedSize),
@@ -281,11 +281,15 @@ function buildExportPayload(body) {
   const allSeams = [];
   for (const [, seams] of seamsByZone) allSeams.push(...seams);
 
-  // Collect used materials
+  // Collect used materials — normalise IDs by stripping curly braces for lookup
+  const normId = (id) => String(id || "").replace(/^\{|\}$/g, "");
+  const normMaterials = {};
+  for (const [k, v] of Object.entries(materials || {})) normMaterials[normId(k)] = v;
+
   const usedMaterialIds = new Set(resultFragments.map((f) => f.materialId).filter(Boolean));
   const exportMaterials = [];
   for (const mid of usedMaterialIds) {
-    const m = materials[mid];
+    const m = normMaterials[normId(mid)];
     if (m) exportMaterials.push({ materialId: mid, ...m });
     else exportMaterials.push({ materialId: mid });
   }
@@ -309,7 +313,7 @@ function buildExportPayload(body) {
 // ---------------------------------------------------------------------------
 
 async function handleExportRoutes(req, res, reqUrl, deps) {
-  const { jsonReply, readBodyJson } = deps;
+  const { jsonReply, readBodyJson, psPathLiteral, runPowerShell } = deps;
 
   if (req.method === "POST" && reqUrl.pathname === "/api/export/patterns/preview") {
     const body = await readBodyJson(req);
@@ -407,12 +411,79 @@ async function handleExportRoutes(req, res, reqUrl, deps) {
 
     const zip = buildZip(files);
 
+    // If client requested save-dialog mode, use native SaveFileDialog
+    if (body._saveDialog) {
+      const defaultName = `furlab_export_${new Date().toISOString().slice(0,10)}.zip`;
+      const initialDir = deps.ROOT_DIR || "C:\\";
+      if (!psPathLiteral || !runPowerShell) {
+        jsonReply(res, 500, { ok: false, error: "save_dialog_not_available" });
+        return true;
+      }
+      const ps = [
+        "$ErrorActionPreference='Stop'",
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+        "$OutputEncoding = [System.Text.Encoding]::UTF8",
+        "Add-Type -AssemblyName System.Windows.Forms",
+        "$dlg = New-Object System.Windows.Forms.SaveFileDialog",
+        "$dlg.Filter = 'ZIP archive (*.zip)|*.zip|All files (*.*)|*.*'",
+        `$dlg.FileName = '${defaultName}'`,
+        `$dlg.InitialDirectory = '${psPathLiteral(initialDir)}'`,
+        "$dlg.Title = 'Сохранить экспорт FURLAB'",
+        "$res = $dlg.ShowDialog()",
+        "if ($res -eq [System.Windows.Forms.DialogResult]::OK) {",
+        "  @{ ok = $true; path = $dlg.FileName } | ConvertTo-Json -Compress",
+        "} else {",
+        "  @{ ok = $false; path = '' } | ConvertTo-Json -Compress",
+        "}"
+      ].join("; ");
+      const exec = runPowerShell(ps, 300000);
+      if (exec.run.error || exec.run.status !== 0) {
+        jsonReply(res, 500, { ok: false, error: "save_dialog_failed", stderr: exec.stderr });
+        return true;
+      }
+      let parsed;
+      try { parsed = JSON.parse(exec.stdout.trim()); } catch (e) {
+        jsonReply(res, 500, { ok: false, error: "save_dialog_parse_failed" });
+        return true;
+      }
+      if (!parsed.ok || !parsed.path) {
+        jsonReply(res, 200, { ok: false, cancelled: true });
+        return true;
+      }
+      fs.writeFileSync(parsed.path, zip);
+      jsonReply(res, 200, { ok: true, savedTo: parsed.path });
+      return true;
+    }
+
+    // Save a copy as last_export.zip so CLO import script can fetch it
+    try {
+      const lastZipPath = path.join(deps.TMP_DIR || path.join(deps.ROOT_DIR, "tmp"), "last_export.zip");
+      fs.writeFileSync(lastZipPath, zip);
+    } catch (_) {}
+
     res.writeHead(200, {
       "Content-Type": "application/zip",
       "Content-Disposition": `attachment; filename="furlab_export_${Date.now()}.zip"`,
       "Content-Length": String(zip.length)
     });
     res.end(zip);
+    return true;
+  }
+
+  // Serve last export ZIP for CLO import script
+  if (req.method === "GET" && reqUrl.pathname === "/api/export/latest-zip") {
+    const lastZipPath = path.join(deps.TMP_DIR || path.join(deps.ROOT_DIR, "tmp"), "last_export.zip");
+    if (!fs.existsSync(lastZipPath)) {
+      jsonReply(res, 404, { ok: false, error: "no_export_yet" });
+      return true;
+    }
+    const data = fs.readFileSync(lastZipPath);
+    res.writeHead(200, {
+      "Content-Type": "application/zip",
+      "Content-Disposition": 'attachment; filename="furlab_export_latest.zip"',
+      "Content-Length": String(data.length)
+    });
+    res.end(data);
     return true;
   }
 

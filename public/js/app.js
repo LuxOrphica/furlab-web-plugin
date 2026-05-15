@@ -8111,6 +8111,7 @@ function renderSplitEvents(events) {
         if (!e.runtimeSnapshot) e.runtimeSnapshot = JSON.parse(JSON.stringify(snapshot));
         applyFragmentOnlyLayoutSnapshot(normalizedMode, snapshot, e);
       }
+      syncLayersFromCheckboxes();
       renderLayoutModeSwitch();
       renderDetailZoneTree();
       renderPropertyEditor();
@@ -8458,8 +8459,6 @@ function renderSplitEvents(events) {
       renderSplitEvents([]);
       renderDetailZoneTree();
       renderPropertyEditor();
-      renderScene();
-      fitPointsToView(zone.points || []);
       renderScene();
       byId("workspaceInfo").textContent = normalizedMode === "transverse"
         ? `${getLayoutModeTitle(normalizedMode)}: ${state.layoutRun.fragments.length} фрагментов (оси ${axisCount}, шаг ${bandStepMm} мм, угол ${angleDeg}°)`
@@ -9089,6 +9088,7 @@ function renderSplitEvents(events) {
           state.layoutRun.fragments = assignOnlyBaseFragments;
           state.layoutRun.matchedFragmentGeometry = previewFragments;
           state.layers.pieceBorders = true;
+          const _pbChk = byId("layerPieceBorders"); if (_pbChk) _pbChk.checked = true;
         } else {
           state.layoutRun.fragments = previewFragments;
           state.layoutRun.matchedFragmentGeometry = null;
@@ -9674,7 +9674,7 @@ function renderSplitEvents(events) {
       const _bgFill = "rgba(11,99,206,0.04)";
       for (const item of backgroundLayouts) {
         const isManualBg = String(item.entry && item.entry.mode || "") === "inventory_manual";
-        drawSnapshotFragments(item.snapshot, { stroke: _bgStroke, strokeWidth: 1, fill: _bgFill });
+        if (state.layers.pieceBorders) drawSnapshotFragments(item.snapshot, { stroke: _bgStroke, strokeWidth: 1, fill: _bgFill });
         if (state.layers && state.layers.pfullZ && !isManualBg) {
           const lr = item.snapshot.layoutRun;
           if (Array.isArray(lr.placements)) {
@@ -10999,20 +10999,21 @@ function refreshSelectionInfo() {
       uiBindings.bindMainControls();
     }
     // Sync layer state from DOM checkboxes (checked attr = default visible)
-    {
-      const layerMap = [
-        ["layerPattern", "pattern"], ["layerZones", "zones"], ["layerZoneMaterials", "zoneMaterials"],
-        ["layerSelection", "selection"], ["layerGuides", "guides"], ["layerVisibleArea", "visibleArea"],
-        ["layerPieceIntersections", "pieceIntersections"], ["layerPieceBorders", "pieceBorders"],
-        ["layerAssignedPieces", "assignedPieces"], ["layerPfullZ", "pfullZ"],
-        ["layerUsedGain", "usedGain"], ["layerPcoreZ", "pcoreZ"], ["layerVisibleCore", "visibleCore"],
-        ["layerSplitLeftovers", "splitLeftovers"], ["layerCoverageHoles", "coverageHoles"],
-      ];
-      for (const [id, key] of layerMap) {
+    const LAYER_MAP = [
+      ["layerPattern", "pattern"], ["layerZones", "zones"], ["layerZoneMaterials", "zoneMaterials"],
+      ["layerSelection", "selection"], ["layerGuides", "guides"], ["layerVisibleArea", "visibleArea"],
+      ["layerPieceIntersections", "pieceIntersections"], ["layerPieceBorders", "pieceBorders"],
+      ["layerAssignedPieces", "assignedPieces"], ["layerPfullZ", "pfullZ"],
+      ["layerUsedGain", "usedGain"], ["layerPcoreZ", "pcoreZ"], ["layerVisibleCore", "visibleCore"],
+      ["layerSplitLeftovers", "splitLeftovers"], ["layerCoverageHoles", "coverageHoles"],
+    ];
+    function syncLayersFromCheckboxes() {
+      for (const [id, key] of LAYER_MAP) {
         const el = byId(id);
         if (el) state.layers[key] = !!el.checked;
       }
     }
+    syncLayersFromCheckboxes();
     const reportsBtn = byId("reportsBtn");
     if (reportsBtn) reportsBtn.onclick = () => openReportsModal();
     const reportsCloseBtn = byId("reportsCloseBtn");
@@ -11463,17 +11464,17 @@ function refreshSelectionInfo() {
       const normalizeRules = {
         seamAllowanceReserveMm: Number(lr && lr.allowanceMm || 12)
       };
-      const params = {
+      // For inventory modes: save inventory params. For fragment modes: save lr.paramsSnapshot directly
+      // so layoutModeVersion and options (cols/rows) survive the save/load cycle.
+      const params = String(entry.mode || "").startsWith("inventory") ? {
         normalizeRules,
-        ...(String(entry.mode || "").startsWith("inventory") ? {
-          placementStrategy: "manualAssist",
-          maxCandidates: Number(lr && lr.lastConstraints && lr.lastConstraints.maxCandidates || 300),
-          filters: (lr && lr.lastFilters) || {},
-          constraints: (lr && lr.lastConstraints) || {}
-        } : {
-          patternId: String(entry.mode || "longitudinal"),
-          patternParams: (lr && lr.paramsSnapshot) || {}
-        })
+        placementStrategy: "manualAssist",
+        maxCandidates: Number(lr && lr.lastConstraints && lr.lastConstraints.maxCandidates || 300),
+        filters: (lr && lr.lastFilters) || {},
+        constraints: (lr && lr.lastConstraints) || {}
+      } : {
+        normalizeRules,
+        ...(lr && lr.paramsSnapshot && typeof lr.paramsSnapshot === "object" ? lr.paramsSnapshot : {})
       };
       const runs = (snap || lr) ? [{
         id: String(entry.persistedRunId || `run_${entry.id}`),
@@ -11483,6 +11484,7 @@ function refreshSelectionInfo() {
           fragments: fragments.map((f) => ({
             id: String(f && (f.id || f.fragmentId) || ""),
             points: Array.isArray(f && f.points) ? f.points : [],
+            cutPoints: Array.isArray(f && f.cutPoints) ? f.cutPoints : [],
             areaMm2: Number(f && f.areaMm2 || 0)
           })),
           stats: (lr && lr.stats) || {}
@@ -11610,12 +11612,22 @@ function refreshSelectionInfo() {
       state.nextLayoutId = 1;
       for (const lay of (Array.isArray(project.layouts) ? project.layouts : [])) {
         const lastRun = Array.isArray(lay.runs) && lay.runs.length ? lay.runs[lay.runs.length - 1] : null;
+        const savedParams = (lastRun && lastRun.paramsSnapshot) || {};
+        // Support both old format (patternParams nested) and new format (flat)
+        const restoredParamsSnapshot = savedParams.patternParams && typeof savedParams.patternParams === "object"
+          ? savedParams.patternParams
+          : savedParams;
+        // Ensure layoutModeVersion is present so isFragmentOnlySnapshotStale doesn't force regen
+        if (restoredParamsSnapshot && !restoredParamsSnapshot.layoutModeVersion) {
+          restoredParamsSnapshot.layoutModeVersion = getFragmentOnlyModeVersion(lay.mode);
+        }
         const snapshot = lastRun ? {
           selectedZoneId: Number(lay.zoneId || 0) || null,
           layoutRun: {
             strategy: String(lay.mode || "longitudinal"),
             fillType: "voronoi",
-            allowanceMm: Number(lastRun.paramsSnapshot && lastRun.paramsSnapshot.normalizeRules && lastRun.paramsSnapshot.normalizeRules.seamAllowanceReserveMm || 12),
+            allowanceMm: Number(savedParams.normalizeRules && savedParams.normalizeRules.seamAllowanceReserveMm || 12),
+            paramsSnapshot: restoredParamsSnapshot,
             fragments: Array.isArray(lastRun.resultSnapshot && lastRun.resultSnapshot.fragments) ? lastRun.resultSnapshot.fragments : [],
             placements: (Array.isArray(lastRun.scrapPlacements) ? lastRun.scrapPlacements : []).map((sp) => {
               const contour = Array.isArray(sp.resultContourSnapshot) ? sp.resultContourSnapshot : [];
@@ -11849,7 +11861,8 @@ function refreshSelectionInfo() {
 
       // Collect materials index {materialId: materialObject}
       const materialsIndex = {};
-      for (const m of (Array.isArray(state.furMaterials) ? state.furMaterials : [])) {
+      const _matSrc = Array.isArray(state.furMaterialsCatalog) ? state.furMaterialsCatalog : [];
+      for (const m of _matSrc) {
         if (m && m.id) materialsIndex[String(m.id)] = m;
       }
 
@@ -11942,6 +11955,7 @@ function refreshSelectionInfo() {
       byId("exportCloProgressLabel").textContent = "Создание лекал...";
       try {
         const body = buildExportBody();
+        body._saveDialog = true;
         byId("exportCloProgressBar").style.width = "60%";
         byId("exportCloProgressLabel").textContent = "Формирование ZIP...";
         const res = await fetch("/api/export/patterns/run", {
@@ -11949,24 +11963,15 @@ function refreshSelectionInfo() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body)
         });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          alert("Ошибка экспорта: " + String(err && err.error || res.status));
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || !json.ok) {
+          if (json.cancelled) return;
+          alert("Ошибка экспорта: " + String(json && json.error || res.status));
           return;
         }
         byId("exportCloProgressBar").style.width = "100%";
-        byId("exportCloProgressLabel").textContent = "Готово";
-
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `furlab_export_${Date.now()}.zip`;
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 2000);
-
-        byId("exportCloBackdrop").style.display = "none";
+        byId("exportCloProgressLabel").textContent = `Сохранено: ${json.savedTo}`;
+        setTimeout(() => { byId("exportCloBackdrop").style.display = "none"; }, 1500);
       } catch (err) {
         alert("Ошибка: " + String(err && err.message || err));
       } finally {

@@ -232,7 +232,10 @@
       const root = byId("propertyEditor");
       if (!root) return;
       const detail = state.details.find((d) => d.id === state.selectedDetailId) || null;
-      const zone = state.zones.find((z) => Number(z && z.id) === Number(state.selectedZoneId)) || null;
+      const _zoneIdForEditor = Number(state.selectedZoneId || 0) || Number(
+        (Array.isArray(state.layouts) && state.layouts.find((x) => Number(x.id) === Number(state.selectedLayoutId || 0)) || null)?.boundZoneId || 0
+      );
+      const zone = state.zones.find((z) => Number(z && z.id) === _zoneIdForEditor) || null;
       const selectedFragId = Number(state.selectedFragmentId || 0);
       const selectedFrag = Array.isArray(state.layoutRun.fragments)
         ? state.layoutRun.fragments.find((f) => Number(f.id || 0) === selectedFragId)
@@ -398,7 +401,10 @@
               <div class="prop-row"><div class="prop-label">Название</div><div>${String(zone.name || `Зона ${zone.id}`)}</div></div>
               <div class="prop-row"><div class="prop-label">Detail ID</div><div>${detail ? detail.id : "-"}</div></div>
               <div class="prop-row"><div class="prop-label">Zone ID</div><div>${zone.id}</div></div>
-              <div class="prop-row"><div class="prop-label">Направление ворса, °</div><div class="prop-field-inline"><input id="zoneNapDirectionInput" class="prop-input prop-input-compact prop-input-numeric prop-input-align-start" type="number" min="0" max="359.9" step="1" value="${zoneNapDeg.toFixed(1)}"></div></div>
+              <div class="prop-row"><div class="prop-label">Направление ворса, °</div><div class="prop-field-inline" style="display:flex;align-items:center;gap:4px;">
+                <input id="zoneNapDirectionInput" class="prop-input prop-input-compact prop-input-numeric prop-input-align-start" type="number" min="0" max="359.9" step="1" value="${zoneNapDeg.toFixed(1)}" readonly style="background:#f5f5f5;cursor:default;">
+                <button id="zoneNapToggleBtn" class="prop-icon-btn" title="Редактировать"><img src="/assets/panel-icons/edit.svg" alt></button>
+              </div></div>
             `, true)}
             ${renderEditorSection("zone_material", "Меховой материал", `
               <div class="prop-row"><div class="prop-label">Материал</div><div>${String((zone.materialId && typeof getFurMaterialById === "function" && getFurMaterialById(zone.materialId) && getFurMaterialById(zone.materialId).name) || zone.materialName || zone.materialId || "-")}</div></div>
@@ -422,16 +428,37 @@
           `;
           bindSectionToggles(root);
           const zoneNapInput = byId("zoneNapDirectionInput");
-          if (zoneNapInput && typeof setZoneNapDirectionDeg === "function") {
+          const zoneNapToggleBtn = byId("zoneNapToggleBtn");
+          if (zoneNapInput && zoneNapToggleBtn) {
+            let editing = false;
             const applyNap = () => {
-              const raw = Number(zoneNapInput.value);
-              const next = setZoneNapDirectionDeg(zone.id, raw);
-              if (Number.isFinite(Number(next))) {
-                zoneNapInput.value = Number(next).toFixed(1);
+              if (typeof setZoneNapDirectionDeg === "function") {
+                const raw = Number(zoneNapInput.value);
+                const next = setZoneNapDirectionDeg(zone.id, raw);
+                if (Number.isFinite(Number(next))) zoneNapInput.value = Number(next).toFixed(1);
+              }
+              editing = false;
+              zoneNapInput.readOnly = true;
+              zoneNapInput.style.background = "#f5f5f5";
+              zoneNapInput.style.cursor = "default";
+              zoneNapToggleBtn.title = "Редактировать";
+              zoneNapToggleBtn.querySelector("img").src = "/assets/panel-icons/edit.svg";
+            };
+            zoneNapToggleBtn.onclick = () => {
+              if (!editing) {
+                editing = true;
+                zoneNapInput.readOnly = false;
+                zoneNapInput.style.background = "";
+                zoneNapInput.style.cursor = "";
+                zoneNapToggleBtn.title = "Сохранить";
+                zoneNapToggleBtn.querySelector("img").src = "/assets/panel-icons/save.svg";
+                zoneNapInput.focus();
+                zoneNapInput.select();
+              } else {
+                applyNap();
               }
             };
-            zoneNapInput.onchange = applyNap;
-            zoneNapInput.onblur = applyNap;
+            zoneNapInput.onkeydown = (e) => { if (e.key === "Enter") applyNap(); };
           }
           return;
         }
@@ -648,22 +675,33 @@
       const layoutSavedState = !!(selectedLayout && selectedLayout.persistedRunId && !selectedLayout.isDirty);
       const nameInputReadonly = selectedLayout ? "" : "readonly";
       const typeValue = selectedLayout ? selectedLayoutModeTitle : "-";
-      const rowsValue = Math.max(1, Number((byId("fillRows") && byId("fillRows").value) || 5));
-      const colsValue = Math.max(1, Number((byId("fillCols") && byId("fillCols").value) || 5));
-      const axisCountValue = Math.max(0, Math.min(6, Number((byId("fillAxisCount") && byId("fillAxisCount").value) || 1)));
-      const angleValue = Math.max(-89, Math.min(89, Number((byId("fillAngleDeg") && byId("fillAngleDeg").value) || 45)));
-      const bandStepValue = Math.max(10, Math.min(5000, Number((byId("fillBandStep") && byId("fillBandStep").value) || 120)));
-      const shiftPercentValue = Math.max(-100, Math.min(100, Number((byId("fillShiftPercent") && byId("fillShiftPercent").value) || 50)));
-      const ringCountValue = Math.max(1, Math.min(20, Number((byId("fillRingCount") && byId("fillRingCount").value) || 4)));
-      const sectorCountValue = Math.max(1, Math.min(36, Number((byId("fillSectorCount") && byId("fillSectorCount").value) || 8)));
-      const sectorRotationValue = Math.max(-360, Math.min(360, Number((byId("fillSectorRotationDeg") && byId("fillSectorRotationDeg").value) || 0)));
-      const innerRadiusValue = Math.max(0, Number((byId("fillInnerRadiusMm") && byId("fillInnerRadiusMm").value) || 0));
-      const centerModeValue = String((byId("fillCenterMode") && byId("fillCenterMode").value) || "auto");
-      const centerXValue = Number((byId("fillCenterX") && byId("fillCenterX").value) || 0);
-      const centerYValue = Number((byId("fillCenterY") && byId("fillCenterY").value) || 0);
-      const gapXValue = Math.max(0, Number((byId("fillGapX") && byId("fillGapX").value) || 0));
-      const gapYValue = Math.max(0, Number((byId("fillGapY") && byId("fillGapY").value) || 0));
-      const cornerRadiusValue = Math.max(0, Number((byId("fillCornerRadius") && byId("fillCornerRadius").value) || 0));
+      // Prefer state.layoutRun.paramsSnapshot.options as source of truth (matches what's on canvas).
+      // Fall back to DOM inputs when user is actively editing (DOM leads, state follows after preview).
+      const _lrOpts = state.layoutRun && state.layoutRun.paramsSnapshot && state.layoutRun.paramsSnapshot.options;
+      const _domVal = (id, fallback) => { const el = byId(id); return el ? (Number(el.value) || fallback) : fallback; };
+      const _opt = (key, domId, fallback) => {
+        const fromState = _lrOpts && _lrOpts[key] != null ? Number(_lrOpts[key]) : null;
+        const fromDom = _domVal(domId, null);
+        // If DOM and state differ, DOM is likely being edited — trust DOM. Otherwise trust state.
+        if (fromDom !== null && fromState !== null && fromDom !== fromState) return fromDom;
+        return fromState !== null ? fromState : (fromDom !== null ? fromDom : fallback);
+      };
+      const rowsValue = Math.max(1, _opt("rows", "fillRows", 5));
+      const colsValue = Math.max(1, _opt("cols", "fillCols", 5));
+      const axisCountValue = Math.max(0, Math.min(6, _opt("axisCount", "fillAxisCount", 1)));
+      const angleValue = Math.max(-89, Math.min(89, _opt("angleDeg", "fillAngleDeg", 45)));
+      const bandStepValue = Math.max(10, Math.min(5000, _opt("bandStepMm", "fillBandStep", 120)));
+      const shiftPercentValue = Math.max(-100, Math.min(100, _opt("shiftPercent", "fillShiftPercent", 50)));
+      const ringCountValue = Math.max(1, Math.min(20, _opt("ringCount", "fillRingCount", 4)));
+      const sectorCountValue = Math.max(1, Math.min(36, _opt("sectorCount", "fillSectorCount", 8)));
+      const sectorRotationValue = Math.max(-360, Math.min(360, _opt("rotationDeg", "fillSectorRotationDeg", 0)));
+      const innerRadiusValue = Math.max(0, _opt("innerRadiusMm", "fillInnerRadiusMm", 0));
+      const centerModeValue = String((_lrOpts && _lrOpts.centerMode) || (byId("fillCenterMode") && byId("fillCenterMode").value) || "auto");
+      const centerXValue = _opt("centerX", "fillCenterX", 0);
+      const centerYValue = _opt("centerY", "fillCenterY", 0);
+      const gapXValue = Math.max(0, _opt("gapX", "fillGapX", 0));
+      const gapYValue = Math.max(0, _opt("gapY", "fillGapY", 0));
+      const cornerRadiusValue = Math.max(0, _opt("cornerRadius", "fillCornerRadius", 0));
       const workspaceInfoText = String((byId("workspaceInfo") && byId("workspaceInfo").textContent) || "").trim();
       const selectedLayoutBoundZoneId = Number(selectedLayout && selectedLayout.boundZoneId || 0) || 0;
       const selectedLayoutBoundDetailId = Number(selectedLayout && selectedLayout.boundDetailId || 0) || 0;
@@ -979,6 +1017,9 @@
           const next = Math.max(min, Math.min(max, raw));
           sharedEl.value = decimals > 0 ? Number(next).toFixed(decimals) : String(Math.round(next));
           scheduleRegularPreview();
+        };
+        localEl.onkeydown = (ev) => {
+          if (ev.key === "Enter") normalize();
         };
         localEl.onblur = normalize;
       };
