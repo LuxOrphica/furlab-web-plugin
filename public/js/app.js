@@ -8672,6 +8672,12 @@ function renderSplitEvents(events) {
           setIntarsiaStepPhase(2);
           return;
         }
+        const fragmentMinAlongMm = Math.max(0, Number((byId("fragmentMinAlongMm") && byId("fragmentMinAlongMm").value) || 60));
+        const fragmentMinAcrossMm = Math.max(0, Number((byId("fragmentMinAcrossMm") && byId("fragmentMinAcrossMm").value) || 60));
+        const zoneMaterial = zone.materialId ? getFurMaterialById(zone.materialId) : null;
+        const fragmentMaxAlongMm = (zoneMaterial && Number.isFinite(Number(zoneMaterial.maxLengthMm))) ? Number(zoneMaterial.maxLengthMm) : null;
+        const fragmentMaxAcrossMm = (zoneMaterial && Number.isFinite(Number(zoneMaterial.maxWidthMm))) ? Number(zoneMaterial.maxWidthMm) : null;
+
         if (manualMode) {
           setInventoryProgress(3, t("progress_manual_init", null, "Manual mode / initialization"));
           addInventoryProgressNote(t("note_manual_start", null, "Manual pick started: preparing workspace."));

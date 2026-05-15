@@ -20,9 +20,7 @@
       const pieceLabel = byId("layerAssignedPiecesLabel");
       const pieceToggle = byId("layerAssignedPieces");
       if (fragLabel) {
-        fragLabel.textContent = manualBeforeApply
-          ? t("layer_working_areas_label", null, "Working areas")
-          : t("layer_fragments_label", null, "Fragments");
+        fragLabel.textContent = t("layer_fragments_label", null, "Фрагменты");
       }
       if (pieceLabel) pieceLabel.textContent = `${t("layer_pieces_label", null, "Matched pieces")} (${matchedPiecesCount})`;
       if (pieceToggle) {
