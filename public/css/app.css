@@ -779,6 +779,12 @@ body { font-family: "Iosevka", "Iosevka Fixed", monospace; margin: 10px; color: 
       box-shadow: none;
       background: #f3f4f6;
     }
+    .layout-list-card--warning {
+      border-left: 3px solid #e8a000;
+    }
+    .layout-list-card--warning.active {
+      border-left: 3px solid #e8a000;
+    }
     .layout-list-main {
       border: 0;
       background: transparent;

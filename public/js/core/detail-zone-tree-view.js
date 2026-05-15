@@ -17,6 +17,7 @@
     const findPlacementForFragment = deps && deps.findPlacementForFragment;
     const saveLayoutEntry = deps && deps.saveLayoutEntry;
     const openLayoutEntry = deps && deps.openLayoutEntry;
+    const selectLayoutEntry = deps && deps.selectLayoutEntry;
     const deleteLayoutEntry = deps && deps.deleteLayoutEntry;
     const openZoneContextMenu = deps && deps.openZoneContextMenu;
     const openMaterialLibrary = deps && deps.openMaterialLibrary;
@@ -29,7 +30,8 @@
       const map = {
         chevronRight: "chevron_right",
         chevronDown: "expand_more",
-        delete: "delete"
+        delete: "delete",
+        edit: "edit"
       };
       const glyph = map[name] || "";
       return glyph ? `<span class="material-symbols-outlined" aria-hidden="true">${glyph}</span>` : "";
@@ -357,26 +359,19 @@
 
         for (const entry of state.layouts) {
           const card = document.createElement("div");
-          card.className = "layout-list-card" + (Number(state.selectedLayoutId || 0) === Number(entry.id) ? " active" : "");
+          card.className = "layout-list-card" + (Number(state.selectedLayoutId || 0) === Number(entry.id) ? " active" : "") + (entry._hasSizeWarning ? " layout-list-card--warning" : "");
 
           const openBtn = document.createElement("button");
           openBtn.type = "button";
           openBtn.className = "layout-list-main";
-          openBtn.addEventListener("click", async () => {
-            if (typeof openLayoutEntry === "function") {
-              await openLayoutEntry(entry);
-              return;
+          openBtn.addEventListener("click", () => {
+            if (typeof selectLayoutEntry === "function") {
+              selectLayoutEntry(entry);
+            } else {
+              state.selectedLayoutId = entry.id;
+              if (typeof renderDetailZoneTree === "function") renderDetailZoneTree();
+              if (typeof renderPropertyEditor === "function") renderPropertyEditor();
             }
-            state.selectedLayoutId = entry.id;
-            applyLayoutMode(entry.mode);
-            const zone = state.zones.find((z) => Number(z.id || 0) === Number(state.selectedZoneId || 0));
-            if (zone) {
-              state.selectedDetailId = Number(zone.detailId || 0) || state.selectedDetailId;
-            }
-            renderLayoutModeSwitch();
-            renderDetailZoneTree();
-            renderPropertyEditor();
-            renderScene();
           });
 
           const thumb = document.createElement("div");

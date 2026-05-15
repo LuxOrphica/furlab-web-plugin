@@ -878,6 +878,7 @@
         findPlacementForFragment: (fragmentOrId) => findPlacementForFragment(fragmentOrId),
         saveLayoutEntry: (entry) => saveLayoutEntry(entry),
         openLayoutEntry: (entry) => openLayoutEntry(entry),
+        selectLayoutEntry: (entry) => selectLayoutEntry(entry),
         deleteLayoutEntry: (entry) => deleteLayoutEntry(entry),
         openZoneContextMenu: (payload) => openZoneContextMenu(payload),
         openMaterialLibrary: (zone) => openMaterialLibrary(zone),
@@ -2319,45 +2320,109 @@
       return points;
     }
 
-    // Cache: Map<key, HTMLCanvasElement> — keyed by (zoneId|materialId|zoomBucket|layerIndex|diag)
-    const _hatchCanvasCache = new Map();
+    // Cache: Map<key, HTMLCanvasElement> — one small tile per material pattern, no zoom dependency
+    const _hatchTileCache = new Map();
 
-    function addParallelHatch(hatchGroup, centerX, centerY, diag, visual, options) {
+    function buildHatchTile(visual, layerSpec) {
+      // Tile is always horizontal (lines along X axis). Rotation applied per-zone via fillPatternRotation.
+      const spacing = Math.max(5, Number(layerSpec.spacing || visual.spacing));
+      const stroke = visual.hatchStroke;
+      const strokeWidth = Math.max(0.45, Number(layerSpec.strokeWidth || visual.strokeWidth));
+      const useWave = String(layerSpec.kind || '') === 'wave';
+      const amplitude = Number(layerSpec.amplitude || visual.bendAmplitude || 2);
+      const wavelength = Number(layerSpec.wavelength || Math.max(12, visual.curlRadiusPx * 2));
+      const dash = Array.isArray(layerSpec.dash) ? layerSpec.dash : visual.dash;
+      const dashLen = Math.max(1.2, dash[0]);
+      const gapLen = Math.max(1.2, dash[1]);
+      const period = dashLen + gapLen;
+      const key = `${stroke}|${spacing.toFixed(1)}|${strokeWidth.toFixed(2)}|${dashLen.toFixed(1)}|${gapLen.toFixed(1)}|${useWave}|${amplitude.toFixed(1)}`;
+      if (_hatchTileCache.has(key)) return _hatchTileCache.get(key);
+
+      // H = spacing between lines (perpendicular). W = one dash period (seamless horizontal repeat).
+      const H = Math.ceil(useWave ? Math.max(spacing, amplitude * 2 + strokeWidth * 2 + 4) : spacing);
+      const W = useWave ? Math.ceil(Math.max(wavelength * 2, period * 3)) : Math.ceil(period);
+      const lineY = H / 2;
+      const canvas = document.createElement('canvas');
+      canvas.width = W; canvas.height = H;
+      const ctx = canvas.getContext('2d');
+      ctx.strokeStyle = stroke; ctx.lineWidth = strokeWidth; ctx.lineCap = 'round';
+      if (useWave) {
+        ctx.beginPath();
+        for (let t = 0; t <= W; t += period) {
+          const tEnd = Math.min(W, t + dashLen);
+          if (tEnd <= t) continue;
+          const wpts = buildWavyDashSegmentPoints(0, 0, 1, 0, 0, 1, t, tEnd, amplitude, wavelength);
+          if (wpts.length < 4) continue;
+          ctx.moveTo(wpts[0], lineY + wpts[1]);
+          for (let wi = 2; wi < wpts.length; wi += 2) ctx.lineTo(wpts[wi], lineY + wpts[wi + 1]);
+        }
+        ctx.stroke();
+      } else {
+        ctx.setLineDash([dashLen, gapLen]);
+        ctx.beginPath();
+        ctx.moveTo(0, lineY);
+        ctx.lineTo(W, lineY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      _hatchTileCache.set(key, canvas);
+      return canvas;
+    }
+
+    function addZoneMaterialOverlay(layer, zone, visual) {
+      const pts = Array.isArray(zone && zone.points) ? zone.points : [];
+      if (pts.length < 3) return;
+      const screenPts = pts.map((p) => worldToScreen(p));
+      const layerSpecs = Array.isArray(visual.layers) ? visual.layers : [];
+      const angleDeg = Number(visual.angleRad || 0) * 180 / Math.PI;
+      for (const layerSpec of layerSpecs) {
+        const tile = buildHatchTile(visual, layerSpec);
+        if (!tile) continue;
+        const shape = new Konva.Shape({
+          listening: false,
+          fillPatternImage: tile,
+          fillPatternRepeat: 'repeat',
+          fillPatternRotation: angleDeg,
+          stroke: null,
+          strokeWidth: 0,
+          sceneFunc(ctx2d, shape) {
+            ctx2d.beginPath();
+            for (let i = 0; i < screenPts.length; i++) {
+              const p = screenPts[i];
+              if (i === 0) ctx2d.moveTo(p.x, p.y); else ctx2d.lineTo(p.x, p.y);
+            }
+            ctx2d.closePath();
+            ctx2d.fillShape(shape);
+          }
+        });
+        layer.add(shape);
+      }
+    }
+
+    // (kept for potential reuse)
+    function _addParallelHatchLegacy(hatchGroup, centerX, centerY, diag, visual, options) {
       const opts = options && typeof options === 'object' ? options : {};
-      const spacing = Math.max(5, Number(opts.spacing || visual.spacing));
       const useWave = !!opts.wave;
-      const amplitude = Number(opts.amplitude || visual.bendAmplitude || 2);
-      const wavelength = Number(opts.wavelength || Math.max(12, visual.curlRadiusPx * 2));
       const baseDash = Array.isArray(opts.dash) ? opts.dash : visual.dash;
       const strokeWidth = Math.max(0.45, Number(opts.strokeWidth || visual.strokeWidth));
       const stroke = opts.stroke || visual.hatchStroke;
       const angle = visual.angleRad;
-      const dirX = Math.cos(angle);
-      const dirY = Math.sin(angle);
-      const normalX = -dirY;
-      const normalY = dirX;
-
-      // Draw all hatch lines onto a single offscreen canvas → one Konva.Image instead of N Konva.Lines
+      const dirX = Math.cos(angle); const dirY = Math.sin(angle);
+      const normalX = -dirY; const normalY = dirX;
+      const spacing = Math.max(5, Number(opts.spacing || visual.spacing));
+      const amplitude = Number(opts.amplitude || visual.bendAmplitude || 2);
+      const wavelength = Number(opts.wavelength || Math.max(12, visual.curlRadiusPx * 2));
       const pad = strokeWidth + 2;
       const size = Math.ceil(diag * 2 + pad * 2);
       const offscreen = document.createElement("canvas");
-      offscreen.width = size;
-      offscreen.height = size;
+      offscreen.width = size; offscreen.height = size;
       const ctx2d = offscreen.getContext("2d");
-      ctx2d.strokeStyle = stroke;
-      ctx2d.lineWidth = strokeWidth;
-      ctx2d.lineCap = "round";
-      ctx2d.lineJoin = "round";
-      const ox = size / 2 - centerX + (centerX - (centerX));  // local origin = center of canvas
-      const lox = size / 2;
-      const loy = size / 2;
-
+      ctx2d.strokeStyle = stroke; ctx2d.lineWidth = strokeWidth; ctx2d.lineCap = "round"; ctx2d.lineJoin = "round";
+      const lox = size / 2; const loy = size / 2;
       for (let offset = -diag; offset <= diag; offset += spacing) {
-        const anchorX = normalX * offset;
-        const anchorY = normalY * offset;
+        const anchorX = normalX * offset; const anchorY = normalY * offset;
         if (useWave) {
-          const dashLen = Math.max(1.2, baseDash[0]);
-          const gapLen = Math.max(1.2, baseDash[1]);
+          const dashLen = Math.max(1.2, baseDash[0]); const gapLen = Math.max(1.2, baseDash[1]);
           ctx2d.beginPath();
           for (let t = -diag; t <= diag; t += dashLen + gapLen) {
             const tEnd = Math.min(diag, t + dashLen);
@@ -2369,8 +2434,7 @@
           }
           ctx2d.stroke();
         } else {
-          const dashLen = Math.max(1.2, baseDash[0]);
-          const gapLen = Math.max(1.2, baseDash[1]);
+          const dashLen = Math.max(1.2, baseDash[0]); const gapLen = Math.max(1.2, baseDash[1]);
           ctx2d.setLineDash([dashLen, gapLen]);
           ctx2d.beginPath();
           ctx2d.moveTo(lox + anchorX - dirX * diag, loy + anchorY - dirY * diag);
@@ -2379,7 +2443,6 @@
         }
       }
       ctx2d.setLineDash([]);
-
       hatchGroup.add(new Konva.Image({
         image: offscreen,
         x: centerX - size / 2,
@@ -2390,88 +2453,6 @@
       }));
     }
 
-    function addZoneMaterialOverlay(layer, zone, visual) {
-      const pts = Array.isArray(zone && zone.points) ? zone.points : [];
-      if (pts.length < 3) return;
-      const screenPts = pts.map((p) => worldToScreen(p));
-      const xs = screenPts.map((p) => p.x);
-      const ys = screenPts.map((p) => p.y);
-      const minX = Math.min(...xs);
-      const maxX = Math.max(...xs);
-      const minY = Math.min(...ys);
-      const maxY = Math.max(...ys);
-      if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) return;
-
-      const hatchGroup = new Konva.Group({
-        listening: false,
-        clipFunc: (ctx) => {
-          ctx.beginPath();
-          for (let i = 0; i < screenPts.length; i += 1) {
-            const p = screenPts[i];
-            if (i === 0) ctx.moveTo(p.x, p.y);
-            else ctx.lineTo(p.x, p.y);
-          }
-          ctx.closePath();
-        }
-      });
-
-      const width = maxX - minX;
-      const height = maxY - minY;
-      const diag = Math.sqrt(width * width + height * height) + 30;
-      const centerX = (minX + maxX) / 2;
-      const centerY = (minY + maxY) / 2;
-      // Zoom bucket: quantize to 0.05 steps so minor sub-pixel zoom diffs don't bust cache
-      const zoomBucket = Math.round((state.zoom || 1) / 0.05) * 0.05;
-      const diagBucket = Math.ceil(diag / 4) * 4;
-      const zoneId = zone.id || 0;
-      const materialId = zone.materialId || '';
-      const visualKey = visual.hatchStroke + '|' + (visual.angleRad || 0).toFixed(3) + '|' + (visual.spacing || 0).toFixed(1);
-      const layerSpecs = Array.isArray(visual.layers) ? visual.layers : [];
-      for (let li = 0; li < layerSpecs.length; li++) {
-        const layerSpec = layerSpecs[li];
-        const opts = {
-          spacing: Number(layerSpec.spacing || visual.spacing),
-          stroke: visual.hatchStroke,
-          strokeWidth: Number(layerSpec.strokeWidth || visual.strokeWidth),
-          wave: String(layerSpec.kind || '') === 'wave',
-          amplitude: Number(layerSpec.amplitude || visual.bendAmplitude),
-          wavelength: Number(layerSpec.wavelength || (visual.curlRadiusPx * 2)),
-          dash: Array.isArray(layerSpec.dash) ? layerSpec.dash : visual.dash,
-          angleJitterDeg: Number(layerSpec.angleJitterDeg || visual.angleJitterDeg || 0),
-          clusterSpreadPx: Number(layerSpec.clusterSpreadPx || visual.clusterSpreadPx || 0),
-          segmentationScale: Number(layerSpec.segmentationScale || 0),
-          softnessScale: Number(layerSpec.softnessScale || 0)
-        };
-        const cacheKey = `${zoneId}|${materialId}|${zoomBucket}|${diagBucket}|${li}|${visualKey}`;
-        let offscreen = _hatchCanvasCache.get(cacheKey);
-        if (!offscreen) {
-          // Build a temporary group to capture the canvas from addParallelHatch
-          const tempGroup = { _canvas: null, add(img) { this._canvas = img.attrs && img.attrs.image; } };
-          addParallelHatch(tempGroup, 0, 0, diagBucket, visual, opts);
-          offscreen = tempGroup._canvas;
-          if (offscreen) {
-            if (_hatchCanvasCache.size > 400) {
-              // Evict oldest entries to prevent unbounded growth
-              const firstKey = _hatchCanvasCache.keys().next().value;
-              _hatchCanvasCache.delete(firstKey);
-            }
-            _hatchCanvasCache.set(cacheKey, offscreen);
-          }
-        }
-        if (offscreen) {
-          const size = offscreen.width;
-          hatchGroup.add(new Konva.Image({
-            image: offscreen,
-            x: centerX - size / 2,
-            y: centerY - size / 2,
-            width: size,
-            height: size,
-            listening: false
-          }));
-        }
-      }
-      layer.add(hatchGroup);
-    }
 
     function getRenderablePatternEntities() {
       const g = state.patternGeometry;
@@ -3119,6 +3100,7 @@
           }))
           .filter((item) => item.id);
         state.furMaterialsCatalog = furMaterialsCatalogCache.slice();
+        renderPropertyEditor();
         return furMaterialsCatalogCache;
       })();
       try {
@@ -7385,8 +7367,11 @@ function renderSplitEvents(events) {
       const selectedZoneId = Number(selectedZone && selectedZone.id || 0) || null;
       const selectedDetailId = Number(selectedZone && selectedZone.detailId || state.selectedDetailId || 0) || null;
       if (selectedZoneId) {
+        // Intarsia layouts coexist with regular layouts on the same zone — only block if a non-intarsia layout already occupies it
         const occupiedBy = (Array.isArray(state.layouts) ? state.layouts : []).find((x) =>
           x && Number(x.boundZoneId || 0) === selectedZoneId
+          && String(x.mode || "") !== "intarsia"
+          && normalizedMode !== "intarsia"
         );
         if (occupiedBy) {
           const zoneName = String(selectedZone && selectedZone.name || `Зона ${selectedZoneId}`);
@@ -7699,8 +7684,8 @@ function renderSplitEvents(events) {
       if (!layout) return true;
       const ui = state.propertyEditorUi && typeof state.propertyEditorUi === "object" ? state.propertyEditorUi : null;
       const map = ui && ui.layoutEdit && typeof ui.layoutEdit === "object" ? ui.layoutEdit : null;
-      const key = Number(layout.id || 0);
-      if (!map || !Object.prototype.hasOwnProperty.call(map, key)) return true;
+      const key = String(layout.id || "");
+      if (!map || !key || !Object.prototype.hasOwnProperty.call(map, key)) return false;
       return !!map[key];
     }
     function resolveCurrentRadialZone() {
@@ -8029,11 +8014,46 @@ function renderSplitEvents(events) {
       }
       return res;
     }
+    function selectLayoutEntry(entry) {
+      const e = entry && typeof entry === "object" ? entry : null;
+      if (!e) return;
+      saveCurrentLayoutRuntimeSnapshot();
+      state.selectedLayoutId = e.id;
+      applyLayoutMode(e.mode);
+      // Apply stored snapshot if available — but don't build/apply empty snapshot (avoids reset)
+      const snap = e.runtimeSnapshot && typeof e.runtimeSnapshot === "object" ? e.runtimeSnapshot : null;
+      if (snap) {
+        if (isFragmentOnlyLayoutMode(e.mode) || isIntarsiaLayoutMode(e.mode)) {
+          applyFragmentOnlyLayoutSnapshot(String(e.mode || ""), snap, e);
+        } else if (String(e.mode || "") === "inventory_manual") {
+          applyManualLayoutSnapshot(snap);
+        }
+      } else if (isLocalRuntimeLayoutMode(e.mode)) {
+        const boundZone = ensureLocalRuntimeLayoutBinding(e);
+        if (boundZone) {
+          state.selectedZoneId = Number(boundZone.id || 0) || null;
+          state.selectedDetailId = Number(boundZone.detailId || state.selectedDetailId || 0) || state.selectedDetailId;
+          if (state.layoutRun && typeof state.layoutRun === "object") {
+            state.layoutRun.selectedZoneId = Number(boundZone.id || 0) || null;
+          }
+        }
+      }
+      renderLayoutModeSwitch();
+      renderDetailZoneTree();
+      renderPropertyEditor();
+      renderZoneToolPalette();
+      renderScene();
+    }
+
     async function openLayoutEntry(entry) {
       const e = entry && typeof entry === "object" ? entry : null;
       if (!e) return;
       saveCurrentLayoutRuntimeSnapshot();
       state.selectedLayoutId = e.id;
+      // Enable edit mode for this layout when explicitly opening via pencil button
+      if (!state.propertyEditorUi || typeof state.propertyEditorUi !== "object") state.propertyEditorUi = {};
+      if (!state.propertyEditorUi.layoutEdit || typeof state.propertyEditorUi.layoutEdit !== "object") state.propertyEditorUi.layoutEdit = {};
+      state.propertyEditorUi.layoutEdit[String(e.id || "")] = true;
       applyLayoutMode(e.mode);
       if (isLocalRuntimeLayoutMode(e.mode)) {
         const boundZone = ensureLocalRuntimeLayoutBinding(e);
@@ -11325,7 +11345,7 @@ function refreshSelectionInfo() {
           const layoutForZone = (Array.isArray(state.layouts) ? state.layouts : [])
             .find((e) => Number(e && e.boundZoneId || 0) === zoneId);
           if (layoutForZone && Number(layoutForZone.id) !== Number(state.selectedLayoutId || 0)) {
-            void openLayoutEntry(layoutForZone);
+            selectLayoutEntry(layoutForZone);
           }
         },
         onManualPlacementMoved: (idx, geomBefore, geomAfter) => {

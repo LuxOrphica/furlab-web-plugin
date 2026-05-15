@@ -120,7 +120,7 @@
         const fragStr = `${fmt(v.frag)} мм`;
         const limitStr = `${fmt(v.limit)} мм`;
         if (v.type === "min") return `Фрагмент <b>${fragStr}</b> меньше min ${limitStr} (${dimLabel(v.dim)})`;
-        if (v.noFix) return `Фрагмент <b>${fragStr}</b> > max ${limitStr} (${dimLabel(v.dim)}) — используйте продольную выкладку`;
+        if (v.noFix) return `Фрагмент <b>${fragStr}</b> > max ${limitStr} (${dimLabel(v.dim)}) — увеличьте количество осей`;
         return `Фрагмент <b>${fragStr}</b> > max ${limitStr} (${dimLabel(v.dim)})`;
       });
       const hasFix = Object.keys(hint.suggestions).length > 0;
@@ -195,7 +195,7 @@
       return Number.isFinite(n) ? n : fallback;
     }
 
-    function isLayoutEditEnabled(layoutId, defaultValue = true) {
+    function isLayoutEditEnabled(layoutId, defaultValue = false) {
       const ui = ensurePropertyEditorUi();
       const key = String(layoutId || "");
       if (key && Object.prototype.hasOwnProperty.call(ui.layoutEdit, key)) {
@@ -401,13 +401,24 @@
               <div class="prop-row"><div class="prop-label">Направление ворса, °</div><div class="prop-field-inline"><input id="zoneNapDirectionInput" class="prop-input prop-input-compact prop-input-numeric prop-input-align-start" type="number" min="0" max="359.9" step="1" value="${zoneNapDeg.toFixed(1)}"></div></div>
             `, true)}
             ${renderEditorSection("zone_material", "Меховой материал", `
-              <div class="prop-row"><div class="prop-label">Материал</div><div>${String(zone.materialName || zone.materialId || "-")}</div></div>
-              <div class="prop-row"><div class="prop-label">Material ID</div><div>${String(zone.materialId || "-")}</div></div>
+              <div class="prop-row"><div class="prop-label">Материал</div><div>${String((zone.materialId && typeof getFurMaterialById === "function" && getFurMaterialById(zone.materialId) && getFurMaterialById(zone.materialId).name) || zone.materialName || zone.materialId || "-")}</div></div>
             `, true)}
             ${renderEditorSection("zone_geometry", "Геометрия", `
               <div class="prop-row"><div class="prop-label">Площадь зоны</div><div>${zoneAreaValue} мм²</div></div>
               <div class="prop-row"><div class="prop-label">Периметр зоны</div><div>${zonePerimeterValue} мм</div></div>
             `, true)}
+            ${(() => {
+              const zoneLayouts = (Array.isArray(state.layouts) ? state.layouts : []).filter((e) => Number(e && e.boundZoneId || 0) === Number(zone.id));
+              if (!zoneLayouts.length) return "";
+              const rows = zoneLayouts.map((e) => {
+                const snap = e.runtimeSnapshot && typeof e.runtimeSnapshot === "object" ? e.runtimeSnapshot : null;
+                const fragCount = snap && snap.layoutRun && Array.isArray(snap.layoutRun.fragments) ? snap.layoutRun.fragments.length : null;
+                const modeTitle = typeof getLayoutModeTitle === "function" ? getLayoutModeTitle(e.mode) : String(e.mode || "");
+                const warn = e._hasSizeWarning ? ' <span style="color:#e8a000;font-weight:600" title="Нарушение ограничений размера">⚠</span>' : "";
+                return `<div class="prop-row"><div class="prop-label">${String(e.name || modeTitle)}</div><div>${modeTitle}${fragCount !== null ? `, ${fragCount} фрагм.` : ""}${warn}</div></div>`;
+              }).join("");
+              return renderEditorSection("zone_layouts", "Выкладка", rows, true);
+            })()}
           `;
           bindSectionToggles(root);
           const zoneNapInput = byId("zoneNapDirectionInput");
@@ -633,7 +644,7 @@
       const lockManualInventoryParams = !!(isManualLayoutSelected && loadedCandidatesCount > 0);
       const isLongitudinalLayoutSelected = currentLayoutMode === "longitudinal";
       const showLongitudinalDebug = false;
-      const layoutEditEnabled = selectedLayout ? isLayoutEditEnabled(selectedLayout.id, true) : true;
+      const layoutEditEnabled = selectedLayout ? isLayoutEditEnabled(selectedLayout.id, false) : false;
       const layoutSavedState = !!(selectedLayout && selectedLayout.persistedRunId && !selectedLayout.isDirty);
       const nameInputReadonly = selectedLayout ? "" : "readonly";
       const typeValue = selectedLayout ? selectedLayoutModeTitle : "-";
@@ -686,6 +697,9 @@
       const _zoneMaterial = (zone && zone.materialId && typeof getFurMaterialById === "function") ? getFurMaterialById(zone.materialId) : null;
       const _matMaxAlongMm = _zoneMaterial && Number.isFinite(Number(_zoneMaterial.maxLengthMm)) ? Number(_zoneMaterial.maxLengthMm) : null;
       const _matMaxAcrossMm = _zoneMaterial && Number.isFinite(Number(_zoneMaterial.maxWidthMm)) ? Number(_zoneMaterial.maxWidthMm) : null;
+      if (zone && zone.materialId && (_matMaxAlongMm === null || _matMaxAcrossMm === null) && typeof ensureFurMaterialLoaded === "function") {
+        void ensureFurMaterialLoaded(zone.materialId);
+      }
       const _fragMinAlongValue = Math.max(10, Number((byId("fragmentMinAlongMm") && byId("fragmentMinAlongMm").value) || 60));
       const _fragMinAcrossValue = Math.max(10, Number((byId("fragmentMinAcrossMm") && byId("fragmentMinAcrossMm").value) || 60));
       const _napDeg = zone ? Number(zone.napDirectionDeg != null ? zone.napDirectionDeg : (DEFAULT_NAP_DIRECTION_DEG != null ? DEFAULT_NAP_DIRECTION_DEG : 90)) : 90;
@@ -695,6 +709,9 @@
         minAlong: _fragMinAlongValue, minAcross: _fragMinAcrossValue,
         maxAlong: _matMaxAlongMm || 0, maxAcross: _matMaxAcrossMm || 0
       }) : null;
+      if (selectedLayout && typeof selectedLayout === "object") {
+        selectedLayout._hasSizeWarning = !!(isFragmentOnlyRegularLayoutSelected && _fragHint && Array.isArray(_fragHint.violations) && _fragHint.violations.length > 0);
+      }
       const layoutActionSectionHint = isFragmentOnlyRegularLayoutSelected
         ? ""
         : (isManualLayoutSelected ? "" : `<div class="tree-empty" style="margin-top:6px;">Настройки подбора, preview и применение</div>`);
