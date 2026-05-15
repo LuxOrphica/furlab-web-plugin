@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { execFileSync } = require("child_process");
-const { generateGltfString } = require("../services/clo_gltf_generator");
+const { generateGltfString, generateJfabString } = require("../services/clo_gltf_generator");
 
 // ---------------------------------------------------------------------------
 // DXF helpers (no external deps, minimal ENTITIES section)
@@ -388,14 +388,17 @@ async function handleExportRoutes(req, res, reqUrl, deps) {
       if (!mat || !mat.materialId) continue;
       const safeName = String(mat.name || mat.materialId).replace(/[^a-zA-Z0-9а-яА-Я_\-]/g, "_");
       const gltfName = `materials/${safeName}.gltf`;
+      const jfabName = `materials/${safeName}.jfab`;
       files.push({ name: gltfName, data: generateGltfString(mat) });
-      gltfPaths[mat.materialId] = gltfName;
+      files.push({ name: jfabName, data: generateJfabString(mat) });
+      gltfPaths[mat.materialId] = { gltf: gltfName, jfab: jfabName };
     }
 
     // Update manifest entries with gltfPath
     manifest.entries = manifest.entries.map((e) => ({
       ...e,
-      materialGltfPath: gltfPaths[e.materialId] || null
+      materialGltfPath: (gltfPaths[e.materialId] && gltfPaths[e.materialId].gltf) || null,
+      materialJfabPath: (gltfPaths[e.materialId] && gltfPaths[e.materialId].jfab) || null
     }));
     // Refresh manifest.json in files array
     const manifestIdx = files.findIndex((f) => f.name === "manifest.json");
