@@ -1,4 +1,4 @@
-﻿(function (global) {
+(function (global) {
   function createLayoutTypePicker(options) {
     const opts = options && typeof options === "object" ? options : {};
     const byId = typeof opts.byId === "function"

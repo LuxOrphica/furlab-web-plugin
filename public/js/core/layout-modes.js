@@ -1,4 +1,4 @@
-﻿// Extracted from app.js (layout mode catalog/titles/thumbs)
+// Extracted from app.js (layout mode catalog/titles/thumbs)
 (function (global) {
   const CATALOG = [
     { mode: "longitudinal", title: "\u041f\u0440\u043e\u0434\u043e\u043b\u044c\u043d\u043e-\u043f\u043e\u043f\u0435\u0440\u0435\u0447\u043d\u0430\u044f" },

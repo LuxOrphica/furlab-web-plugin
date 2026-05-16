@@ -1,4 +1,4 @@
-﻿// Extracted from app.js: manual tray HTML rendering.
+// Extracted from app.js: manual tray HTML rendering.
 (function (global) {
   function createManualTrayView(options) {
     const opts = options && typeof options === "object" ? options : {};

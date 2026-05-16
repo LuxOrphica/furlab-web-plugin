@@ -1,4 +1,4 @@
-﻿// Extracted from app.js (placement rows / coverage / explain blocks)
+// Extracted from app.js (placement rows / coverage / explain blocks)
 (function (global) {
   function createPlacementExplainView(deps) {
     const d = deps && typeof deps === "object" ? deps : {};
