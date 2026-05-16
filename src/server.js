@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 const http = require("http");
 const fs = require("fs");
@@ -44,7 +44,7 @@ const ROOT_DIR = path.resolve(__dirname, "..");
 const TMP_DIR = path.join(ROOT_DIR, "tmp");
 const PUBLIC_DIR = path.join(ROOT_DIR, "public");
 const EXAMPLES_DIR = process.env.FURLAB_EXAMPLES_DIR || "F:\\FURLAB\\Examples";
-const DEFAULT_DB_PATH_CYR = "F:\\FURLAB\\dev\\furlab-access\\БД\\Furlab 1.accdb";
+const DEFAULT_DB_PATH_CYR = "F:\\FURLAB\\dev\\furlab-access\\Р‘Р”\\Furlab 1.accdb";
 const DEFAULT_DB_PATH_LAT = "F:\\FURLAB\\dev\\furlab-access\\BD\\Furlab 1.accdb";
 const DB_PATH = process.env.FURLAB_DB_PATH ||
   (fs.existsSync(DEFAULT_DB_PATH_CYR) ? DEFAULT_DB_PATH_CYR : DEFAULT_DB_PATH_LAT);
@@ -3477,7 +3477,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.timeout = 300000; // 5 min — prevents Node from dropping long-running requests
+server.timeout = 300000; // 5 min вЂ” prevents Node from dropping long-running requests
 server.keepAliveTimeout = 65000;
 server.headersTimeout = 66000;
 server.listen(PORT, HOST, () => {
