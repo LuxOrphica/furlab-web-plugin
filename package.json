@@ -26,7 +26,10 @@
     "test:static": "node scripts/run_tests.js --skip-server-tests",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
-    "test:unit:coverage": "vitest run --coverage"
+    "test:unit:coverage": "vitest run --coverage",
+    "allure:report": "allure generate allure-results --clean -o allure-report",
+    "allure:open": "allure open allure-report",
+    "allure:run": "npm run test:unit && npm run allure:report && npm run allure:open"
   },
   "dependencies": {
     "clipper-lib": "^6.4.2",
@@ -34,6 +37,8 @@
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^4.1.6",
+    "allure-commandline": "^2.41.0",
+    "allure-vitest": "^3.8.0",
     "fast-check": "^4.8.0",
     "husky": "^9.1.7",
     "vitest": "^4.1.6"

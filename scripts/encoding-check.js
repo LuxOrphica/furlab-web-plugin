@@ -15,8 +15,9 @@ const TEXT_EXT = new Set([
   '.env', '.gitignore', '.gitattributes', '.editorconfig'
 ]);
 
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist']);
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'allure-results', 'tmp', 'allure-report']);
 const SKIP_FILES = new Set(['package-lock.json']);
+const SKIP_PREFIXES = [path.join('.husky', '_') + path.sep];
 
 function isLikelyText(filePath) {
   const base = path.basename(filePath).toLowerCase();
@@ -38,6 +39,8 @@ function walk(dir, out) {
       continue;
     }
     if (!e.isFile()) continue;
+    const rel = path.relative(ROOT, full);
+    if (SKIP_PREFIXES.some(p => rel.startsWith(p))) continue;
     if (isLikelyText(full)) out.push(full);
   }
 }
