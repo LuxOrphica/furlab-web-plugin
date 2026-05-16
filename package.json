@@ -21,13 +21,21 @@
     "repo:check": "node scripts/repo-hygiene-check.js",
     "test": "npm run encoding:check && npm run mojibake:check && npm run i18n:check && npm run repo:check",
     "ui:smoke": "node scripts/selftest_layers_visual_split.js",
-    "prepare": "husky install"
+    "prepare": "husky install",
+    "test:suite": "node scripts/run_tests.js",
+    "test:static": "node scripts/run_tests.js --skip-server-tests",
+    "test:unit": "vitest run",
+    "test:unit:watch": "vitest",
+    "test:unit:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "clipper-lib": "^6.4.2",
     "polygon-clipping": "^0.15.7"
   },
   "devDependencies": {
-    "husky": "^9.1.7"
+    "@vitest/coverage-v8": "^4.1.6",
+    "fast-check": "^4.8.0",
+    "husky": "^9.1.7",
+    "vitest": "^4.1.6"
   }
 }
