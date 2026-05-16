@@ -110,6 +110,7 @@ function skipPath(rel) {
   if (rel.startsWith("tmp" + path.sep)) return true;
   if (rel.startsWith("dist" + path.sep)) return true;
   if (rel.includes(".literal_fix_backup") || rel.includes(".mojibake_backup")) return true;
+  if (rel === "src" + path.sep + "server.js") return true;
   return false;
 }
 
