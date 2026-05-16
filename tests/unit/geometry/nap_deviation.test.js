@@ -47,25 +47,24 @@ describe("computeNapDeviation", () => {
     expect(Math.abs(computeNapDeviation(0, 180, true, deps))).toBeLessThan(1e-9);
   });
 
-  test("10° off WITH flip → Math.min(10, -170) = -170 [signed min, not abs-min]", () => {
-    // NOTE: uses Math.min on signed deltas — potential bug, see solver docs
-    expect(Math.abs(computeNapDeviation(0, 10, true, deps) + 170)).toBeLessThan(1e-9);
+  test("10° off WITH flip → abs-min picks 10° (not -170°)", () => {
+    expect(Math.abs(computeNapDeviation(0, 10, true, deps) - 10)).toBeLessThan(1e-9);
   });
 
-  test("170° off WITH flip → Math.min(-170, -10) = -170", () => {
+  test("170° off WITH flip → abs-min picks -10° (flip is closer)", () => {
     expect(Math.abs(computeNapDeviation(0, 170, true, deps) + 10)).toBeLessThan(1e-9);
   });
 
-  test("deviation always ≤ 180 in absolute value", () => {
+  test("deviation without flip always ≤ 180 in absolute value", () => {
     for (let t = 0; t < 360; t += 15)
       for (let r = 0; r < 360; r += 15)
         expect(Math.abs(computeNapDeviation(t, r, false, deps))).toBeLessThanOrEqual(180 + 1e-9);
   });
 
-  test("with flip: |deviation| always ≤ 180 (signed min)", () => {
+  test("with flip: |deviation| always ≤ 90", () => {
     for (let t = 0; t < 360; t += 15)
       for (let r = 0; r < 360; r += 15)
-        expect(Math.abs(computeNapDeviation(t, r, true, deps))).toBeLessThanOrEqual(180 + 1e-9);
+        expect(Math.abs(computeNapDeviation(t, r, true, deps))).toBeLessThanOrEqual(90 + 1e-9);
   });
 
   test("missing deps → returns null", () => {

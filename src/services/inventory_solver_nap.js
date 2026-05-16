@@ -16,7 +16,7 @@ function computeNapDeviation(targetDeg, rotatedDeg, allowFlip, deps) {
   if (!allowFlip) return d0;
   const d180 = deltaDeg(targetDeg, normalizeDeg(Number(rotatedDeg || 0) + 180));
   if (d180 === null) return d0;
-  return Math.min(d0, d180);
+  return Math.abs(d0) <= Math.abs(d180) ? d0 : d180;
 }
 
 module.exports = {

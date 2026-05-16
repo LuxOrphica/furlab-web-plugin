@@ -5,6 +5,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "node",
+    globalSetup: ["tests/allure-setup.js"],
     include: ["tests/unit/**/*.test.js", "tests/property/**/*.test.js"],
     exclude: ["tests/integration/**", "tests/e2e/**"],
     reporters: [
