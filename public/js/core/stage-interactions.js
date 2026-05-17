@@ -26,6 +26,7 @@
     const buildRectZonePoints = typeof opts.buildRectZonePoints === "function" ? opts.buildRectZonePoints : () => [];
     const buildEllipseZonePoints = typeof opts.buildEllipseZonePoints === "function" ? opts.buildEllipseZonePoints : () => [];
     const createZoneFromPoints = typeof opts.createZoneFromPoints === "function" ? opts.createZoneFromPoints : () => false;
+    const setWorkspaceTool = typeof opts.setWorkspaceTool === "function" ? opts.setWorkspaceTool : () => {};
     const pushCommand = typeof opts.pushCommand === "function" ? opts.pushCommand : () => {};
     const byId = typeof opts.byId === "function" ? opts.byId : () => null;
     const getCanvasHeight = typeof opts.getCanvasHeight === "function" ? opts.getCanvasHeight : () => 0;
@@ -983,8 +984,8 @@
         }
         if (state.tool !== "draw-zone") return;
         if (state.draftZone.length < 3) return;
-        const btn = byId("finishZoneBtn");
-        if (btn && typeof btn.click === "function") btn.click();
+        const created = typeof createZoneFromPoints === "function" && createZoneFromPoints(state.draftZone);
+        if (created && typeof setWorkspaceTool === "function") setWorkspaceTool("select");
       });
     }
 

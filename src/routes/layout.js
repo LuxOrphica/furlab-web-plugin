@@ -2793,9 +2793,8 @@ async function handleLayoutRoutes(req, res, reqUrl, deps) {
         if (!Array.isArray(poly) || !poly.length) continue;
         const outer = ringToPoints(poly[0]);
         if (outer.length < 3) continue;
-        const holes = poly.slice(1).map(ringToPoints).filter((h) => h.length >= 3);
-        const flat = holes.length ? bridgeHoles(outer, holes) : outer;
-        if (flat.length >= 3) result.push(flat);
+        // Return outer contour as its own polygon (no bridge — holes become separate zones)
+        result.push(outer);
       }
       return result;
     }

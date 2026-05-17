@@ -25,6 +25,25 @@ async function handleImportRoutes(req, res, reqUrl, deps) {
     parsePosGeometry
   } = deps;
 
+  function psOpenFileDialog({ filter, multiselect, title, initialDir }) {
+    return [
+      "$ErrorActionPreference='Stop'",
+      "Add-Type -AssemblyName System.Windows.Forms",
+      "$owner = New-Object System.Windows.Forms.Form",
+      "$owner.TopMost = $true",
+      "$owner.ShowInTaskbar = $false",
+      "$owner.WindowState = 'Minimized'",
+      "$owner.Show()",
+      `$dlg = New-Object System.Windows.Forms.OpenFileDialog`,
+      `$dlg.Filter = '${filter}'`,
+      `$dlg.Multiselect = $${multiselect ? "true" : "false"}`,
+      `$dlg.Title = '${title}'`,
+      `$dlg.InitialDirectory = '${initialDir}'`,
+      "$res = $dlg.ShowDialog($owner)",
+      "$owner.Close()"
+    ].join("; ");
+  }
+
   function normalizeGeometryFormat(raw) {
     const fmt = String(raw || "").trim().toLowerCase();
     if (fmt === "dxf" || fmt === "pac" || fmt === "pos") return fmt;
@@ -77,14 +96,7 @@ async function handleImportRoutes(req, res, reqUrl, deps) {
   if (req.method === "POST" && reqUrl.pathname === "/api/import/dxf/pick-files") {
     const initialDir = fs.existsSync(EXAMPLES_DIR) ? EXAMPLES_DIR : "C:\\";
     const ps = [
-      "$ErrorActionPreference='Stop'",
-      "Add-Type -AssemblyName System.Windows.Forms",
-      "$dlg = New-Object System.Windows.Forms.OpenFileDialog",
-      "$dlg.Filter = 'DXF files (*.dxf)|*.dxf|All files (*.*)|*.*'",
-      "$dlg.Multiselect = $true",
-      "$dlg.Title = 'Select DXF files'",
-      `$dlg.InitialDirectory = '${psPathLiteral(initialDir)}'`,
-      "$res = $dlg.ShowDialog()",
+      psOpenFileDialog({ filter: "DXF files (*.dxf)|*.dxf|All files (*.*)|*.*", multiselect: true, title: "Select DXF files", initialDir: psPathLiteral(initialDir) }),
       "if ($res -eq [System.Windows.Forms.DialogResult]::OK) {",
       "  @{ ok = $true; files = $dlg.FileNames } | ConvertTo-Json -Compress",
       "} else {",
@@ -107,14 +119,7 @@ async function handleImportRoutes(req, res, reqUrl, deps) {
   if (req.method === "POST" && reqUrl.pathname === "/api/import/zprj/pick-file") {
     const initialDir = fs.existsSync(EXAMPLES_DIR) ? EXAMPLES_DIR : "C:\\";
     const ps = [
-      "$ErrorActionPreference='Stop'",
-      "Add-Type -AssemblyName System.Windows.Forms",
-      "$dlg = New-Object System.Windows.Forms.OpenFileDialog",
-      "$dlg.Filter = 'CLO project (*.zprj)|*.zprj|All files (*.*)|*.*'",
-      "$dlg.Multiselect = $false",
-      "$dlg.Title = 'Select ZPRJ file'",
-      `$dlg.InitialDirectory = '${psPathLiteral(initialDir)}'`,
-      "$res = $dlg.ShowDialog()",
+      psOpenFileDialog({ filter: "CLO project (*.zprj)|*.zprj|All files (*.*)|*.*", multiselect: false, title: "Select ZPRJ file", initialDir: psPathLiteral(initialDir) }),
       "if ($res -eq [System.Windows.Forms.DialogResult]::OK) {",
       "  @{ ok = $true; file = $dlg.FileName } | ConvertTo-Json -Compress",
       "} else {",

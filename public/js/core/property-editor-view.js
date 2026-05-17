@@ -841,10 +841,10 @@
         </div>
       `).join("");
       const intarsiaImportSection = isIntarsiaMode ? renderEditorSection("layout_intarsia_import", "Импорт контуров", `
-        <input id="intarsiaSvgAddFileInputProp" type="file" accept=".svg,image/svg+xml" style="display:none"/>
         ${fragRows}
         <div class="prop-actions prop-actions-stack" style="margin-top:${hasSvg ? "4px" : "0"};">
-          <button class="prop-btn" id="intarsiaSvgAddBtnProp" type="button">+ Добавить SVG</button>
+          <button class="prop-btn prop-btn--dark" id="intarsiaSvgAddBtnProp" type="button">+ Добавить SVG</button>
+          <div style="margin-top:6px;font-size:11px;color:#666;line-height:1.4;">Лучший результат: контуры без заливки, без групп, один путь на фрагмент.</div>
         </div>
       `, true) : "";
 
@@ -863,17 +863,25 @@
       `;
       bindSectionToggles(root);
 
-      // Intarsia SVG import buttons in property editor
-      const svgAddBtnProp = byId("intarsiaSvgAddBtnProp");
-      const svgAddFileInputProp = byId("intarsiaSvgAddFileInputProp");
-      if (svgAddBtnProp && svgAddFileInputProp && typeof importSvgContours === "function") {
-        svgAddBtnProp.onclick = () => svgAddFileInputProp.click();
-        svgAddFileInputProp.onchange = () => {
-          const file = svgAddFileInputProp.files && svgAddFileInputProp.files[0];
+      // Intarsia SVG import — stable file input lives outside re-rendered HTML
+      let stableFileInput = document.getElementById("intarsiaSvgAddFileInputStable");
+      if (!stableFileInput && typeof importSvgContours === "function") {
+        stableFileInput = document.createElement("input");
+        stableFileInput.type = "file";
+        stableFileInput.id = "intarsiaSvgAddFileInputStable";
+        stableFileInput.accept = ".svg,image/svg+xml";
+        stableFileInput.style.display = "none";
+        stableFileInput.onchange = () => {
+          const file = stableFileInput.files && stableFileInput.files[0];
           if (!file) return;
           importSvgContours(file, 1);
-          svgAddFileInputProp.value = "";
+          stableFileInput.value = "";
         };
+        document.body.appendChild(stableFileInput);
+      }
+      const svgAddBtnProp = byId("intarsiaSvgAddBtnProp");
+      if (svgAddBtnProp && stableFileInput) {
+        svgAddBtnProp.onclick = () => stableFileInput.click();
       }
       // Per-fragment delete buttons
       const fragDelBtns = (byId("propertyEditor") || document).querySelectorAll(".intarsia-frag-del-btn");

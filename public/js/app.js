@@ -1734,9 +1734,20 @@
       if (pts.length < 3) return false;
       const zoneId = state.nextZoneId++;
       const detailId = Number(options && options.detailId || state.selectedDetailId || 0) || null;
+      const parentZoneIdOpt = Number(options && options.parentZoneId || 0) || null;
+      function resolveZoneName() {
+        if (parentZoneIdOpt) {
+          const parent = (Array.isArray(state.zones) ? state.zones : []).find((z) => Number(z && z.id || 0) === parentZoneIdOpt);
+          const parentName = (parent && parent.name) || (options.parentZoneSnapshot && options.parentZoneSnapshot.name) || `Зона ${parentZoneIdOpt}`;
+          const parentSuffix = String(parentName).replace(/^Зона\s*/i, "");
+          const siblingCount = (Array.isArray(state.zones) ? state.zones : []).filter((z) => Number(z && z.parentZoneId || 0) === parentZoneIdOpt && Number(z && z.detailId || 0) === detailId).length;
+          return `Зона ${parentSuffix}${siblingCount + 1}`;
+        }
+        return `Зона ${detailId || zoneId}`;
+      }
       const zone = {
         id: zoneId,
-        name: `Зона ${zoneId}`,
+        name: resolveZoneName(),
         detailId,
         napDirectionDeg: DEFAULT_NAP_DIRECTION_DEG,
         originType: String(options && options.originType || "manual").trim().toLowerCase() || "manual",
@@ -1751,7 +1762,7 @@
       pushCommand(cmd);
       state.draftZone = [];
       renderScene();
-      void persistZonesForCurrentWorkspace();
+      if (!options.skipPersist) void persistZonesForCurrentWorkspace();
       return true;
     }
     function removeSelectedZoneVertex() {
@@ -2015,8 +2026,14 @@
         }
       }
     }
-    function undo() { const cmd = state.history.undo.pop(); if (!cmd) return; revertCommand(cmd); state.history.redo.push(cmd); renderScene(); void persistZonesForCurrentWorkspace(); }
-    function redo() { const cmd = state.history.redo.pop(); if (!cmd) return; executeCommand(cmd); state.history.undo.push(cmd); renderScene(); void persistZonesForCurrentWorkspace(); }
+    function undo() { const cmd = state.history.undo.pop(); if (!cmd) return; revertCommand(cmd); state.history.redo.push(cmd); renderScene(); void persistZonesCurrentNoReload(); }
+    function redo() { const cmd = state.history.redo.pop(); if (!cmd) return; executeCommand(cmd); state.history.undo.push(cmd); renderScene(); void persistZonesCurrentNoReload(); }
+    async function persistZonesCurrentNoReload() {
+      const workspaceKey = buildZonesWorkspaceKey();
+      if (!workspaceKey) return;
+      const zones = (Array.isArray(state.zones) ? state.zones : []).map(normalizeZoneForPersistence).filter(Boolean);
+      await api("/api/zones/save", "POST", { workspaceKey, selectedZoneId: Number(state.selectedZoneId || 0) || null, zones }, 20000);
+    }
 
     function fitPatternToView() {
       const g = state.patternGeometry; if (!g || !g.bbox) return;
@@ -2985,6 +3002,8 @@
         const reconciledZones = reconcileZonesWithDetails(savedZones);
         const needsReconcilePersist = reconciledZones.length !== savedZones.length;
         state.zones = reconciledZones;
+        state.history.undo = [];
+        state.history.redo = [];
         // Sync zone materialIds into projectMaterials so the Мех tab shows names not GUIDs
         for (const zone of reconciledZones) {
           const mid = String(zone && zone.materialId || "").trim();
@@ -3409,9 +3428,19 @@
       const z = zone && typeof zone === "object" ? zone : null;
       return !!(z && isSplitDerivedZone(z) && !hasSplitDescendants(z));
     }
+    function isLastZoneInDetail(zone) {
+      const z = zone && typeof zone === "object" ? zone : null;
+      if (!z) return false;
+      const detailId = Number(z.detailId || 0);
+      const zonesInDetail = (Array.isArray(state.zones) ? state.zones : [])
+        .filter((item) => Number(item && item.detailId || 0) === detailId);
+      return zonesInDetail.length <= 1;
+    }
+
     function canDeleteZone(zone) {
       const z = zone && typeof zone === "object" ? zone : null;
       if (!z) return false;
+      if (isLastZoneInDetail(z)) return false;
       if (isManualZone(z)) return true;
       return canRestoreParentZone(z);
     }
@@ -3464,11 +3493,11 @@
       const zoneId = Number(z.id || 0) || 0;
       if (zoneId <= 0) return false;
       if (!canDeleteZone(z)) {
-        byId("workspaceInfo").textContent = isSplitDerivedZone(z)
-          ? "Нельзя отменить это разбиение, пока существуют дочерние зоны более глубокого уровня."
-          : isManualZone(z)
-            ? "Эту зону сейчас нельзя удалить."
-            : "Базовую зону детали удалять нельзя.";
+        byId("workspaceInfo").textContent = isLastZoneInDetail(z)
+          ? "Базовую зону детали удалять нельзя."
+          : isSplitDerivedZone(z)
+            ? "Нельзя отменить это разбиение, пока существуют дочерние зоны более глубокого уровня."
+            : "Эту зону сейчас нельзя удалить.";
         return false;
       }
       const isManual = isManualZone(z);
@@ -3561,14 +3590,25 @@
         byId("workspaceInfo").textContent = `Ошибка: ${String(res && res.error || "unknown")}`;
         return;
       }
+      console.log("[intarsia-fragments] api res:", { subZones: (res.subZones||[]).length, remainderZones: (res.remainderZones||[]).length, fragments: fragments.length, zonePoints: zone.points.length, zoneId: zone.id });
       const detailId = Number(zone.detailId || state.selectedDetailId || 0) || null;
-      const parentSnapshot = { id: zone.id, name: zone.name, points: zone.points.slice() };
+      const parentSnapshot = {
+        id: zone.id,
+        name: String(zone.name || `Зона ${zone.id}`),
+        detailId: Number(zone.detailId || 0) || null,
+        materialId: zone.materialId !== undefined && zone.materialId !== null && String(zone.materialId).trim() ? String(zone.materialId).trim() : null,
+        materialName: zone.materialName !== undefined && zone.materialName !== null && String(zone.materialName).trim() ? String(zone.materialName).trim() : null,
+        napDirectionDeg: normalizeDeg(zone.napDirectionDeg, DEFAULT_NAP_DIRECTION_DEG),
+        originType: ["base", "split", "manual"].includes(String(zone.originType || "").trim().toLowerCase()) ? String(zone.originType || "").trim().toLowerCase() : "base",
+        parentZoneId: Number(zone.parentZoneId || 0) || null,
+        points: zone.points.map((p) => ({ x: Number(p.x), y: Number(p.y) }))
+      };
       let firstNewZoneId = null;
-      // Create sub-zones for each fragment clipped to zone
+      // Create sub-zones for each fragment clipped to zone (skipPersist to avoid race condition)
       for (const sz of (res.subZones || [])) {
         if (Array.isArray(sz.points) && sz.points.length >= 3) {
           const idBefore = state.nextZoneId;
-          createZoneFromPoints(sz.points, { detailId, originType: "split", parentZoneId: zone.id, parentZoneSnapshot: parentSnapshot });
+          createZoneFromPoints(sz.points, { detailId, originType: "split", parentZoneId: zone.id, parentZoneSnapshot: parentSnapshot, skipPersist: true });
           if (!firstNewZoneId && state.nextZoneId > idBefore) firstNewZoneId = idBefore;
         }
       }
@@ -3576,11 +3616,11 @@
       for (const rz of (res.remainderZones || [])) {
         if (Array.isArray(rz.points) && rz.points.length >= 3) {
           const idBefore = state.nextZoneId;
-          createZoneFromPoints(rz.points, { detailId, originType: "split", parentZoneId: zone.id, parentZoneSnapshot: parentSnapshot });
+          createZoneFromPoints(rz.points, { detailId, originType: "split", parentZoneId: zone.id, parentZoneSnapshot: parentSnapshot, skipPersist: true });
           if (!firstNewZoneId && state.nextZoneId > idBefore) firstNewZoneId = idBefore;
         }
       }
-      // Rebind intarsia layout to first new sub-zone so it's not deleted with the original zone
+      // Rebind intarsia layout to first new sub-zone before removing original
       if (firstNewZoneId) {
         const intarsiaEntry = (Array.isArray(state.layouts) ? state.layouts : [])
           .find((e) => String(e && e.mode || "") === "intarsia" && Number(e && e.boundZoneId || 0) === Number(zone.id || 0));
@@ -3589,8 +3629,18 @@
           state.layoutRun.selectedZoneId = firstNewZoneId;
         }
       }
-      // Delete original zone (no confirm — user already triggered this via context menu)
-      await deleteZoneEntry(zone, { skipConfirm: true });
+      // Remove original zone directly — it's a base zone so deleteZoneEntry would refuse it
+      const origId = Number(zone.id || 0);
+      state.zones = (Array.isArray(state.zones) ? state.zones : []).filter((z) => Number(z && z.id || 0) !== origId);
+      state.nextZoneId = Math.max(state.nextZoneId, origId + 1);
+      // Remove all intarsia fragments that were applied (they are now encoded as zones)
+      const appliedFragmentIds = new Set(fragments.map((f) => Number(f && f.id || 0)).filter(Boolean));
+      state.intarsiaSvgFragments = (Array.isArray(state.intarsiaSvgFragments) ? state.intarsiaSvgFragments : [])
+        .filter((f) => !appliedFragmentIds.has(Number(f && f.id || 0)));
+      state.layoutRun.fragments = (Array.isArray(state.layoutRun.fragments) ? state.layoutRun.fragments : [])
+        .filter((f) => !appliedFragmentIds.has(Number(f && f.id || 0)));
+      state.selectedFragmentId = null;
+      await persistZonesCurrentNoReload();
       byId("workspaceInfo").textContent = `Зона разбита: ${(res.subZones || []).length} фрагм. + ${(res.remainderZones || []).length} остаток`;
       renderScene();
       renderDetailZoneTree();
@@ -3618,25 +3668,33 @@
         return;
       }
       const detailId = Number(zone.detailId || state.selectedDetailId || 0) || null;
-      const parentSnapshot = { id: zone.id, name: zone.name, points: zone.points.slice() };
-      // Create sub-zone for this fragment
+      const parentSnapshot = {
+        id: zone.id,
+        name: String(zone.name || `Зона ${zone.id}`),
+        detailId: Number(zone.detailId || 0) || null,
+        materialId: zone.materialId !== undefined && zone.materialId !== null && String(zone.materialId).trim() ? String(zone.materialId).trim() : null,
+        materialName: zone.materialName !== undefined && zone.materialName !== null && String(zone.materialName).trim() ? String(zone.materialName).trim() : null,
+        napDirectionDeg: normalizeDeg(zone.napDirectionDeg, DEFAULT_NAP_DIRECTION_DEG),
+        originType: ["base", "split", "manual"].includes(String(zone.originType || "").trim().toLowerCase()) ? String(zone.originType || "").trim().toLowerCase() : "base",
+        parentZoneId: Number(zone.parentZoneId || 0) || null,
+        points: zone.points.map((p) => ({ x: Number(p.x), y: Number(p.y) }))
+      };
+      // Create sub-zone for this fragment (skipPersist to avoid race condition)
       for (const sz of (res.subZones || [])) {
         if (Array.isArray(sz.points) && sz.points.length >= 3) {
-          createZoneFromPoints(sz.points, { detailId, originType: "split", parentZoneId: zone.id, parentZoneSnapshot: parentSnapshot });
+          createZoneFromPoints(sz.points, { detailId, originType: "split", parentZoneId: zone.id, parentZoneSnapshot: parentSnapshot, skipPersist: true });
         }
       }
-      // Update original zone to remainder (diff of zone minus this fragment)
+      // Create remainder zone(s) as split children, then delete original
       const remainders = (res.remainderZones || []).filter((rz) => Array.isArray(rz.points) && rz.points.length >= 3);
-      if (remainders.length === 1) {
-        // Update zone in-place
-        zone.points = remainders[0].points;
-        void persistZonesForCurrentWorkspace();
-      } else if (remainders.length > 1) {
-        // Zone split into multiple pieces — replace with new zones
-        for (const rz of remainders) {
-          createZoneFromPoints(rz.points, { detailId, originType: "split", parentZoneId: zone.id, parentZoneSnapshot: parentSnapshot });
-        }
-        await deleteZoneEntry(zone, { skipConfirm: true });
+      for (const rz of remainders) {
+        createZoneFromPoints(rz.points, { detailId, originType: "split", parentZoneId: zone.id, parentZoneSnapshot: parentSnapshot, skipPersist: true });
+      }
+      if (remainders.length > 0) {
+        // Remove original zone directly — base zones are rejected by deleteZoneEntry
+        const origId = Number(zone.id || 0);
+        state.zones = (Array.isArray(state.zones) ? state.zones : []).filter((z) => Number(z && z.id || 0) !== origId);
+        await persistZonesCurrentNoReload();
       }
       // Remove this fragment from intarsia list
       state.intarsiaSvgFragments = (Array.isArray(state.intarsiaSvgFragments) ? state.intarsiaSvgFragments : [])
@@ -11195,7 +11253,8 @@ function refreshSelectionInfo() {
         }
         if (e.key === "Enter" && String(state.tool || "") === "draw-zone" && Array.isArray(state.draftZone) && state.draftZone.length >= 3) {
           e.preventDefault();
-          void createZoneFromPoints(state.draftZone);
+          const created = createZoneFromPoints(state.draftZone);
+          if (created) setWorkspaceTool("select");
           return;
         }
       }
@@ -11328,6 +11387,7 @@ function refreshSelectionInfo() {
         buildRectZonePoints: (a, b) => buildRectZonePoints(a, b),
         buildEllipseZonePoints: (a, b, segments) => buildEllipseZonePoints(a, b, segments),
         createZoneFromPoints: (points, options) => createZoneFromPoints(points, options),
+        setWorkspaceTool: (tool) => setWorkspaceTool(tool),
         smoothZoneVertexPoints: (points, vertexIndex, strength) => smoothZoneVertexPoints(points, vertexIndex, strength),
         beginCurveEdit: (zone, vertexIndex, strength) => beginCurveEdit(zone, vertexIndex, strength),
         clearCurveEdit: (options) => clearCurveEdit(options),

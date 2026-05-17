@@ -1150,6 +1150,15 @@ body { font-family: "Iosevka", "Iosevka Fixed", monospace; margin: 10px; color: 
       background: #333;
       border-color: #333;
     }
+    .prop-btn--dark {
+      background: #444;
+      color: #fff;
+      border-color: #333;
+    }
+    .prop-btn--dark:hover:not(:disabled) {
+      background: #222;
+      border-color: #111;
+    }
     .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.25); display: none; align-items: center; justify-content: center; z-index: 1000; }
     #inventoryProgressBackdrop {
       align-items: flex-start;
