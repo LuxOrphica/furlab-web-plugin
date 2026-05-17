@@ -148,7 +148,7 @@ async function handleProjectRoutes(req, res, reqUrl, deps) {
       for (const [layoutId, pieceIds] of layoutReservations) {
         reserveScrapPieces(id, layoutId, pieceIds, deps);
       }
-    } catch (_) {}
+    } catch (e) { console.log("[reserve] error:", e && e.message); }
 
     // Sync parts, zones, layouts to Access DB — non-fatal.
     try { syncLayoutsToDb(project, deps); } catch (_) {}

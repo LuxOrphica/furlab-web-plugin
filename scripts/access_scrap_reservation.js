@@ -77,19 +77,62 @@ function toIso(v) {
   return String(v);
 }
 
-function nowIso() { return new Date().toISOString(); }
+function normalizeGuidLike(v) {
+  var s = String(v === null || v === undefined ? "" : v).toLowerCase().replace(/\s+/g, "");
+  s = s.replace(/\{guid/g, "").replace(/[{}]/g, "");
+  return s;
+}
+
+function sqlGuidLike(v) {
+  var s = String(v || "").replace(/^\s+|\s+$/g, "");
+  var m = s.match(/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/);
+  if (m) return "{guid {" + String(m[0]).toUpperCase() + "}}";
+  return "Null";
+}
+
+function updateScrapStatus(db, pid, status) {
+  // Scan all ScrapPiece rows to find the matching id (DAO GUID fields need exact native id)
+  var rs = null;
+  var nativeId = null;
+  try {
+    rs = db.OpenRecordset("SELECT id FROM ScrapPiece;");
+    var targetGuid = normalizeGuidLike(pid);
+    while (!rs.EOF) {
+      var rowId = String(rs.Fields("id").Value || "");
+      if (normalizeGuidLike(rowId) === targetGuid) { nativeId = rowId; break; }
+      rs.MoveNext();
+    }
+    rs.Close();
+  } catch (e) {
+    if (rs) { try { rs.Close(); } catch (_) {} }
+    WScript.StdErr.WriteLine("[updateScrapStatus] scan error: " + String(e.message || e));
+    return;
+  }
+  if (!nativeId) {
+    WScript.StdErr.WriteLine("[updateScrapStatus] piece not found for pid=" + pid);
+    return;
+  }
+  try {
+    db.Execute(
+      "UPDATE ScrapPiece SET scrapStatus=" + sqlText(status) + ", updatedAt=Now()" +
+      " WHERE id=" + sqlGuidLike(nativeId) + ";",
+      128
+    );
+  } catch (e) {
+    WScript.StdErr.WriteLine("[updateScrapStatus] execute error: " + String(e.message || e) + " nativeId=" + nativeId);
+  }
+}
 
 function ensureTable(db) {
-  // Try opening — if fails, create
   try {
     var rs = db.OpenRecordset("SELECT TOP 1 id FROM ScrapReservation;");
     rs.Close();
-    return true; // table exists
+    return { ok: true };
   } catch (_) {}
   try {
     db.Execute(
       "CREATE TABLE ScrapReservation (" +
-        "id TEXT(50) NOT NULL PRIMARY KEY, " +
+        "id TEXT(50) NOT NULL, " +
         "scrapPieceId TEXT(100) NOT NULL, " +
         "projectId TEXT(100) NOT NULL, " +
         "layoutId TEXT(100), " +
@@ -98,9 +141,9 @@ function ensureTable(db) {
         "note TEXT(500)" +
       ");"
     );
-    return true;
+    return { ok: true };
   } catch (e) {
-    return false;
+    return { ok: false, detail: String(e.message || e) };
   }
 }
 
@@ -113,9 +156,9 @@ try {
   var dao = new ActiveXObject("DAO.DBEngine.120");
   daoDb = dao.OpenDatabase(dbPath, false, false);
 
-  var tableOk = ensureTable(daoDb);
-  if (!tableOk) {
-    WScript.Echo('{"ok":false,"error":"table_create_failed"}');
+  var tableCheck = ensureTable(daoDb);
+  if (!tableCheck.ok) {
+    WScript.Echo('{"ok":false,"error":"table_create_failed","detail":"' + esc(tableCheck.detail || "") + '"}');
     WScript.Quit(1);
   }
 
@@ -126,7 +169,6 @@ try {
     var pieceIds = payload.scrapPieceIds && payload.scrapPieceIds.length ? payload.scrapPieceIds : [];
     if (!projectId) { WScript.Echo('{"ok":false,"error":"projectId_required"}'); WScript.Quit(1); }
 
-    var nowStr = nowIso();
     var inserted = 0;
     var skipped = 0;
 
@@ -147,7 +189,11 @@ try {
         rsCheck.Close();
       } catch (_) { alreadyExists = false; }
 
-      if (alreadyExists) { skipped++; continue; }
+      if (alreadyExists) {
+        updateScrapStatus(daoDb, pid, "Reserved");
+        skipped++;
+        continue;
+      }
 
       var newId = newGuid();
       var insertSql = "INSERT INTO ScrapReservation (id, scrapPieceId, projectId, layoutId, reservedAt, releasedAt, note) VALUES (" +
@@ -155,12 +201,13 @@ try {
         sqlText(pid) + ", " +
         sqlText(projectId) + ", " +
         (layoutId ? sqlText(layoutId) : "Null") + ", " +
-        "#" + nowStr + "#, " +
+        "Now(), " +
         "Null, " +
         sqlText("project_save") +
       ");";
       try {
         daoDb.Execute(insertSql);
+        updateScrapStatus(daoDb, pid, "Reserved");
         inserted++;
       } catch (e) {
         skipped++;
@@ -175,8 +222,19 @@ try {
     var relLayoutId = String(payload.releaseLayoutId || payload.layoutId || "").replace(/^\s+|\s+$/g, "");
     if (!relProjectId) { WScript.Echo('{"ok":false,"error":"projectId_required"}'); WScript.Quit(1); }
 
-    var nowStr2 = nowIso();
-    var updateSql = "UPDATE ScrapReservation SET releasedAt=#" + nowStr2 + "# WHERE projectId=" + sqlText(relProjectId) +
+    // Collect piece IDs being released so we can revert scrapStatus
+    var releasedPieceIds = [];
+    try {
+      var rsPids = daoDb.OpenRecordset(
+        "SELECT scrapPieceId FROM ScrapReservation WHERE projectId=" + sqlText(relProjectId) +
+        (relLayoutId ? " AND layoutId=" + sqlText(relLayoutId) : "") +
+        " AND releasedAt Is Null;"
+      );
+      while (!rsPids.EOF) { releasedPieceIds.push(String(rsPids.Fields("scrapPieceId").Value || "")); rsPids.MoveNext(); }
+      rsPids.Close();
+    } catch (_) {}
+
+    var updateSql = "UPDATE ScrapReservation SET releasedAt=Now() WHERE projectId=" + sqlText(relProjectId) +
       (relLayoutId ? " AND layoutId=" + sqlText(relLayoutId) : "") +
       " AND releasedAt Is Null;";
     var released = 0;
@@ -187,6 +245,24 @@ try {
       WScript.Echo('{"ok":false,"error":"release_failed","detail":"' + esc(String(e.message || e)) + '"}');
       WScript.Quit(1);
     }
+
+    // Revert ScrapPiece.scrapStatus back to 'available' for released pieces
+    // (only if no other active reservation holds the same piece)
+    for (var ri = 0; ri < releasedPieceIds.length; ri++) {
+      var rpid = releasedPieceIds[ri];
+      if (!rpid) continue;
+      try {
+        var rsStillHeld = daoDb.OpenRecordset(
+          "SELECT id FROM ScrapReservation WHERE scrapPieceId=" + sqlText(rpid) + " AND releasedAt Is Null;"
+        );
+        var stillHeld = !rsStillHeld.EOF;
+        rsStillHeld.Close();
+        if (!stillHeld) {
+          updateScrapStatus(daoDb, rpid, "Available");
+        }
+      } catch (_) {}
+    }
+
     WScript.Echo('{"ok":true,"action":"release","released":' + released + '}');
 
   // ── LIST ──────────────────────────────────────────────────────────────────

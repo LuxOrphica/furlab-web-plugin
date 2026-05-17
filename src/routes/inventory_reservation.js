@@ -132,10 +132,33 @@ function runReservationScript(action, payload, deps) {
   try { fs.unlinkSync(payloadPath); } catch (_) {}
 
   if (exec.run.error || exec.run.status !== 0) {
+    console.log("[reservation-script] failed:", { status: exec.run.status, stderr: exec.stderr, stdout: exec.stdout, error: exec.run.error && exec.run.error.message });
     return { ok: false, error: "cscript_failed", stderr: exec.stderr };
   }
 
+  if (exec.stderr) console.log("[reservation-script] stderr:", exec.stderr);
   const result = parseScriptJson(exec.stdout);
+
+  // If reserve succeeded, transition ScrapPiece.scrapStatus via the authoritative script
+  if (result && result.ok && action === "reserve" && Array.isArray(payload.scrapPieceIds)) {
+    const transitionScript = path.join(
+      ROOT_DIR, "..", "furlab-access", "scripts", "access_transition_piece_status.js"
+    );
+    if (fs.existsSync(transitionScript)) {
+      for (const pid of payload.scrapPieceIds) {
+        if (!pid) continue;
+        const tr = runCscript(transitionScript, [DB_PATH, pid, "reserve", "furlab-plugin"], CSCRIPT_TIMEOUT_MS);
+        if (tr.stderr) console.log("[transition] stderr:", tr.stderr);
+        const trResult = parseScriptJson(tr.stdout);
+        if (trResult && trResult.ok) {
+          console.log("[transition] reserved:", trResult.inventoryTag, trResult.beforeStatus, "→", trResult.afterStatus);
+        } else {
+          console.log("[transition] skipped:", pid, trResult && trResult.error);
+        }
+      }
+    }
+  }
+
   return result;
 }
 
