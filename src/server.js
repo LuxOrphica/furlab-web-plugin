@@ -3211,6 +3211,34 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && reqUrl.pathname === "/api/health") {
       return jsonReply(res, 200, { ok: true, service: "furlab-web-plugin", dbPath: DB_PATH, buildId: SERVER_BUILD_ID });
     }
+
+    if (req.method === "POST" && reqUrl.pathname === "/api/ac-proxy/layout-runs/commit") {
+      const AC_URL = process.env.FURLAB_AC_URL || "http://127.0.0.1:5500";
+      const body = await readBodyJson(req);
+      const postData = JSON.stringify(body);
+      const target = new URL("/api/layout-runs/commit", AC_URL);
+      const proxyRes = await new Promise((resolve, reject) => {
+        const opts = {
+          hostname: target.hostname,
+          port: Number(target.port) || 5500,
+          path: target.pathname,
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(postData) }
+        };
+        const proxyReq = http.request(opts, (r) => {
+          const chunks = [];
+          r.on("data", (c) => chunks.push(c));
+          r.on("end", () => {
+            try { resolve({ status: r.statusCode, json: JSON.parse(Buffer.concat(chunks).toString("utf8")) }); }
+            catch (_) { resolve({ status: r.statusCode, json: { ok: false, error: "proxy_parse_failed" } }); }
+          });
+        });
+        proxyReq.on("error", reject);
+        proxyReq.write(postData);
+        proxyReq.end();
+      });
+      return jsonReply(res, proxyRes.status || 200, proxyRes.json);
+    }
     if (req.method === "GET" && reqUrl.pathname === "/api/layout/fill/progress/stream") {
       const token = String(reqUrl.searchParams.get("token") || "").trim();
       if (!token) return jsonReply(res, 400, { ok: false, error: "progress_token_required" });

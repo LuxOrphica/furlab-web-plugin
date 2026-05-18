@@ -79,17 +79,14 @@
       return `
         <div class="manual-tray-toolbar manual-tray-toolbar-main">
           <div class="manual-tray-toolbar-group manual-tray-toolbar-group-actions">
-            <button type="button" data-manual-toolbar="recompute">${t("btn_evaluate", null, "Оценить")}</button>
             <button type="button" data-manual-toolbar="apply">${t("btn_apply", null, "Применить")}</button>
           </div>
-          ${hasDebug ? `
           <div class="manual-tray-toolbar-group">
             <button type="button" class="manual-tray-toggle manual-tray-debug-toggle" data-manual-debug-toggle="1">
               <span>${t("manual_debug_summary", null, "Диагностика")}</span>
               <span class="manual-tray-toggle-icon">${debugOpen ? iconSpan("chevronDown") : iconSpan("chevronRight")}</span>
             </button>
           </div>
-          ` : ""}
           <div class="manual-tray-toolbar-group manual-tray-toolbar-group-rotate">
             <button type="button" class="manual-tray-icon-btn" data-manual-toolbar="rotate-left" aria-label="${t("manual_rotate_left", null, "Повернуть влево")}" title="${t("manual_rotate_left", null, "Повернуть влево")}">${iconSpan("rotateLeft")}</button>
             <button type="button" class="manual-tray-icon-btn" data-manual-toolbar="rotate-right" aria-label="${t("manual_rotate_right", null, "Повернуть вправо")}" title="${t("manual_rotate_right", null, "Повернуть вправо")}">${iconSpan("rotateRight")}</button>
@@ -111,15 +108,15 @@
           </div>
         </div>
         ${hasDebug ? `
-          <div class="manual-tray-debug ${debugOpen ? "open" : ""}">
-            <div class="manual-tray-debug-body ${debugOpen ? "open" : ""}">
-              ${selectedInfoLine ? `<div class="manual-tray-metrics" title="${selectedInfoLine.replace(/"/g, "&quot;")}">${selectedInfoLine}</div>` : ""}
-              ${metricsLine ? `<div class="manual-tray-metrics" title="${metricsLine.replace(/"/g, "&quot;")}">${metricsLine}</div>` : ""}
-              ${seamDebugLine ? `<div class="manual-tray-metrics" title="${seamDebugLine.replace(/"/g, "&quot;")}">${seamDebugLine}</div>` : ""}
-              ${seamFlowSummary ? `<div class="manual-tray-metrics" title="${seamFlowSummary.replace(/"/g, "&quot;")}">${seamFlowSummary}</div>` : ""}
-              ${seamExcludedSummary ? `<div class="manual-tray-metrics" title="${seamExcludedSummary.replace(/"/g, "&quot;")}">${seamExcludedSummary}</div>` : ""}
-            </div>
+        <div class="manual-tray-debug ${debugOpen ? "open" : ""}">
+          <div class="manual-tray-debug-body ${debugOpen ? "open" : ""}">
+            ${selectedInfoLine ? `<div class="manual-tray-metrics" title="${selectedInfoLine.replace(/"/g, "&quot;")}">${selectedInfoLine}</div>` : ""}
+            ${metricsLine ? `<div class="manual-tray-metrics" title="${metricsLine.replace(/"/g, "&quot;")}">${metricsLine}</div>` : ""}
+            ${seamDebugLine ? `<div class="manual-tray-metrics" title="${seamDebugLine.replace(/"/g, "&quot;")}">${seamDebugLine}</div>` : ""}
+            ${seamFlowSummary ? `<div class="manual-tray-metrics" title="${seamFlowSummary.replace(/"/g, "&quot;")}">${seamFlowSummary}</div>` : ""}
+            ${seamExcludedSummary ? `<div class="manual-tray-metrics" title="${seamExcludedSummary.replace(/"/g, "&quot;")}">${seamExcludedSummary}</div>` : ""}
           </div>
+        </div>
         ` : ""}
         <div class="manual-tray-sections ${allOpen ? "open" : ""}">
           <div class="manual-tray-section">

@@ -953,7 +953,11 @@
       const btn = byId("inventoryPickBtn");
       if (btn) {
         const hasAnyZone = Array.isArray(state.zones) && state.zones.length > 0;
-        btn.disabled = !hasAnyZone || lockManualInventoryParams || !layoutEditEnabled;
+        const candidatesLoaded = isManualLayoutSelected
+          && Array.isArray(state.layoutRun && state.layoutRun.candidatePool)
+          && state.layoutRun.candidatePool.length > 0;
+        btn.disabled = !hasAnyZone || !layoutEditEnabled || candidatesLoaded;
+        btn.title = candidatesLoaded ? "Кандидаты уже загружены. Нажмите «Применить» для завершения." : "";
         btn.onclick = () => openInventoryStep1(currentLayoutMode);
       }
       const layoutNameInput = byId("layoutNameInput");

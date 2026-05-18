@@ -382,7 +382,12 @@
             layoutMode,
             fragmentNo: fragNo,
             fragmentCode: `${detailForRow}-${zoneId}-${fragNo}`,
-            materialName: (() => { const mid = String(zoneForRow && zoneForRow.materialId || ""); return mid ? (materialNamesMap.get(mid) || mid) : "-"; })(),
+            materialName: (() => {
+              const pieceMid = inventoryMode ? String(pl && pl.materialId || "") : "";
+              const zoneMid = String(zoneForRow && zoneForRow.materialId || "");
+              const mid = pieceMid || zoneMid;
+              return mid ? (materialNamesMap.get(mid) || mid) : "-";
+            })(),
             napSymbol: napSymbolByDeg(napDegNorm),
             napLabel: `${napSymbolByDeg(napDegNorm)} ${Math.round(napDegNorm)}°`,
             napDeg: Math.round(napDegNorm),
@@ -6006,7 +6011,7 @@ function renderSplitEvents(events) {
       state.layoutRun.manual.selectedCandidateTag = String(c.inventoryTag || c.id || "");
       state.layoutRun.manual.activePiece = {
         inventoryTag: String(c.inventoryTag || c.id || ""),
-        scrapPieceId: c.scrapPieceId ? String(c.scrapPieceId) : "",
+        scrapPieceId: String(c.scrapPieceId || c.id || ""),
         candidate: c,
         points: moved,
         center: centroid(moved),
@@ -6044,7 +6049,8 @@ function renderSplitEvents(events) {
         utilizationLocal: 0,
         scrapAreaMm2: Number(c && c.areaMm2 || 0),
         inventoryTag: String(c.inventoryTag || c.id || ""),
-        scrapPieceId: c.scrapPieceId ? String(c.scrapPieceId) : "",
+        scrapPieceId: String(c.scrapPieceId || c.id || ""),
+        materialId: String(c.materialId || ""),
         alignedContour: moved,
         inZoneContour: moved.slice(),
         inZoneContours: [],
@@ -6559,6 +6565,32 @@ function renderSplitEvents(events) {
           autosaveOk = !!(saveRes && saveRes.ok);
         } catch (_) {
           autosaveOk = false;
+        }
+      }
+      // Commit placements to furlab-access traceability log
+      if (placements.length > 0) {
+        try {
+          const zone = state.zones.find((z) => Number(z && z.id) === Number(state.selectedZoneId));
+          const commitPayload = {
+            runRef: String(selectedManualLayout && selectedManualLayout.persistedRunId || ""),
+            zoneName: String(zone && zone.name || String(state.selectedZoneId || "")),
+            placements: placements.map((p) => {
+              const contour = Array.isArray(p.alignedContour) ? p.alignedContour : [];
+              const cx = contour.length ? contour.reduce((s, pt) => s + (pt.x || 0), 0) / contour.length : 0;
+              const cy = contour.length ? contour.reduce((s, pt) => s + (pt.y || 0), 0) / contour.length : 0;
+              return {
+                inventoryTag: String(p.inventoryTag || ""),
+                scrapPieceId: String(p.scrapPieceId || ""),
+                rotationDeg: Number.isFinite(Number(p.rotationDeg || p.alignRotationDeg)) ? Number(p.rotationDeg || p.alignRotationDeg) : 0,
+                offsetXmm: Math.round(cx * 10) / 10,
+                offsetYmm: Math.round(cy * 10) / 10,
+                resultContourSnapshot: contour.length ? JSON.stringify(contour) : null
+              };
+            })
+          };
+          await api("/api/ac-proxy/layout-runs/commit", "POST", commitPayload, 10000);
+        } catch (_) {
+          // non-critical — traceability commit failure should not block apply
         }
       }
       renderInventoryManualPanel();
@@ -7919,9 +7951,13 @@ function renderSplitEvents(events) {
       const snap = snapshot && typeof snapshot === "object" ? snapshot : buildEmptyManualLayoutSnapshot();
       const base = state.layoutRun && typeof state.layoutRun === "object" ? state.layoutRun : {};
       const nextLayoutRunRaw = snap.layoutRun && typeof snap.layoutRun === "object" ? snap.layoutRun : {};
+      // Preserve existing placements if incoming snapshot has none (avoids wiping on re-open)
+      const _incomingPlacements = Array.isArray(nextLayoutRunRaw.placements) ? nextLayoutRunRaw.placements : null;
+      const _basePlacements = Array.isArray(base.placements) ? base.placements : [];
       state.layoutRun = {
         ...base,
         ...nextLayoutRunRaw,
+        placements: (_incomingPlacements && _incomingPlacements.length > 0) ? _incomingPlacements : _basePlacements,
         manual: {
           ...(base.manual && typeof base.manual === "object" ? base.manual : {}),
           ...(nextLayoutRunRaw.manual && typeof nextLayoutRunRaw.manual === "object" ? nextLayoutRunRaw.manual : {})
@@ -7946,6 +7982,31 @@ function renderSplitEvents(events) {
       renderPlacementRows(state.layoutRun.placements || []);
       renderSplitEvents(state.layoutRun.splitEvents || []);
       renderInventoryManualPanel();
+      // Auto-fetch candidates when pool is empty on layout select
+      const _poolEmpty = state.layoutRun.candidatePool.length === 0;
+      const _layoutActive = state.layoutRun.active === true || Array.isArray(state.layoutRun.placements) && state.layoutRun.placements.length > 0;
+      if (_poolEmpty && _layoutActive) {
+        void (async () => {
+          try {
+            const zone = state.zones.find((z) => Number(z && z.id) === Number(state.layoutRun.selectedZoneId || state.selectedZoneId));
+            if (!zone || !Array.isArray(zone.points) || zone.points.length < 3) return;
+            const filters = state.layoutRun.lastFilters && typeof state.layoutRun.lastFilters === "object" ? state.layoutRun.lastFilters : {};
+            const res = await api("/api/inventory/candidates", "POST", {
+              zone: { id: zone.id, points: zone.points },
+              napDirectionDeg: state.layoutRun.lastNapDirectionDeg || null,
+              napToleranceDeg: 45,
+              onlyAvailable: true,
+              includeScrapContour: true,
+              materialId: filters.materialId || undefined,
+              maxCandidates: 300
+            });
+            if (res && res.ok && Array.isArray(res.items)) {
+              state.layoutRun.candidatePool = res.items;
+              renderInventoryManualPanel();
+            }
+          } catch (_) {}
+        })();
+      }
     }
     function applyFragmentOnlyLayoutSnapshot(mode, snapshot, entry) {
       const normalizedMode = String(mode || "").trim();
@@ -8553,7 +8614,6 @@ function renderSplitEvents(events) {
       }
           byId("invDebugInfo").textContent = t("manual_mode_active", null, "Manual mode is active");
           byId("invUsedTags").textContent = `(${t("no_data", null, "none")})`;
-      renderPlacementRows([]);
       renderSplitEvents([]);
       byId("fillType").value = isInventoryLikeLayoutMode(state.layoutMode)
         ? "voronoi"
@@ -8878,7 +8938,9 @@ function renderSplitEvents(events) {
           state.layoutRun.strategy = state.layoutMode;
           state.layoutRun.inventoryScenario = inventoryScenario;
           state.layoutRun.selectedZoneId = zone.id;
-          state.layoutRun.placements = [];
+          if (!Array.isArray(state.layoutRun.placements) || state.layoutRun.placements.length === 0) {
+            state.layoutRun.placements = [];
+          }
           state.layoutRun.topChoicesByFragment = {};
           state.layoutRun.selectedPlacementFragmentId = null;
           state.layoutRun.candidatePool = prerankedCandidates;
@@ -8944,8 +9006,13 @@ function renderSplitEvents(events) {
           byId("invRejectedOutside").textContent = "0";
           byId("invDebugInfo").textContent = t("manual_mode_active", null, "Manual mode is active");
           byId("invUsedTags").textContent = `(${t("no_data", null, "none")})`;
-          renderPlacementRows([]);
+          renderPlacementRows(Array.isArray(state.layoutRun.placements) ? state.layoutRun.placements : []);
           renderSplitEvents([]);
+          // Ensure contours + seam reserve layers are visible in manual mode
+          state.layers.pfullZ = true;
+          state.layers.pcoreZ = true;
+          const _pfullChk = byId("layerPfullZ"); if (_pfullChk) _pfullChk.checked = true;
+          const _pcoreChk = byId("layerPcoreZ"); if (_pcoreChk) _pcoreChk.checked = true;
           renderInventoryManualPanel();
           openInventoryStep2();
           if (isStaleRun()) return;
@@ -11518,14 +11585,17 @@ function refreshSelectionInfo() {
         })
         .map((p) => ({
           fragmentId: String(p.fragmentId || p.id || ""),
-          scrapPieceId: String(p.id || ""),
+          scrapPieceId: String(p.scrapPieceId || p.id || ""),
           inventoryTag: String(p.inventoryTag || ""),
           rotationDeg: Number(p.rotationDeg || 0),
           offsetXmm: Number(p.offsetXmm || p.x || 0),
           offsetYmm: Number(p.offsetYmm || p.y || 0),
           resultContourSnapshot: Array.isArray(p.alignedContour) && p.alignedContour.length >= 3
             ? p.alignedContour
-            : (Array.isArray(p.alignedContourPoints) ? p.alignedContourPoints : [])
+            : (Array.isArray(p.alignedContourPoints) ? p.alignedContourPoints : []),
+          coreContourSnapshot: Array.isArray(p.inZoneCoreContour) && p.inZoneCoreContour.length >= 3
+            ? p.inZoneCoreContour
+            : []
         }));
       const normalizeRules = {
         seamAllowanceReserveMm: Number(lr && lr.allowanceMm || 12)
@@ -11690,20 +11760,34 @@ function refreshSelectionInfo() {
         const snapshot = lastRun ? {
           selectedZoneId: Number(lay.zoneId || 0) || null,
           layoutRun: {
+            active: true,
+            status: "applied",
             strategy: String(lay.mode || "longitudinal"),
             fillType: "voronoi",
+            selectedZoneId: Number(lay.zoneId || 0) || null,
             allowanceMm: Number(savedParams.normalizeRules && savedParams.normalizeRules.seamAllowanceReserveMm || 12),
             paramsSnapshot: restoredParamsSnapshot,
             fragments: Array.isArray(lastRun.resultSnapshot && lastRun.resultSnapshot.fragments) ? lastRun.resultSnapshot.fragments : [],
-            placements: (Array.isArray(lastRun.scrapPlacements) ? lastRun.scrapPlacements : []).map((sp) => {
+            placements: (Array.isArray(lastRun.scrapPlacements) ? lastRun.scrapPlacements : []).map((sp, idx) => {
               const contour = Array.isArray(sp.resultContourSnapshot) ? sp.resultContourSnapshot : [];
               return {
                 id: String(sp.scrapPieceId || ""),
+                fragmentId: idx + 1,
+                scrapPieceId: String(sp.scrapPieceId || ""),
                 inventoryTag: String(sp.inventoryTag || ""),
                 rotationDeg: Number(sp.rotationDeg || 0),
                 status: "matched",
                 alignedContour: contour,
-                alignedContourPoints: contour
+                alignedContourPoints: contour,
+                inZoneContour: contour,
+                inZoneCoreContour: Array.isArray(sp.coreContourSnapshot) && sp.coreContourSnapshot.length >= 3
+                  ? sp.coreContourSnapshot
+                  : [],
+                gainAreaMm2: 0,
+                scrapAreaMm2: 0,
+                overlapAreaMm2: 0,
+                outsideAreaMm2: 0,
+                fragmentAreaMm2: 0
               };
             }),
             stats: (lastRun.resultSnapshot && lastRun.resultSnapshot.stats) || {},
@@ -11731,7 +11815,11 @@ function refreshSelectionInfo() {
         state.selectedLayoutId = firstLayout.id;
         applyLayoutMode(firstLayout.mode);
         if (firstLayout.runtimeSnapshot) {
-          applyFragmentOnlyLayoutSnapshot(String(firstLayout.mode || ""), firstLayout.runtimeSnapshot, firstLayout);
+          if (String(firstLayout.mode || "") === "inventory_manual") {
+            applyManualLayoutSnapshot(firstLayout.runtimeSnapshot);
+          } else {
+            applyFragmentOnlyLayoutSnapshot(String(firstLayout.mode || ""), firstLayout.runtimeSnapshot, firstLayout);
+          }
         }
         // Kick stale-check re-preview so cutPoints are populated on load
         if (isFragmentOnlyLayoutMode(String(firstLayout.mode || ""))) {

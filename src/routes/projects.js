@@ -70,10 +70,14 @@ function listProjects(rootDir) {
 
 function syncLayoutsToDb(project, deps) {
   const { ROOT_DIR, TMP_DIR, DB_PATH, runCscript, parseScriptJson } = deps || {};
-  if (!DB_PATH || !fs.existsSync(DB_PATH)) return;
+  if (!DB_PATH || !fs.existsSync(DB_PATH)) {
+    console.log("[projects] syncLayoutsToDb skip: DB_PATH=", DB_PATH);
+    return;
+  }
   const layouts = Array.isArray(project && project.layouts) ? project.layouts : [];
   const parts   = Array.isArray(project && project.parts)   ? project.parts   : [];
   const zones   = Array.isArray(project && project.zones)   ? project.zones   : [];
+  console.log(`[projects] syncLayoutsToDb: parts=${parts.length} zones=${zones.length} layouts=${layouts.length}`);
   if (!parts.length && !zones.length && !layouts.length) return;
 
   // Pre-serialize nested objects so CScript (WSH JScript) doesn't need JSON.stringify
@@ -100,6 +104,7 @@ function syncLayoutsToDb(project, deps) {
     const result = parseScriptJson && parseScriptJson(exec.stdout);
     if (result && result.ok) {
       console.log(`[projects] DB layout sync: parts=${result.parts} zones=${result.zones} layouts=${result.layouts} runs=${result.runs} placements=${result.placements}`);
+      if (exec.stderr) console.log("[projects] DB layout sync stderr:", exec.stderr);
     } else {
       console.warn("[projects] DB layout sync failed:", exec.stderr || exec.stdout || (result && result.error));
     }

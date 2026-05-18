@@ -43,7 +43,7 @@ async function handleInventoryRoute(req, res, reqUrl, deps) {
     return true;
   }
 
-  const limit = Math.max(1, Math.min(2000, Number(body.limit || 200)));
+  const limit = Math.max(1, Math.min(2000, Number(body.limit || body.maxCandidates || 200)));
   if (!Number.isFinite(limit)) {
     jsonReply(res, 400, { ok: false, error: "invalid_limit" });
     return true;
