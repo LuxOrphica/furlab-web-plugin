@@ -81,6 +81,8 @@
       ? window.FurLabState.createInitialState(DEFAULT_NAP_DIRECTION_DEG)
       : {};
     const progressApi = window.FurLabProgress || {};
+    const reportsState = { model: null, selectedDetailId: null };
+    if (window.FurLabReports) window.FurLabReports.init({ state, reportsState, getSelectedLayoutEntry: () => getSelectedLayoutEntry() });
 
 
     function byId(id) { return document.getElementById(id); }
@@ -138,10 +140,7 @@
         .replace(/\"/g, "&quot;")
         .replace(/'/g, "&#39;");
     }
-    const reportsState = {
-      model: null,
-      selectedDetailId: null
-    };
+    // reportsState is declared above (before FurLabReports.init)
     const REPORT_MIN_FRAGMENT_AREA_MM2 = 50;
     function getLayoutSnapshotForReports(entry) {
       const e = entry && typeof entry === "object" ? entry : null;
@@ -177,18 +176,8 @@
       const fragId = Number(frag.id || 0);
       return placements.find((p) => Number(p && p.fragmentId || 0) === fragId) || null;
     }
-    function canOpenReports() {
-      const layouts = Array.isArray(state && state.layouts) ? state.layouts : [];
-      for (const entry of layouts) {
-        const snapshot = getLayoutSnapshotForReports(entry);
-        const frags = Array.isArray(snapshot && snapshot.layoutRun && snapshot.layoutRun.fragments) ? snapshot.layoutRun.fragments : [];
-        const placements = Array.isArray(snapshot && snapshot.layoutRun && snapshot.layoutRun.placements) ? snapshot.layoutRun.placements : [];
-        if (frags.length > 0 || placements.some((p) => String(p && p.status || "") === "matched")) return true;
-      }
-      const frags = Array.isArray(state && state.layoutRun && state.layoutRun.fragments) ? state.layoutRun.fragments : [];
-      const placements = Array.isArray(state && state.layoutRun && state.layoutRun.placements) ? state.layoutRun.placements : [];
-      return frags.length > 0 || placements.some((p) => String(p && p.status || "") === "matched");
-    }
+    // Reports functions delegated to window.FurLabReports (core/reports.js)
+    const canOpenReports = () => window.FurLabReports ? window.FurLabReports.canOpenReports() : false;
     function isInventoryModeForReports(mode) {
       const m = String(mode || "").trim().toLowerCase();
       return m === "inventory_manual" || m === "inventory_direct" || m === "inventory_split_return";
@@ -200,38 +189,20 @@
     }
     function napSymbolByDeg(deg) {
       const d = (((Number(deg) || 0) % 360) + 360) % 360;
-      if (d >= 337.5 || d < 22.5) return "→";
-      if (d < 67.5) return "↘";
-      if (d < 112.5) return "↓";
-      if (d < 157.5) return "↙";
-      if (d < 202.5) return "←";
-      if (d < 247.5) return "↖";
-      if (d < 292.5) return "↑";
-      return "↗";
+      if (d >= 337.5 || d < 22.5) return "в†’";
+      if (d < 67.5) return "в†";
+      if (d < 112.5) return "в†“";
+      if (d < 157.5) return "в†™";
+      if (d < 202.5) return "в†ђ";
+      if (d < 247.5) return "в†–";
+      if (d < 292.5) return "в†‘";
+      return "в†—";
     }
     function finiteNumOrNaN(value) {
       const n = Number(value);
       return Number.isFinite(n) ? n : NaN;
     }
-    function deriveReportNapDeg(placement) {
-      const pl = placement && typeof placement === "object" ? placement : null;
-      const baseNap = Number.isFinite(finiteNumOrNaN(pl?.napDirectionDeg))
-        ? Number(pl.napDirectionDeg)
-        : (Number.isFinite(finiteNumOrNaN(pl?.candidate?.napDirectionDeg))
-            ? Number(pl.candidate.napDirectionDeg)
-            : DEFAULT_NAP_DIRECTION_DEG);
-      const alignRot = Number.isFinite(finiteNumOrNaN(pl?.alignRotationDeg))
-        ? Number(pl.alignRotationDeg)
-        : (Number.isFinite(finiteNumOrNaN(pl?.rotationDeg))
-            ? Number(pl.rotationDeg)
-            : (Number.isFinite(finiteNumOrNaN(pl?.rotation))
-                ? Number(pl.rotation)
-                : 0));
-      const effectiveNap = Number.isFinite(finiteNumOrNaN(pl?.napEffectiveDeg))
-        ? Number(pl.napEffectiveDeg)
-        : (baseNap + alignRot);
-      return ((effectiveNap % 360) + 360) % 360;
-    }
+    // delegated to FurLabReports
     function normalizeContourArrayForReports(raw) {
       if (typeof normalizeContourArray === "function") return normalizeContourArray(raw);
       if (!raw) return null;
@@ -259,500 +230,13 @@
       walk(raw);
       return pts.length >= 3 ? pts : null;
     }
-    function buildReportsModel() {
-      const zones = Array.isArray(state && state.zones) ? state.zones : [];
-      const zoneById = new Map(zones.map((z) => [Number(z && z.id || 0), z]));
-      const materialNamesMap = new Map(
-        (Array.isArray(state.projectMaterials) ? state.projectMaterials : [])
-          .filter(m => m && m.id)
-          .map(m => [String(m.id), String(m.name || m.id)])
-      );
-      const rows = [];
-      let hiddenSmallCount = 0;
-      let hiddenSmallAreaMm2 = 0;
-      const layouts = Array.isArray(state && state.layouts) ? state.layouts : [];
-      const selectedLayoutId = Number(state && state.selectedLayoutId || 0) || 0;
-      const latestEntryByZone = new Map();
-      const rankLayoutForReports = (entry, snapshot, zoneId) => {
-        const isSelected = Number(entry && entry.id || 0) === selectedLayoutId;
-        const isPersisted = !!(entry && entry.persistedRunId);
-        const updatedAt = Number(
-          entry && entry.persistedAt
-          || snapshot && snapshot.updatedAt
-          || snapshot && snapshot.layoutRun && snapshot.layoutRun.updatedAt
-          || 0
-        ) || 0;
-        return [
-          Number(isSelected),
-          Number(isPersisted),
-          updatedAt,
-          Number(entry && entry.id || 0),
-          Number(zoneId || 0)
-        ];
-      };
-      const isRankGreater = (a, b) => {
-        for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
-          const av = Number(a[i] || 0);
-          const bv = Number(b[i] || 0);
-          if (av > bv) return true;
-          if (av < bv) return false;
-        }
-        return false;
-      };
-      for (const entry of layouts) {
-        const snapshot = getLayoutSnapshotForReports(entry);
-        if (!snapshot || !snapshot.layoutRun) continue;
-        const boundZoneId = Number(entry && entry.boundZoneId || snapshot.selectedZoneId || snapshot.layoutRun.selectedZoneId || 0) || 0;
-        if (!boundZoneId) continue;
-        const nextRank = rankLayoutForReports(entry, snapshot, boundZoneId);
-        const prev = latestEntryByZone.get(boundZoneId);
-        if (!prev || isRankGreater(nextRank, prev.rank)) {
-          latestEntryByZone.set(boundZoneId, { entry, snapshot, rank: nextRank });
-        }
-      }
-      for (const { entry, snapshot } of latestEntryByZone.values()) {
-        const placements = Array.isArray(snapshot.layoutRun.placements) ? snapshot.layoutRun.placements : [];
-        const fragments = Array.isArray(snapshot.layoutRun.fragments) ? snapshot.layoutRun.fragments : [];
-        const boundZoneId = Number(entry && entry.boundZoneId || snapshot.selectedZoneId || snapshot.layoutRun.selectedZoneId || 0) || 0;
-        const zone = zoneById.get(boundZoneId) || null;
-        const detailId = Number(entry && entry.boundDetailId || zone && zone.detailId || snapshot.selectedDetailId || 0) || 0;
-        const layoutMode = String(entry && entry.mode || snapshot && snapshot.layoutRun && snapshot.layoutRun.mode || "").trim();
-        const inventoryMode = isInventoryModeForReports(layoutMode);
-        const fragmentsSrc = fragments.length
-          ? fragments
-          : placements
-            .map((p, i) => {
-              const pts = normalizeContourArrayForReports(p && p.inZoneCoreContour) || normalizeContourArrayForReports(p && p.inZoneContour) || [];
-              if (pts.length < 3) return null;
-              return {
-                id: i + 1,
-                points: pts,
-                ownerPlacementIndex: i,
-                ownerPlacementId: Number(p && p.fragmentId || 0)
-              };
-            })
-            .filter(Boolean);
-        for (let i = 0; i < fragmentsSrc.length; i += 1) {
-          const frag = fragmentsSrc[i] || {};
-          const pl = findPlacementForFragmentInSnapshot(snapshot, frag);
-          const zoneId = Number(pl && pl.zoneId || boundZoneId || 0);
-          const zoneForRow = zoneById.get(zoneId) || zone || null;
-          const detailForRow = Number(zoneForRow && zoneForRow.detailId || detailId || 0) || 0;
-          // frag.points is always the authoritative visible fragment geometry:
-          // - inventory_direct: diffMulti result (core partition), frag.cutPoints = inZoneContour
-          // - z-order mosaic (buildVisibleMosaicModel): visible area after z-order, no cutPoints
-          // - fallback from placements: inZoneCoreContour or inZoneContour
-          // Always prefer frag.points when it has valid geometry.
-          const hasFragCutPoints = Array.isArray(frag.cutPoints) && frag.cutPoints.length >= 3;
-          const fragPts = normalizeContourArrayForReports(frag.points);
-          const pts = (fragPts && fragPts.length >= 3)
-            ? fragPts
-            : (normalizeContourArrayForReports(pl && pl.inZoneCoreContour) || normalizeContourArrayForReports(pl && pl.inZoneContour) || []);
-          if (pts.length < 3) continue;
-          const cutPts = hasFragCutPoints
-            ? (normalizeContourArrayForReports(frag.cutPoints) || pts)
-            : (normalizeContourArrayForReports(pl && pl.inZoneContour) || pts);
-          const napDegNorm = deriveReportNapDeg(pl);
-          const areaMm2 = Math.max(0, Number(frag.areaMm2 || polygonArea(pts) || 0));
-          if (areaMm2 > 0 && areaMm2 < REPORT_MIN_FRAGMENT_AREA_MM2) {
-            hiddenSmallCount += 1;
-            hiddenSmallAreaMm2 += areaMm2;
-            continue;
-          }
-          let cutAreaMm2 = Math.max(areaMm2, Math.abs(polygonArea(cutPts) || areaMm2));
-          // When cutPoints are missing but seam allowance is set, estimate cut area via perimeter formula
-          if (!hasFragCutPoints && cutPts === pts) {
-            const snapAllowanceMm = Number(snapshot.layoutRun && snapshot.layoutRun.allowanceMm || 0);
-            if (snapAllowanceMm > 0) {
-              let perim = 0;
-              for (let pi = 0; pi < pts.length; pi++) {
-                const a = pts[pi], b = pts[(pi + 1) % pts.length];
-                const dx = (b.x || b[0] || 0) - (a.x || a[0] || 0);
-                const dy = (b.y || b[1] || 0) - (a.y || a[1] || 0);
-                perim += Math.sqrt(dx * dx + dy * dy);
-              }
-              cutAreaMm2 = areaMm2 + perim * snapAllowanceMm + Math.PI * snapAllowanceMm * snapAllowanceMm;
-            }
-          }
-          const fragNo = i + 1;
-          rows.push({
-            index: rows.length + 1,
-            detailId: detailForRow,
-            zoneId,
-            layoutMode,
-            fragmentNo: fragNo,
-            fragmentCode: `${detailForRow}-${zoneId}-${fragNo}`,
-            materialName: (() => {
-              const pieceMid = inventoryMode ? String(pl && pl.materialId || "") : "";
-              const zoneMid = String(zoneForRow && zoneForRow.materialId || "");
-              const mid = pieceMid || zoneMid;
-              return mid ? (materialNamesMap.get(mid) || mid) : "-";
-            })(),
-            napSymbol: napSymbolByDeg(napDegNorm),
-            napLabel: `${napSymbolByDeg(napDegNorm)} ${Math.round(napDegNorm)}°`,
-            napDeg: Math.round(napDegNorm),
-            qty: 1,
-            areaMm2,
-            cutAreaMm2,
-            inventoryTag: inventoryMode
-              ? String((pl && (pl.inventoryTag || pl.scrapPieceId || pl.id)) || "-")
-              : "",
-            points: pts,
-            cutPoints: cutPts,
-            pieceContour: normalizeContourArrayForReports(pl && pl.alignedContour) || null,
-            zonePoints: Array.isArray(zoneForRow && zoneForRow.points) ? zoneForRow.points : []
-          });
-        }
-      }
-      const detailIds = Array.from(new Set(rows.map((r) => Number(r.detailId || 0)).filter((n) => Number.isFinite(n) && n > 0))).sort((a, b) => a - b);
-      const selectedLayout = getSelectedLayoutEntry();
-      const selectedZoneId = Number(
-        selectedLayout && String(selectedLayout.mode || "") === "inventory_manual" && selectedLayout.boundZoneId
-        || state && state.layoutRun && state.layoutRun.selectedZoneId
-        || state.selectedZoneId
-        || 0
-      );
-      const selectedZone = zones.find((z) => Number(z && z.id || 0) === selectedZoneId) || zones[0] || null;
-      const selectedDetailId = Number(selectedZone && selectedZone.detailId || detailIds[0] || 1);
-      return {
-        rows,
-        detailIds,
-        selectedDetailId: detailIds.includes(selectedDetailId) ? selectedDetailId : (detailIds[0] || null),
-        hasAnyInventory: rows.some((r) => String(r && r.inventoryTag || "").trim().length > 0),
-        hiddenSmallCount,
-        hiddenSmallAreaMm2
-      };
-    }
-    function renderReportsThumb(points, cutPoints, pieceContour) {
-      const corePts = Array.isArray(points) ? points : [];
-      const cutPts = Array.isArray(cutPoints) && cutPoints.length >= 3 ? cutPoints : corePts;
-      const piecePts = Array.isArray(pieceContour) && pieceContour.length >= 3 ? pieceContour : [];
-      // Use largest available contour for bounding box
-      const allPts = [].concat(piecePts.length >= 3 ? piecePts : cutPts, corePts);
-      if (allPts.length < 3) return "-";
-      let minX = Number.POSITIVE_INFINITY, minY = Number.POSITIVE_INFINITY;
-      let maxX = Number.NEGATIVE_INFINITY, maxY = Number.NEGATIVE_INFINITY;
-      for (const p of allPts) {
-        const x = Number(p && p.x);
-        const y = Number(p && p.y);
-        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-        minX = Math.min(minX, x); minY = Math.min(minY, y);
-        maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
-      }
-      if (!Number.isFinite(minX)) return "-";
-      const w = Math.max(1, maxX - minX);
-      const h = Math.max(1, maxY - minY);
-      const pad = 2;
-      const vw = 44;
-      const vh = 34;
-      const s = Math.min((vw - pad * 2) / w, (vh - pad * 2) / h);
-      const pathOf = (pts) => pts.map((p, i) => {
-        const x = ((Number(p.x) - minX) * s + pad).toFixed(2);
-        const y = ((maxY - Number(p.y)) * s + pad).toFixed(2);
-        return `${i === 0 ? "M" : "L"}${x},${y}`;
-      }).join(" ") + " Z";
-      // Layer 1: whole piece (if available) — thin outer outline
-      const piecePath = piecePts.length >= 3
-        ? `<path d="${pathOf(piecePts)}" fill="none" stroke="#aaa" stroke-width="0.7"/>`
-        : "";
-      // Layer 2: seam allowance boundary — solid outline
-      const cutPath = `<path d="${pathOf(cutPts)}" fill="none" stroke="#555" stroke-width="0.8"/>`;
-      // Layer 3: fragment core — dashed inner line
-      const corePath = corePts.length >= 3
-        ? `<path d="${pathOf(corePts)}" fill="none" stroke="#111" stroke-width="0.9" stroke-dasharray="2,1.5"/>`
-        : "";
-      return `<svg class="reports-thumb" viewBox="0 0 44 34" aria-hidden="true">${piecePath}${cutPath}${corePath}</svg>`;
-    }
-    function buildReportsSchemeSvg(rows, vw, vh) {
-      const list = Array.isArray(rows) ? rows : [];
-      const first = list[0] || null;
-      if (!first || !Array.isArray(first.zonePoints) || first.zonePoints.length < 3) return "";
-      const zonePts = normalizeContourArrayForReports(first.zonePoints) || [];
-      const allPts = zonePts.concat(...list.map((r) => Array.isArray(r.points) ? r.points : []));
-      let minX = Number.POSITIVE_INFINITY, minY = Number.POSITIVE_INFINITY;
-      let maxX = Number.NEGATIVE_INFINITY, maxY = Number.NEGATIVE_INFINITY;
-      for (const p of allPts) {
-        const x = Number(p && p.x), y = Number(p && p.y);
-        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-        minX = Math.min(minX, x); minY = Math.min(minY, y);
-        maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
-      }
-      if (!Number.isFinite(minX)) return "";
-      const w = Math.max(1, maxX - minX), h = Math.max(1, maxY - minY);
-      const pad = 12;
-      const s = Math.min((vw - pad * 2) / w, (vh - pad * 2) / h);
-      const mapPt = (p) => ({ x: ((Number(p.x) - minX) * s + pad), y: ((maxY - Number(p.y)) * s + pad) });
-      const pathOf = (pts) => pts.map((p, i) => { const q = mapPt(p); return `${i === 0 ? "M" : "L"}${q.x.toFixed(2)},${q.y.toFixed(2)}`; }).join(" ") + " Z";
-      const zonePath = pathOf(zonePts);
-      const clipId = `zclip_p_${Math.random().toString(36).slice(2)}`;
-      const fragPaths = list.map((r) => {
-        const d = pathOf(r.points);
-        const c = centroid(r.points);
-        const cc = mapPt(c);
-        return `<path d="${d}" fill="#ececec" stroke="#555" stroke-width="0.7"/><text x="${cc.x.toFixed(2)}" y="${cc.y.toFixed(2)}" font-size="10" text-anchor="middle" dominant-baseline="middle" fill="#111">${r.fragmentNo}</text>`;
-      }).join("");
-      return `<svg class="reports-scheme-svg" viewBox="0 0 ${vw} ${vh}" style="width:${vw}px;height:${vh}px"><defs><clipPath id="${clipId}"><path d="${zonePath}"/></clipPath></defs><path d="${zonePath}" fill="#f8f8f8" stroke="#111" stroke-width="1.5"/><g clip-path="url(#${clipId})">${fragPaths}</g><path d="${zonePath}" fill="none" stroke="#111" stroke-width="1.5"/></svg>`;
-    }
-    function renderReportsScheme(rows, detailId) {
-      const box = byId("reportsSchemeBox");
-      const title = byId("reportsSchemeTitle");
-      const zone = byId("reportsSchemeZone");
-      if (!box || !title || !zone) return;
-      const list = Array.isArray(rows) ? rows : [];
-      const first = list[0] || null;
-      title.textContent = `Деталь: ${detailId || "-"}`;
-      zone.textContent = `Зона: ${first ? first.zoneId : "-"}`;
-      if (!first || !Array.isArray(first.zonePoints) || first.zonePoints.length < 3) {
-        box.innerHTML = "";
-        return;
-      }
-      box.scrollTop = 0;
-      box.scrollLeft = 0;
-      const zonePts = normalizeContourArrayForReports(first.zonePoints) || [];
-      const allPts = zonePts.concat(...list.map((r) => Array.isArray(r.points) ? r.points : []));
-      let minX = Number.POSITIVE_INFINITY, minY = Number.POSITIVE_INFINITY;
-      let maxX = Number.NEGATIVE_INFINITY, maxY = Number.NEGATIVE_INFINITY;
-      for (const p of allPts) {
-        const x = Number(p && p.x);
-        const y = Number(p && p.y);
-        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-        minX = Math.min(minX, x); minY = Math.min(minY, y);
-        maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
-      }
-      const w = Math.max(1, maxX - minX);
-      const h = Math.max(1, maxY - minY);
-      const boxW = Math.max(260, Number(box.clientWidth || 300));
-      const boxH = Math.max(360, Number(box.clientHeight || 430));
-      const vw = Math.max(260, Math.floor(boxW - 2));
-      const vh = Math.max(360, Math.floor(boxH - 2));
-      const pad = 12;
-      const s = Math.min((vw - pad * 2) / w, (vh - pad * 2) / h);
-      const mapPt = (p) => ({ x: ((Number(p.x) - minX) * s + pad), y: ((maxY - Number(p.y)) * s + pad) });
-      const pathOf = (pts) => pts.map((p, i) => {
-        const q = mapPt(p);
-        return `${i === 0 ? "M" : "L"}${q.x.toFixed(2)},${q.y.toFixed(2)}`;
-      }).join(" ") + " Z";
-      const zonePath = pathOf(zonePts);
-      const clipId = `zclip_${Date.now()}`;
-      const fragPaths = list.map((r) => {
-        const d = pathOf(r.points);
-        const c = centroid(r.points);
-        const cc = mapPt(c);
-        return `<path d="${d}" fill="#ececec" stroke="#555" stroke-width="0.7"/><text x="${cc.x.toFixed(2)}" y="${cc.y.toFixed(2)}" font-size="10" text-anchor="middle" dominant-baseline="middle" fill="#111">${r.fragmentNo}</text>`;
-      }).join("");
-      box.innerHTML = `<svg class="reports-scheme-svg" viewBox="0 0 ${vw} ${vh}" aria-label="Схема детали"><defs><clipPath id="${clipId}"><path d="${zonePath}"/></clipPath></defs><path d="${zonePath}" fill="#f8f8f8" stroke="#111" stroke-width="1.5"/><g clip-path="url(#${clipId})">${fragPaths}</g><path d="${zonePath}" fill="none" stroke="#111" stroke-width="1.5"/></svg>`;
-    }
-    function renderReportsView(detailId) {
-      const model = reportsState.model;
-      if (!model) return;
-      const tabsWrap = byId("reportsDetailTabs");
-      const select = byId("reportsDetailSelect");
-      const summary = byId("reportsSummary");
-      const detailHeading = byId("reportsDetailHeading");
-      const modelTitle = byId("reportsModelTitle");
-      const body = byId("reportsTableBody");
-      const materialCol = byId("reportsColMaterial");
-      const inventoryCol = byId("reportsColInventory");
-      const currentDetailId = Number(detailId || model.selectedDetailId || model.detailIds[0] || 0);
-      reportsState.selectedDetailId = currentDetailId;
-      if (modelTitle) modelTitle.textContent = model.detailIds.length ? `(${model.detailIds.length} деталей)` : "";
-      if (tabsWrap) {
-        tabsWrap.innerHTML = "";
-        for (const id of model.detailIds) {
-          const btn = document.createElement("button");
-          btn.type = "button";
-          const isActive = Number(id) === currentDetailId;
-          btn.className = `reports-tab${isActive ? " active" : ""}`;
-          btn.textContent = `Деталь ${id}`;
-          btn.onclick = () => renderReportsView(id);
-          tabsWrap.appendChild(btn);
-          if (isActive) requestAnimationFrame(() => btn.scrollIntoView({ block: "nearest", inline: "nearest" }));
-        }
-      }
-      if (select) {
-        select.innerHTML = model.detailIds.map((id) => `<option value="${id}" ${Number(id) === currentDetailId ? "selected" : ""}>${id}</option>`).join("");
-        select.onchange = () => renderReportsView(Number(select.value || 0));
-      }
-      const rows = model.rows.filter((r) => Number(r.detailId) === currentDetailId);
-      const showInventoryCol = rows.some((r) => String(r && r.inventoryTag || "").trim().length > 0);
-      const totalArea = rows.reduce((acc, r) => acc + Number(r.areaMm2 || 0), 0);
-      const totalCutArea = rows.reduce((acc, r) => acc + Number(r.cutAreaMm2 || r.areaMm2 || 0), 0);
-      const zoneId = rows[0] ? rows[0].zoneId : "-";
-      if (detailHeading) detailHeading.textContent = `Деталь ${currentDetailId || "-"}`;
-      if (summary) {
-        const hiddenSmallCount = Number(model.hiddenSmallCount || 0);
-        const hiddenSmallAreaMm2 = Number(model.hiddenSmallAreaMm2 || 0);
-        const hiddenPart = hiddenSmallCount > 0
-          ? ` | скрыто мелких: ${hiddenSmallCount} (${hiddenSmallAreaMm2.toFixed(1)} мм²)`
-          : "";
-        summary.textContent = `Зона: ${zoneId} | Фрагментов: ${rows.length} | Пл. ядра: ${totalArea.toFixed(1)} мм² | Пл. раскроя: ${totalCutArea.toFixed(1)} мм²${hiddenPart}`;
-      }
-      if (materialCol) materialCol.style.display = "";
-      if (inventoryCol) inventoryCol.style.display = showInventoryCol ? "" : "none";
-      if (body) {
-        // Group identical fragments: same material + nap + area (rounded to 0.1mm²)
-        const grouped = [];
-        const groupKey = (r) => `${r.materialName}|${r.napDeg}|${Math.round(r.areaMm2 * 10)}`;
-        const seen = new Map();
-        for (const r of rows) {
-          const k = groupKey(r);
-          if (seen.has(k)) {
-            const g = seen.get(k);
-            g.qty += 1;
-            g.allCodes.push(r.fragmentCode);
-          } else {
-            const g = { ...r, qty: 1, allCodes: [r.fragmentCode] };
-            seen.set(k, g);
-            grouped.push(g);
-          }
-        }
-        body.innerHTML = grouped.map((r) => {
-          const codesHtml = r.qty === 1
-            ? escapeHtml(r.fragmentCode)
-            : r.allCodes.map((c) => escapeHtml(c)).join("<br>");
-          return `
-          <tr>
-            <td>${renderReportsThumb(r.points, r.cutPoints, r.pieceContour)}</td>
-            <td>${escapeHtml(r.napLabel || r.napSymbol || "↓")}</td>
-            <td style="line-height:1.5">${codesHtml}</td>
-            <td>${escapeHtml(r.materialName || "-")}</td>
-            <td>${r.qty}</td>
-            <td>${Number(r.areaMm2 || 0).toFixed(1)}</td>
-            <td>${Number(r.cutAreaMm2 || r.areaMm2 || 0).toFixed(1)}</td>
-            ${showInventoryCol ? `<td>${escapeHtml(r.inventoryTag)}</td>` : ""}
-          </tr>`;
-        }).join("");
-      }
-      renderReportsScheme(rows, currentDetailId);
-    }
-    function renderReportsPrintAll(model) {
-      const container = byId("reportsPrintAll");
-      if (!container || !model) return;
-      const showInventoryCol = model.rows.some((r) => String(r && r.inventoryTag || "").trim().length > 0);
-      container.innerHTML = model.detailIds.map((detailId) => {
-        const rows = model.rows.filter((r) => Number(r.detailId) === detailId);
-        if (!rows.length) return "";
-        const totalArea = rows.reduce((acc, r) => acc + Number(r.areaMm2 || 0), 0);
-        const totalCutArea = rows.reduce((acc, r) => acc + Number(r.cutAreaMm2 || r.areaMm2 || 0), 0);
-        const zoneId = rows[0] ? rows[0].zoneId : "-";
-        const grouped = [];
-        const seen = new Map();
-        for (const r of rows) {
-          const k = `${r.materialName}|${r.napDeg}|${Math.round(r.areaMm2 * 10)}`;
-          if (seen.has(k)) { const g = seen.get(k); g.qty += 1; g.allCodes.push(r.fragmentCode); }
-          else { const g = { ...r, qty: 1, allCodes: [r.fragmentCode] }; seen.set(k, g); grouped.push(g); }
-        }
-        const rowsHtml = grouped.map((r) => {
-          const codesHtml = r.qty === 1 ? escapeHtml(r.fragmentCode) : r.allCodes.map((c) => escapeHtml(c)).join("<br>");
-          return `<tr>
-            <td>${renderReportsThumb(r.points, r.cutPoints, r.pieceContour)}</td>
-            <td>${escapeHtml(r.napLabel || "↓")}</td>
-            <td style="line-height:1.5">${codesHtml}</td>
-            <td>${escapeHtml(r.materialName || "-")}</td>
-            <td>${r.qty}</td>
-            <td>${Number(r.areaMm2 || 0).toFixed(1)}</td>
-            <td>${Number(r.cutAreaMm2 || r.areaMm2 || 0).toFixed(1)}</td>
-            ${showInventoryCol ? `<td>${escapeHtml(r.inventoryTag)}</td>` : ""}
-          </tr>`;
-        }).join("");
-        const schemeSvg = buildReportsSchemeSvg(rows, 220, 300);
-        return `<div class="reports-print-section">
-          <div class="reports-print-header">
-            <div class="reports-print-header-text">
-              <div class="reports-detail-heading">Деталь ${detailId}</div>
-              <div class="reports-summary">Зона: ${zoneId} | Фрагментов: ${rows.length} | Пл. ядра: ${totalArea.toFixed(1)} мм² | Пл. раскроя: ${totalCutArea.toFixed(1)} мм²</div>
-            </div>
-            ${schemeSvg ? `<div class="reports-print-scheme">${schemeSvg}</div>` : ""}
-          </div>
-          <table class="reports-table">
-            <thead><tr>
-              <th>Рис.</th><th>Направление ворса</th><th>Фрагмент</th><th>Материал меха</th>
-              <th>Кол-во, шт</th><th>Пл. ядра, мм²</th><th>Пл. раскроя, мм²</th>
-              ${showInventoryCol ? "<th>Инвентарный кусок</th>" : ""}
-            </tr></thead>
-            <tbody>${rowsHtml}</tbody>
-          </table>
-        </div>`;
-      }).join("");
-    }
-    function updateReportsButtonState() {
-      const btn = byId("reportsBtn");
-      if (!btn) return;
-      const enabled = canOpenReports();
-      btn.disabled = !enabled;
-      btn.title = enabled ? "" : "Отчёты доступны после построения выкладки";
-    }
-    function closeReportsModal() {
-      const backdrop = byId("reportsBackdrop");
-      if (backdrop) backdrop.style.display = "none";
-    }
-    function openReportsModal() {
-      if (!canOpenReports()) {
-        const workspaceInfo = byId("workspaceInfo");
-        if (workspaceInfo) workspaceInfo.textContent = "Отчёты доступны только после Применить.";
-        return;
-      }
-      const backdrop = byId("reportsBackdrop");
-      try {
-        reportsState.model = buildReportsModel() || { rows: [], detailIds: [], selectedDetailId: null, hasAnyInventory: false, hiddenSmallCount: 0, hiddenSmallAreaMm2: 0 };
-        const preferredDetailId = reportsState.model.selectedDetailId || reportsState.model.detailIds[0] || null;
-        renderReportsView(preferredDetailId);
-        renderReportsPrintAll(reportsState.model);
-        if (backdrop) backdrop.style.display = "flex";
-      } catch (err) {
-        console.error("[reports/open] failed:", err);
-        const workspaceInfo = byId("workspaceInfo");
-        if (workspaceInfo) workspaceInfo.textContent = `Не удалось открыть отчёт: ${String(err && err.message || err || "неизвестная ошибка")}`;
-        if (backdrop) backdrop.style.display = "none";
-        return;
-      }
-      const exportBtn = byId("reportsExportCsvBtn");
-      if (exportBtn) {
-        exportBtn.onclick = () => {
-          const model = reportsState.model;
-          const selected = Number(reportsState.selectedDetailId || 0);
-          const rows = model && Array.isArray(model.rows)
-            ? model.rows.filter((r) => !selected || Number(r.detailId) === selected)
-            : [];
-          const showInventoryCol = rows.some((r) => String(r && r.inventoryTag || "").trim().length > 0);
-          // Group identical rows same as table view
-          const csvGrouped = [];
-          const csvSeen = new Map();
-          for (const r of rows) {
-            const k = `${r.materialName}|${r.napDeg}|${Math.round(r.areaMm2 * 10)}`;
-            if (csvSeen.has(k)) { const g = csvSeen.get(k); g.qty += 1; g.allCodes.push(r.fragmentCode); }
-            else { const g = { ...r, qty: 1, allCodes: [r.fragmentCode] }; csvSeen.set(k, g); csvGrouped.push(g); }
-          }
-          const lines = [
-            showInventoryCol
-              ? "Деталь;Зона;Фрагмент;Материал;Кол-во;Пл.ядра мм²;Пл.раскроя мм²;Инвентарный кусок;Направление ворса °"
-              : "Деталь;Зона;Фрагмент;Материал;Кол-во;Пл.ядра мм²;Пл.раскроя мм²;Направление ворса °",
-            ...csvGrouped.map((r) => [
-              escapeCsv(r.detailId),
-              escapeCsv(r.zoneId),
-              escapeCsv(Array.isArray(r.allCodes) ? r.allCodes.join(", ") : r.fragmentCode),
-              escapeCsv(r.materialName || "-"),
-              escapeCsv(r.qty),
-              escapeCsv(Number(r.areaMm2 || 0).toFixed(1)),
-              escapeCsv(Number(r.cutAreaMm2 || r.areaMm2 || 0).toFixed(1)),
-              ...(showInventoryCol ? [escapeCsv(r.inventoryTag)] : []),
-              escapeCsv(r.napDeg),
-            ].join(";"))
-          ];
-          const blob = new Blob([`\uFEFF${lines.join("\n")}`], { type: "text/csv;charset=utf-8;" });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = `furlab_report_${Date.now()}.csv`;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-        };
-      }
-      const printBtn = byId("reportsPrintBtn");
-      if (printBtn) printBtn.onclick = () => window.print();
-    }
+    const buildReportsModel = () => window.FurLabReports ? window.FurLabReports.buildReportsModel() : null;
+    const renderReportsPrintAll = (model) => window.FurLabReports && window.FurLabReports.renderReportsPrintAll(model);
+    const renderReportsView = (detailId) => window.FurLabReports && window.FurLabReports.renderReportsView(detailId);
+    const updateReportsButtonState = () => window.FurLabReports && window.FurLabReports.updateReportsButtonState();
+    const closeReportsModal = () => window.FurLabReports && window.FurLabReports.closeReportsModal();
+    const openReportsModal = () => window.FurLabReports && window.FurLabReports.openReportsModal();
+
     function findPlacementForFragment(fragmentOrId) {
       const placements = Array.isArray(state.layoutRun.placements) ? state.layoutRun.placements : [];
       const frag = (fragmentOrId && typeof fragmentOrId === "object")
@@ -1066,7 +550,7 @@
       if (!el) return;
       const raw = String(text || "").trim();
       if (!raw) {
-        el.textContent = "Ожидание телеметрии...";
+        el.textContent = "РћР¶РёРґР°РЅРёРµ С‚РµР»РµРјРµС‚СЂРёРё...";
         return;
       }
       el.textContent = raw.replace(/\s*\n+\s*/g, " | ");
@@ -1078,7 +562,7 @@
       const stamp = new Date().toLocaleTimeString();
       inventoryLiveHistory.push(`[${stamp}] ${msg}`);
       if (inventoryLiveHistory.length > 12) inventoryLiveHistory = inventoryLiveHistory.slice(-12);
-      const tail = inventoryLiveHistory.slice(-2).join(" В· ");
+      const tail = inventoryLiveHistory.slice(-2).join(" Р’В· ");
       setInventoryProgressStatus(`${t("checkpoints_title", null, "Checkpoints")}: ${tail}`);
     }
 
@@ -1486,7 +970,7 @@
       const isDirectInv = isInventoryLikeLayoutMode(state.layoutMode) && !isManualInventoryMode();
       if (isDirectInv) {
         const placements = Array.isArray(state.layoutRun.placements) ? state.layoutRun.placements : [];
-        // First pass: try core contours (non-overlapping — each point belongs to exactly one piece)
+        // First pass: try core contours (non-overlapping вЂ” each point belongs to exactly one piece)
         for (let i = placements.length - 1; i >= 0; i--) {
           const p = placements[i];
           if (!p || String(p.status || "") !== "matched") continue;
@@ -1496,7 +980,7 @@
           if (pts.length >= 3 && pointInPolygon(worldPoint, pts)) {
             const frag = frags.find((f) => Number(f.ownerPlacementIndex) === i);
             if (frag) return { fragmentId: Number(frag.id || 0), zoneId };
-            // Fragment missing for this placement — log for debugging
+            // Fragment missing for this placement вЂ” log for debugging
             console.warn("[findLayoutFragmentAt] placement hit but no fragment found", {
               pi: i, tag: p.inventoryTag, scrap: p.scrapPieceId,
               fragOwners: frags.map((f) => Number(f.ownerPlacementIndex))
@@ -1743,12 +1227,12 @@
       function resolveZoneName() {
         if (parentZoneIdOpt) {
           const parent = (Array.isArray(state.zones) ? state.zones : []).find((z) => Number(z && z.id || 0) === parentZoneIdOpt);
-          const parentName = (parent && parent.name) || (options.parentZoneSnapshot && options.parentZoneSnapshot.name) || `Зона ${parentZoneIdOpt}`;
-          const parentSuffix = String(parentName).replace(/^Зона\s*/i, "");
+          const parentName = (parent && parent.name) || (options.parentZoneSnapshot && options.parentZoneSnapshot.name) || `Р—РѕРЅР° ${parentZoneIdOpt}`;
+          const parentSuffix = String(parentName).replace(/^Р—РѕРЅР°\s*/i, "");
           const siblingCount = (Array.isArray(state.zones) ? state.zones : []).filter((z) => Number(z && z.parentZoneId || 0) === parentZoneIdOpt && Number(z && z.detailId || 0) === detailId).length;
-          return `Зона ${parentSuffix}${siblingCount + 1}`;
+          return `Р—РѕРЅР° ${parentSuffix}${siblingCount + 1}`;
         }
-        return `Зона ${detailId || zoneId}`;
+        return `Р—РѕРЅР° ${detailId || zoneId}`;
       }
       const zone = {
         id: zoneId,
@@ -2099,7 +1583,7 @@
     }
 
     function computeMaterialHatchColor(densityNorm, thicknessNorm, curlEffNorm, bendNorm, lengthNorm, fluffNorm) {
-      // Hue: warm brown range 20-48°. Curly/fluffy fur shifts warmer (more auburn).
+      // Hue: warm brown range 20-48В°. Curly/fluffy fur shifts warmer (more auburn).
       const hue = Math.round(44 - curlEffNorm * 16 - fluffNorm * 8 + bendNorm * 6);
       // Saturation: longer + denser fur reads richer.
       const sat = Math.round(28 + lengthNorm * 26 + densityNorm * 16);
@@ -2354,7 +1838,7 @@
       return points;
     }
 
-    // Cache: Map<key, HTMLCanvasElement> — one small tile per material pattern, no zoom dependency
+    // Cache: Map<key, HTMLCanvasElement> вЂ” one small tile per material pattern, no zoom dependency
     const _hatchTileCache = new Map();
 
     function buildHatchTile(visual, layerSpec) {
@@ -2382,7 +1866,7 @@
       ctx.strokeStyle = stroke; ctx.lineWidth = strokeWidth; ctx.lineCap = 'round';
 
       if (useWave) {
-        // Row 1 at H/2 — full weight
+        // Row 1 at H/2 вЂ” full weight
         ctx.globalAlpha = 1.0;
         ctx.beginPath();
         for (let t = 0; t <= W; t += period) {
@@ -2394,7 +1878,7 @@
           for (let wi = 2; wi < wpts.length; wi += 2) ctx.lineTo(wpts[wi], H * 0.5 + wpts[wi + 1]);
         }
         ctx.stroke();
-        // Row 2 at 3H/2 — brick-offset by W/2, slightly lighter for organic variation
+        // Row 2 at 3H/2 вЂ” brick-offset by W/2, slightly lighter for organic variation
         ctx.globalAlpha = 0.88;
         ctx.beginPath();
         const off2 = W / 2;
@@ -2409,14 +1893,14 @@
         }
         ctx.stroke();
       } else {
-        // Row 1 — full weight
+        // Row 1 вЂ” full weight
         ctx.globalAlpha = 1.0;
         ctx.setLineDash([dashLen, gapLen]);
         ctx.beginPath();
         ctx.moveTo(0, H * 0.5);
         ctx.lineTo(W, H * 0.5);
         ctx.stroke();
-        // Row 2 — brick-offset by half period, slightly lighter
+        // Row 2 вЂ” brick-offset by half period, slightly lighter
         ctx.globalAlpha = 0.88;
         ctx.lineDashOffset = -(period / 2);
         ctx.beginPath();
@@ -2753,7 +2237,7 @@
 
       return dedup.slice(0, 400).map((d, i) => ({
         id: i + 1,
-        name: `Деталь ${i + 1}`,
+        name: `Р”РµС‚Р°Р»СЊ ${i + 1}`,
         bbox: d.bbox,
         area: d.area,
         points: d.points,
@@ -2865,7 +2349,7 @@
         if (pts.length < 3) continue;
         newZones.push({
           id: zid,
-          name: `Зона ${zid}`,
+          name: `Р—РѕРЅР° ${zid}`,
           detailId: d.id,
           materialId: null,
           materialName: null,
@@ -2923,7 +2407,7 @@
       if (!Number.isFinite(id) || id <= 0 || !Number.isFinite(detailId) || detailId <= 0 || points.length < 3) return null;
       return {
         id,
-        name: String(zone.name || `Зона ${id}`),
+        name: String(zone.name || `Р—РѕРЅР° ${id}`),
         detailId,
         materialId: zone.materialId !== undefined && zone.materialId !== null && String(zone.materialId).trim()
           ? String(zone.materialId).trim()
@@ -3049,7 +2533,7 @@
         state.zones = reconciledZones;
         state.history.undo = [];
         state.history.redo = [];
-        // Sync zone materialIds into projectMaterials so the Мех tab shows names not GUIDs
+        // Sync zone materialIds into projectMaterials so the РњРµС… tab shows names not GUIDs
         for (const zone of reconciledZones) {
           const mid = String(zone && zone.materialId || "").trim();
           if (!mid) continue;
@@ -3102,7 +2586,7 @@
       renderDetailZoneTree();
       renderPropertyEditor();
       renderScene();
-      byId("workspaceInfo").textContent = "Зоны сброшены к исходному состоянию: 1 деталь = 1 зона.";
+      byId("workspaceInfo").textContent = "Р—РѕРЅС‹ СЃР±СЂРѕС€РµРЅС‹ Рє РёСЃС…РѕРґРЅРѕРјСѓ СЃРѕСЃС‚РѕСЏРЅРёСЋ: 1 РґРµС‚Р°Р»СЊ = 1 Р·РѕРЅР°.";
       return { ok: true, workspaceKey };
     }
 
@@ -3224,12 +2708,12 @@
       const material = getFurMaterialById(id) || (Array.isArray(state.projectMaterials) ? state.projectMaterials.find((item) => String(item && item.id || "") === id) : null) || null;
       const materialName = String(material && (material.name || material.materialName) || id);
       if (assignedZones.length > 0) {
-        const ok = window.confirm(`Мех "${materialName}" назначен ${assignedZones.length} зон(ам). Снять назначение и удалить его из проекта?`);
+        const ok = window.confirm(`РњРµС… "${materialName}" РЅР°Р·РЅР°С‡РµРЅ ${assignedZones.length} Р·РѕРЅ(Р°Рј). РЎРЅСЏС‚СЊ РЅР°Р·РЅР°С‡РµРЅРёРµ Рё СѓРґР°Р»РёС‚СЊ РµРіРѕ РёР· РїСЂРѕРµРєС‚Р°?`);
         if (!ok) return false;
         for (const zone of assignedZones) {
           const json = await assignMaterialToZone(zone, { id: null, name: null });
           if (!json || !json.ok) {
-            byId("workspaceInfo").textContent = `Ошибка снятия материала с зоны: ${String(json && json.error || "unknown")}`;
+            byId("workspaceInfo").textContent = `РћС€РёР±РєР° СЃРЅСЏС‚РёСЏ РјР°С‚РµСЂРёР°Р»Р° СЃ Р·РѕРЅС‹: ${String(json && json.error || "unknown")}`;
             return false;
           }
         }
@@ -3245,7 +2729,7 @@
       renderDetailZoneTree();
       renderPropertyEditor();
       renderScene();
-      byId("workspaceInfo").textContent = `Мех удалён из проекта: ${materialName}`;
+      byId("workspaceInfo").textContent = `РњРµС… СѓРґР°Р»С‘РЅ РёР· РїСЂРѕРµРєС‚Р°: ${materialName}`;
       return true;
     }
 
@@ -3269,7 +2753,7 @@
             le.layoutRun.fragments.length > 0
         );
         if (hasFragments) {
-          if (!confirm("Материал меха изменён. Фрагменты выкладки будут пересчитаны. Продолжить?")) {
+          if (!confirm("РњР°С‚РµСЂРёР°Р» РјРµС…Р° РёР·РјРµРЅС‘РЅ. Р¤СЂР°РіРјРµРЅС‚С‹ РІС‹РєР»Р°РґРєРё Р±СѓРґСѓС‚ РїРµСЂРµСЃС‡РёС‚Р°РЅС‹. РџСЂРѕРґРѕР»Р¶РёС‚СЊ?")) {
             return { ok: false, error: "cancelled_by_user" };
           }
         }
@@ -3298,10 +2782,10 @@
           renderDetailZoneTree();
           renderPropertyEditor();
         renderScene();
-        const assignedName = materialName || materialId || "не выбран";
+        const assignedName = materialName || materialId || "РЅРµ РІС‹Р±СЂР°РЅ";
         byId("workspaceInfo").textContent = materialId
-          ? `Материал назначен зоне: ${assignedName}`
-          : "Материал зоны снят.";
+          ? `РњР°С‚РµСЂРёР°Р» РЅР°Р·РЅР°С‡РµРЅ Р·РѕРЅРµ: ${assignedName}`
+          : "РњР°С‚РµСЂРёР°Р» Р·РѕРЅС‹ СЃРЅСЏС‚.";
       }
       return json;
     }
@@ -3335,14 +2819,14 @@
             z && Number(z.id || 0) !== zoneId && String(z.materialId || "").trim() === id
           );
           if (conflictZone) {
-            const conflictName = String(conflictZone.name || `Зона ${conflictZone.id}`);
-            byId("workspaceInfo").textContent = `Мех уже назначен зоне "${conflictName}". Один мех — одна зона.`;
+            const conflictName = String(conflictZone.name || `Р—РѕРЅР° ${conflictZone.id}`);
+            byId("workspaceInfo").textContent = `РњРµС… СѓР¶Рµ РЅР°Р·РЅР°С‡РµРЅ Р·РѕРЅРµ "${conflictName}". РћРґРёРЅ РјРµС… вЂ” РѕРґРЅР° Р·РѕРЅР°.`;
             closeLayoutTypePicker();
             return;
           }
           const json = await assignMaterialToZone(zone, material);
           if (!json || !json.ok) {
-            byId("workspaceInfo").textContent = `Ошибка назначения материала: ${String(json && json.error || "unknown")}`;
+            byId("workspaceInfo").textContent = `РћС€РёР±РєР° РЅР°Р·РЅР°С‡РµРЅРёСЏ РјР°С‚РµСЂРёР°Р»Р°: ${String(json && json.error || "unknown")}`;
             return;
           }
         }
@@ -3362,14 +2846,14 @@
       const info = byId("zoneMaterialInfo");
       const select = byId("zoneMaterialSelect");
       if (!backdrop || !title || !info || !select) return;
-      title.textContent = `Меховой материал: ${String(z.name || `Зона ${z.id}`)}`;
+      title.textContent = `РњРµС…РѕРІРѕР№ РјР°С‚РµСЂРёР°Р»: ${String(z.name || `Р—РѕРЅР° ${z.id}`)}`;
       info.textContent = list.length
-        ? `Найдено материалов: ${list.length}`
-        : "Материалы в базе не найдены.";
-      select.innerHTML = [`<option value="">Не назначен</option>`]
+        ? `РќР°Р№РґРµРЅРѕ РјР°С‚РµСЂРёР°Р»РѕРІ: ${list.length}`
+        : "РњР°С‚РµСЂРёР°Р»С‹ РІ Р±Р°Р·Рµ РЅРµ РЅР°Р№РґРµРЅС‹.";
+      select.innerHTML = [`<option value="">РќРµ РЅР°Р·РЅР°С‡РµРЅ</option>`]
         .concat(list.map((item) => {
           const label = item.piecesCount > 0
-            ? `${escapeHtml(item.name || item.id)} (${Number(item.piecesCount)} шт.)`
+            ? `${escapeHtml(item.name || item.id)} (${Number(item.piecesCount)} С€С‚.)`
             : `${escapeHtml(item.name || item.id)}`;
           return `<option value="${escapeHtml(item.id)}">${label}</option>`;
         }))
@@ -3539,10 +3023,10 @@
       if (zoneId <= 0) return false;
       if (!canDeleteZone(z)) {
         byId("workspaceInfo").textContent = isLastZoneInDetail(z)
-          ? "Базовую зону детали удалять нельзя."
+          ? "Р‘Р°Р·РѕРІСѓСЋ Р·РѕРЅСѓ РґРµС‚Р°Р»Рё СѓРґР°Р»СЏС‚СЊ РЅРµР»СЊР·СЏ."
           : isSplitDerivedZone(z)
-            ? "Нельзя отменить это разбиение, пока существуют дочерние зоны более глубокого уровня."
-            : "Эту зону сейчас нельзя удалить.";
+            ? "РќРµР»СЊР·СЏ РѕС‚РјРµРЅРёС‚СЊ СЌС‚Рѕ СЂР°Р·Р±РёРµРЅРёРµ, РїРѕРєР° СЃСѓС‰РµСЃС‚РІСѓСЋС‚ РґРѕС‡РµСЂРЅРёРµ Р·РѕРЅС‹ Р±РѕР»РµРµ РіР»СѓР±РѕРєРѕРіРѕ СѓСЂРѕРІРЅСЏ."
+            : "Р­С‚Сѓ Р·РѕРЅСѓ СЃРµР№С‡Р°СЃ РЅРµР»СЊР·СЏ СѓРґР°Р»РёС‚СЊ.";
         return false;
       }
       const isManual = isManualZone(z);
@@ -3550,14 +3034,14 @@
       const affectedZoneIds = new Set(relatedSplitZones.map((item) => Number(item && item.id || 0)).filter((id) => id > 0));
       affectedZoneIds.add(zoneId);
       const dependentLayouts = (Array.isArray(state.layouts) ? state.layouts : []).filter((entry) => affectedZoneIds.has(Number(entry && entry.boundZoneId || 0)));
-      const parentZoneName = String(z && z.parentZoneSnapshot && z.parentZoneSnapshot.name || `Зона ${Number(z.parentZoneId || 0) || ""}`).trim();
+      const parentZoneName = String(z && z.parentZoneSnapshot && z.parentZoneSnapshot.name || `Р—РѕРЅР° ${Number(z.parentZoneId || 0) || ""}`).trim();
       const message = isManual
         ? (dependentLayouts.length
-          ? `Удалить зону "${String(z.name || `Зона ${zoneId}`)}"? Связанные выкладки (${dependentLayouts.length}) будут удалены.`
-          : `Удалить зону "${String(z.name || `Зона ${zoneId}`)}"?`)
+          ? `РЈРґР°Р»РёС‚СЊ Р·РѕРЅСѓ "${String(z.name || `Р—РѕРЅР° ${zoneId}`)}"? РЎРІСЏР·Р°РЅРЅС‹Рµ РІС‹РєР»Р°РґРєРё (${dependentLayouts.length}) Р±СѓРґСѓС‚ СѓРґР°Р»РµРЅС‹.`
+          : `РЈРґР°Р»РёС‚СЊ Р·РѕРЅСѓ "${String(z.name || `Р—РѕРЅР° ${zoneId}`)}"?`)
         : (dependentLayouts.length
-          ? `Отменить разбиение и восстановить "${parentZoneName}"? Связанные выкладки (${dependentLayouts.length}) будут удалены.`
-          : `Отменить разбиение и восстановить "${parentZoneName}"?`);
+          ? `РћС‚РјРµРЅРёС‚СЊ СЂР°Р·Р±РёРµРЅРёРµ Рё РІРѕСЃСЃС‚Р°РЅРѕРІРёС‚СЊ "${parentZoneName}"? РЎРІСЏР·Р°РЅРЅС‹Рµ РІС‹РєР»Р°РґРєРё (${dependentLayouts.length}) Р±СѓРґСѓС‚ СѓРґР°Р»РµРЅС‹.`
+          : `РћС‚РјРµРЅРёС‚СЊ СЂР°Р·Р±РёРµРЅРёРµ Рё РІРѕСЃСЃС‚Р°РЅРѕРІРёС‚СЊ "${parentZoneName}"?`);
       const skipConfirm = options && options.skipConfirm;
       if (!skipConfirm && typeof window.confirm === "function" && !window.confirm(message)) return false;
       hideZoneContextMenu();
@@ -3567,7 +3051,7 @@
           const res = await api("/api/layout/manual/runs/delete", "POST", { id: entry.persistedRunId });
           const notFound = String(res && res.error || "") === "not_found";
           if (res && !res.ok && !notFound) {
-            byId("workspaceInfo").textContent = `Ошибка удаления выкладки: ${String(res && res.error || "unknown")}`;
+            byId("workspaceInfo").textContent = `РћС€РёР±РєР° СѓРґР°Р»РµРЅРёСЏ РІС‹РєР»Р°РґРєРё: ${String(res && res.error || "unknown")}`;
             return false;
           }
         }
@@ -3582,7 +3066,7 @@
       const workspaceKey = buildZonesWorkspaceKey();
       const json = await api("/api/zones/delete", "POST", { workspaceKey, zoneId }, 20000);
       if (!json || !json.ok) {
-        byId("workspaceInfo").textContent = `Ошибка удаления зоны: ${String(json && json.error || "unknown")}`;
+        byId("workspaceInfo").textContent = `РћС€РёР±РєР° СѓРґР°Р»РµРЅРёСЏ Р·РѕРЅС‹: ${String(json && json.error || "unknown")}`;
         return false;
       }
       const savedZones = Array.isArray(json.zones) ? json.zones : [];
@@ -3605,8 +3089,8 @@
         state.selectedDetailId = Number(restoredZone.detailId || 0) || state.selectedDetailId;
       }
       byId("workspaceInfo").textContent = isManual
-        ? `Зона удалена: ${String(z.name || `Зона ${zoneId}`)}`
-        : `Разбиение отменено. Восстановлена зона: ${String(restoredZone && restoredZone.name || parentZoneName || `Зона ${Number(z.parentZoneId || 0) || ""}`)}`;
+        ? `Р—РѕРЅР° СѓРґР°Р»РµРЅР°: ${String(z.name || `Р—РѕРЅР° ${zoneId}`)}`
+        : `Р Р°Р·Р±РёРµРЅРёРµ РѕС‚РјРµРЅРµРЅРѕ. Р’РѕСЃСЃС‚Р°РЅРѕРІР»РµРЅР° Р·РѕРЅР°: ${String(restoredZone && restoredZone.name || parentZoneName || `Р—РѕРЅР° ${Number(z.parentZoneId || 0) || ""}`)}`;
       state.uiPanel = "zones";
       renderLayoutModeSwitch();
       renderDetailZoneTree();
@@ -3618,28 +3102,28 @@
     async function applyIntarsiaFragmentsToZone(zoneId) {
       const zone = state.zones.find((z) => Number(z && z.id || 0) === Number(zoneId || 0));
       if (!zone || !Array.isArray(zone.points) || zone.points.length < 3) {
-        byId("workspaceInfo").textContent = "Зона не найдена";
+        byId("workspaceInfo").textContent = "Р—РѕРЅР° РЅРµ РЅР°Р№РґРµРЅР°";
         return;
       }
       const fragments = Array.isArray(state.intarsiaSvgFragments) ? state.intarsiaSvgFragments : [];
       if (fragments.length === 0) {
-        byId("workspaceInfo").textContent = "Нет фрагментов для применения";
+        byId("workspaceInfo").textContent = "РќРµС‚ С„СЂР°РіРјРµРЅС‚РѕРІ РґР»СЏ РїСЂРёРјРµРЅРµРЅРёСЏ";
         return;
       }
-      byId("workspaceInfo").textContent = "Разбиение зоны…";
+      byId("workspaceInfo").textContent = "Р Р°Р·Р±РёРµРЅРёРµ Р·РѕРЅС‹вЂ¦";
       const res = await api("/api/intarsia/apply-fragments", "POST", {
         zonePoints: zone.points,
         fragments: fragments.map((f) => ({ points: f.points }))
       });
       if (!res || !res.ok) {
-        byId("workspaceInfo").textContent = `Ошибка: ${String(res && res.error || "unknown")}`;
+        byId("workspaceInfo").textContent = `РћС€РёР±РєР°: ${String(res && res.error || "unknown")}`;
         return;
       }
       console.log("[intarsia-fragments] api res:", { subZones: (res.subZones||[]).length, remainderZones: (res.remainderZones||[]).length, fragments: fragments.length, zonePoints: zone.points.length, zoneId: zone.id });
       const detailId = Number(zone.detailId || state.selectedDetailId || 0) || null;
       const parentSnapshot = {
         id: zone.id,
-        name: String(zone.name || `Зона ${zone.id}`),
+        name: String(zone.name || `Р—РѕРЅР° ${zone.id}`),
         detailId: Number(zone.detailId || 0) || null,
         materialId: zone.materialId !== undefined && zone.materialId !== null && String(zone.materialId).trim() ? String(zone.materialId).trim() : null,
         materialName: zone.materialName !== undefined && zone.materialName !== null && String(zone.materialName).trim() ? String(zone.materialName).trim() : null,
@@ -3674,7 +3158,7 @@
           state.layoutRun.selectedZoneId = firstNewZoneId;
         }
       }
-      // Remove original zone directly — it's a base zone so deleteZoneEntry would refuse it
+      // Remove original zone directly вЂ” it's a base zone so deleteZoneEntry would refuse it
       const origId = Number(zone.id || 0);
       state.zones = (Array.isArray(state.zones) ? state.zones : []).filter((z) => Number(z && z.id || 0) !== origId);
       state.nextZoneId = Math.max(state.nextZoneId, origId + 1);
@@ -3686,7 +3170,7 @@
         .filter((f) => !appliedFragmentIds.has(Number(f && f.id || 0)));
       state.selectedFragmentId = null;
       await persistZonesCurrentNoReload();
-      byId("workspaceInfo").textContent = `Зона разбита: ${(res.subZones || []).length} фрагм. + ${(res.remainderZones || []).length} остаток`;
+      byId("workspaceInfo").textContent = `Р—РѕРЅР° СЂР°Р·Р±РёС‚Р°: ${(res.subZones || []).length} С„СЂР°РіРј. + ${(res.remainderZones || []).length} РѕСЃС‚Р°С‚РѕРє`;
       renderScene();
       renderDetailZoneTree();
     }
@@ -3694,28 +3178,28 @@
     async function applyIntarsiaFragmentToZone(fragmentId, zoneId) {
       const zone = state.zones.find((z) => Number(z && z.id || 0) === Number(zoneId || 0));
       if (!zone || !Array.isArray(zone.points) || zone.points.length < 3) {
-        byId("workspaceInfo").textContent = "Зона не найдена";
+        byId("workspaceInfo").textContent = "Р—РѕРЅР° РЅРµ РЅР°Р№РґРµРЅР°";
         return;
       }
       const frag = (Array.isArray(state.intarsiaSvgFragments) ? state.intarsiaSvgFragments : [])
         .find((f) => Number(f && f.id || 0) === Number(fragmentId || 0));
       if (!frag || !Array.isArray(frag.points) || frag.points.length < 3) {
-        byId("workspaceInfo").textContent = "Фрагмент не найден";
+        byId("workspaceInfo").textContent = "Р¤СЂР°РіРјРµРЅС‚ РЅРµ РЅР°Р№РґРµРЅ";
         return;
       }
-      byId("workspaceInfo").textContent = "Преобразование фрагмента в зону…";
+      byId("workspaceInfo").textContent = "РџСЂРµРѕР±СЂР°Р·РѕРІР°РЅРёРµ С„СЂР°РіРјРµРЅС‚Р° РІ Р·РѕРЅСѓвЂ¦";
       const res = await api("/api/intarsia/apply-fragments", "POST", {
         zonePoints: zone.points,
         fragments: [{ points: frag.points }]
       });
       if (!res || !res.ok) {
-        byId("workspaceInfo").textContent = `Ошибка: ${String(res && res.error || "unknown")}`;
+        byId("workspaceInfo").textContent = `РћС€РёР±РєР°: ${String(res && res.error || "unknown")}`;
         return;
       }
       const detailId = Number(zone.detailId || state.selectedDetailId || 0) || null;
       const parentSnapshot = {
         id: zone.id,
-        name: String(zone.name || `Зона ${zone.id}`),
+        name: String(zone.name || `Р—РѕРЅР° ${zone.id}`),
         detailId: Number(zone.detailId || 0) || null,
         materialId: zone.materialId !== undefined && zone.materialId !== null && String(zone.materialId).trim() ? String(zone.materialId).trim() : null,
         materialName: zone.materialName !== undefined && zone.materialName !== null && String(zone.materialName).trim() ? String(zone.materialName).trim() : null,
@@ -3736,7 +3220,7 @@
         createZoneFromPoints(rz.points, { detailId, originType: "split", parentZoneId: zone.id, parentZoneSnapshot: parentSnapshot, skipPersist: true });
       }
       if (remainders.length > 0) {
-        // Remove original zone directly — base zones are rejected by deleteZoneEntry
+        // Remove original zone directly вЂ” base zones are rejected by deleteZoneEntry
         const origId = Number(zone.id || 0);
         state.zones = (Array.isArray(state.zones) ? state.zones : []).filter((z) => Number(z && z.id || 0) !== origId);
         await persistZonesCurrentNoReload();
@@ -3747,7 +3231,7 @@
       state.layoutRun.fragments = (Array.isArray(state.layoutRun.fragments) ? state.layoutRun.fragments : [])
         .filter((f) => Number(f && f.id || 0) !== Number(fragmentId || 0));
       state.selectedFragmentId = null;
-      byId("workspaceInfo").textContent = `Фрагмент ${fragmentId} преобразован в зону`;
+      byId("workspaceInfo").textContent = `Р¤СЂР°РіРјРµРЅС‚ ${fragmentId} РїСЂРµРѕР±СЂР°Р·РѕРІР°РЅ РІ Р·РѕРЅСѓ`;
       renderScene();
       renderDetailZoneTree();
       renderPropertyEditor();
@@ -3779,7 +3263,7 @@
         menu.appendChild(sep);
       };
 
-      addItem("Удалить фрагмент", () => {
+      addItem("РЈРґР°Р»РёС‚СЊ С„СЂР°РіРјРµРЅС‚", () => {
         const delId = Number(state.selectedFragmentId);
         if (Array.isArray(state.intarsiaSvgFragments)) {
           state.intarsiaSvgFragments = state.intarsiaSvgFragments.filter((f) => Number(f && f.id || 0) !== delId);
@@ -3791,7 +3275,7 @@
         renderScene();
       });
       addSeparator();
-      addItem("Разбить зону по всем фрагментам", () => applyIntarsiaFragmentsToZone(zoneId), { disabled: !zoneId });
+      addItem("Р Р°Р·Р±РёС‚СЊ Р·РѕРЅСѓ РїРѕ РІСЃРµРј С„СЂР°РіРјРµРЅС‚Р°Рј", () => applyIntarsiaFragmentsToZone(zoneId), { disabled: !zoneId });
 
       menu.classList.add("open");
       menu.style.left = "0px";
@@ -3839,21 +3323,21 @@
         menu.appendChild(sep);
       };
 
-      addItem("Редактировать зону", () => {
+      addItem("Р РµРґР°РєС‚РёСЂРѕРІР°С‚СЊ Р·РѕРЅСѓ", () => {
         selectZoneForEditing(zone);
       });
-      addItem("Объединить зоны", () => deleteZoneEntry(zone), { disabled: !canRestoreParentZone(zone) });
+      addItem("РћР±СЉРµРґРёРЅРёС‚СЊ Р·РѕРЅС‹", () => deleteZoneEntry(zone), { disabled: !canRestoreParentZone(zone) });
       addSeparator();
-      addItem("Выбрать меховой материал", async () => {
+      addItem("Р’С‹Р±СЂР°С‚СЊ РјРµС…РѕРІРѕР№ РјР°С‚РµСЂРёР°Р»", async () => {
         await openMaterialLibrary(zone);
       }, { shortcut: "Ctrl+Shift+M" });
       if (zone.materialId) {
-        addItem("Убрать мех", async () => {
+        addItem("РЈР±СЂР°С‚СЊ РјРµС…", async () => {
           await assignMaterialToZone(zone, null);
         });
       }
-      addItem("Выбрать обработку", null, { disabled: true, shortcut: "Ctrl+Shift+O" });
-      addItem("Выбрать выкладку", () => {
+      addItem("Р’С‹Р±СЂР°С‚СЊ РѕР±СЂР°Р±РѕС‚РєСѓ", null, { disabled: true, shortcut: "Ctrl+Shift+O" });
+      addItem("Р’С‹Р±СЂР°С‚СЊ РІС‹РєР»Р°РґРєСѓ", () => {
         state.uiPanel = "layouts";
         renderLayoutModeSwitch();
         renderDetailZoneTree();
@@ -3861,7 +3345,7 @@
         openLayoutTypePicker();
       }, { shortcut: "Ctrl+Shift+V" });
       addSeparator();
-      addItem("Удалить зону", () => deleteZoneEntry(zone), { disabled: !canDeleteZone(zone), danger: true });
+      addItem("РЈРґР°Р»РёС‚СЊ Р·РѕРЅСѓ", () => deleteZoneEntry(zone), { disabled: !canDeleteZone(zone), danger: true });
 
       menu.classList.add("open");
       menu.style.left = "0px";
@@ -4061,26 +3545,26 @@
     async function splitSelectedZoneByLine(fromPoint, toPoint) {
       const zone = state.zones.find((item) => Number(item && item.id || 0) === Number(state.selectedZoneId || 0)) || null;
       if (!zone || !Array.isArray(zone.points) || zone.points.length < 3) {
-        byId("workspaceInfo").textContent = "Зона не выбрана для разделения.";
+        byId("workspaceInfo").textContent = "Р—РѕРЅР° РЅРµ РІС‹Р±СЂР°РЅР° РґР»СЏ СЂР°Р·РґРµР»РµРЅРёСЏ.";
         return false;
       }
       const a = fromPoint && Number.isFinite(Number(fromPoint.x)) && Number.isFinite(Number(fromPoint.y)) ? fromPoint : null;
       const b = toPoint && Number.isFinite(Number(toPoint.x)) && Number.isFinite(Number(toPoint.y)) ? toPoint : null;
       if (!a || !b) {
-        byId("workspaceInfo").textContent = "Линия разделения не задана.";
+        byId("workspaceInfo").textContent = "Р›РёРЅРёСЏ СЂР°Р·РґРµР»РµРЅРёСЏ РЅРµ Р·Р°РґР°РЅР°.";
         return false;
       }
       const dx = Number(b.x) - Number(a.x);
       const dy = Number(b.y) - Number(a.y);
       if (Math.hypot(dx, dy) < 1e-6) {
-        byId("workspaceInfo").textContent = "Линия разделения слишком короткая.";
+        byId("workspaceInfo").textContent = "Р›РёРЅРёСЏ СЂР°Р·РґРµР»РµРЅРёСЏ СЃР»РёС€РєРѕРј РєРѕСЂРѕС‚РєР°СЏ.";
         return false;
       }
       const parts = splitPolygonByLine(zone.points, a.x, a.y, dx, dy)
         .filter((poly) => Array.isArray(poly) && poly.length >= 3)
         .filter((poly) => polygonArea(poly) > 1);
       if (parts.length !== 2) {
-        byId("workspaceInfo").textContent = "Линия не разделила зону на две корректные части.";
+        byId("workspaceInfo").textContent = "Р›РёРЅРёСЏ РЅРµ СЂР°Р·РґРµР»РёР»Р° Р·РѕРЅСѓ РЅР° РґРІРµ РєРѕСЂСЂРµРєС‚РЅС‹Рµ С‡Р°СЃС‚Рё.";
         return false;
       }
       const boundLayouts = (Array.isArray(state.layouts) ? state.layouts : []).filter(
@@ -4089,7 +3573,7 @@
       if (boundLayouts.length > 0) {
         const names = boundLayouts.map((l) => String(l.name || l.mode || l.id)).join(", ");
         const ok = window.confirm(
-          `У зоны «${zone.name || zone.id}» есть выкладк${boundLayouts.length === 1 ? "а" : "и"}: ${names}.\n\nПри разделении зоны ${boundLayouts.length === 1 ? "она будет удалена" : "они будут удалены"}. Продолжить?`
+          `РЈ Р·РѕРЅС‹ В«${zone.name || zone.id}В» РµСЃС‚СЊ РІС‹РєР»Р°РґРє${boundLayouts.length === 1 ? "Р°" : "Рё"}: ${names}.\n\nРџСЂРё СЂР°Р·РґРµР»РµРЅРёРё Р·РѕРЅС‹ ${boundLayouts.length === 1 ? "РѕРЅР° Р±СѓРґРµС‚ СѓРґР°Р»РµРЅР°" : "РѕРЅРё Р±СѓРґСѓС‚ СѓРґР°Р»РµРЅС‹"}. РџСЂРѕРґРѕР»Р¶РёС‚СЊ?`
         );
         if (!ok) {
           state.draftSplitLine = [];
@@ -4109,7 +3593,7 @@
         type: "split-zone",
         originalZone: {
           id: zone.id,
-          name: String(zone.name || `Зона ${zone.id}`),
+          name: String(zone.name || `Р—РѕРЅР° ${zone.id}`),
           detailId: Number(zone.detailId || 0) || null,
           materialId: zone.materialId !== undefined && zone.materialId !== null && String(zone.materialId).trim()
             ? String(zone.materialId).trim()
@@ -4127,7 +3611,7 @@
         newZones: [
           {
             id: newIdA,
-            name: `Зона ${newIdA}`,
+            name: `Р—РѕРЅР° ${newIdA}`,
             detailId: Number(zone.detailId || 0) || null,
             materialId: zone.materialId !== undefined && zone.materialId !== null && String(zone.materialId).trim()
               ? String(zone.materialId).trim()
@@ -4140,7 +3624,7 @@
             parentZoneId: Number(zone.id || 0) || null,
             parentZoneSnapshot: {
               id: zone.id,
-              name: String(zone.name || `Зона ${zone.id}`),
+              name: String(zone.name || `Р—РѕРЅР° ${zone.id}`),
               detailId: Number(zone.detailId || 0) || null,
               materialId: zone.materialId !== undefined && zone.materialId !== null && String(zone.materialId).trim()
                 ? String(zone.materialId).trim()
@@ -4159,7 +3643,7 @@
           },
           {
             id: newIdB,
-            name: `Зона ${newIdB}`,
+            name: `Р—РѕРЅР° ${newIdB}`,
             detailId: Number(zone.detailId || 0) || null,
             materialId: zone.materialId !== undefined && zone.materialId !== null && String(zone.materialId).trim()
               ? String(zone.materialId).trim()
@@ -4172,7 +3656,7 @@
             parentZoneId: Number(zone.id || 0) || null,
             parentZoneSnapshot: {
               id: zone.id,
-              name: String(zone.name || `Зона ${zone.id}`),
+              name: String(zone.name || `Р—РѕРЅР° ${zone.id}`),
               detailId: Number(zone.detailId || 0) || null,
               materialId: zone.materialId !== undefined && zone.materialId !== null && String(zone.materialId).trim()
                 ? String(zone.materialId).trim()
@@ -4196,18 +3680,18 @@
       state.draftSplitLine = [];
       renderScene();
       await persistZonesForCurrentWorkspace();
-      byId("workspaceInfo").textContent = `Зона ${zone.id} разделена на ${newIdA} и ${newIdB}.`;
+      byId("workspaceInfo").textContent = `Р—РѕРЅР° ${zone.id} СЂР°Р·РґРµР»РµРЅР° РЅР° ${newIdA} Рё ${newIdB}.`;
       return true;
     }
     async function commitDraftSplitLine() {
       const line = Array.isArray(state.draftSplitLine) ? state.draftSplitLine : [];
       if (line.length < 2) {
-        byId("workspaceInfo").textContent = "Линия зонирования: поставьте две точки разделения.";
+        byId("workspaceInfo").textContent = "Р›РёРЅРёСЏ Р·РѕРЅРёСЂРѕРІР°РЅРёСЏ: РїРѕСЃС‚Р°РІСЊС‚Рµ РґРІРµ С‚РѕС‡РєРё СЂР°Р·РґРµР»РµРЅРёСЏ.";
         return false;
       }
       const ok = await splitSelectedZoneByLine(line[0], line[1]);
       if (!ok && Array.isArray(state.draftSplitLine) && state.draftSplitLine.length >= 2) {
-        byId("workspaceInfo").textContent = byId("workspaceInfo").textContent || "Линия зонирования: скорректируйте точки разреза.";
+        byId("workspaceInfo").textContent = byId("workspaceInfo").textContent || "Р›РёРЅРёСЏ Р·РѕРЅРёСЂРѕРІР°РЅРёСЏ: СЃРєРѕСЂСЂРµРєС‚РёСЂСѓР№С‚Рµ С‚РѕС‡РєРё СЂР°Р·СЂРµР·Р°.";
       }
       return ok;
     }
@@ -4969,7 +4453,7 @@
         byId("fillVoronoiFields").style.display = "none";
         byId("fillRegularFields").style.display = "none";
         byId("inventoryScenarioHint").textContent = state.layoutMode === "inventory_manual"
-          ? t("scenario_hint_manual", null, "Настройте параметры подбора и загрузите кандидатов в лоток.")
+          ? t("scenario_hint_manual", null, "РќР°СЃС‚СЂРѕР№С‚Рµ РїР°СЂР°РјРµС‚СЂС‹ РїРѕРґР±РѕСЂР° Рё Р·Р°РіСЂСѓР·РёС‚Рµ РєР°РЅРґРёРґР°С‚РѕРІ РІ Р»РѕС‚РѕРє.")
           : (state.layoutMode === "inventory_split_return"
             ? t("scenario_hint_split", null, "Split & Return: only visible part is used, leftover returns to pool.")
             : t("scenario_hint_inventory", null, "Layout is generated directly from inventory piece contours."));
@@ -5008,7 +4492,7 @@
       if (furSel && isManualMode) {
         function buildFurOptions(catalog) {
           const cur = String(state.manualFurMaterialFilterId || "");
-          furSel.innerHTML = `<option value="">Неважно</option>` +
+          furSel.innerHTML = `<option value="">РќРµРІР°Р¶РЅРѕ</option>` +
             catalog.map((m) => `<option value="${String(m.id).replace(/"/g, "&quot;")}">${String(m.name || m.id).replace(/</g, "&lt;")}</option>`).join("");
           furSel.value = cur;
         }
@@ -5162,7 +4646,7 @@
       if (bandsEl) bandsEl.style.display = mode === "bands" ? "" : "none";
       if (voronoiEl) voronoiEl.style.display = mode === "voronoi" ? "" : "none";
       if (importSvgEl) importSvgEl.style.display = mode === "import_svg" ? "" : "none";
-      // Sync fillType for server: voronoi mode → fillType=voronoi, others → regular
+      // Sync fillType for server: voronoi mode в†’ fillType=voronoi, others в†’ regular
       const fillTypeEl = byId("fillType");
       if (fillTypeEl) fillTypeEl.value = mode === "voronoi" ? "voronoi" : "regular";
       // Center X/Y visible only when manual center selected
@@ -5328,7 +4812,7 @@ function renderSplitEvents(events) {
       const hasSelected = !!selectedPlacement;
       const selectedTag = hasSelected
         ? String(selectedPlacement.inventoryTag || `#${selectedIdx + 1}`)
-        : t("manual_selected_none", null, "нет");
+        : t("manual_selected_none", null, "РЅРµС‚");
       const activeNapRaw = manual && manual.activePiece && Number.isFinite(Number(manual.activePiece.napDirectionDeg))
         ? Number(manual.activePiece.napDirectionDeg)
         : null;
@@ -5340,22 +4824,22 @@ function renderSplitEvents(events) {
                 : null))
         : activeNapRaw;
       const selectedNapText = Number.isFinite(selectedNapDeg)
-        ? `${((((selectedNapDeg % 360) + 360) % 360)).toFixed(1)}°`
+        ? `${((((selectedNapDeg % 360) + 360) % 360)).toFixed(1)}В°`
         : "-";
       const noteText = manual && manual.statusNote ? String(manual.statusNote).trim() : "";
 
       if (stateEl) {
         stateEl.textContent = noteText
-          ? `${t("manual_status_prefix", null, "Статус")}: ${noteText}`
-          : `${t("manual_status_prefix", null, "Статус")}: ${t("manual_status_ready", null, "готов к размещению")}`;
+          ? `${t("manual_status_prefix", null, "РЎС‚Р°С‚СѓСЃ")}: ${noteText}`
+          : `${t("manual_status_prefix", null, "РЎС‚Р°С‚СѓСЃ")}: ${t("manual_status_ready", null, "РіРѕС‚РѕРІ Рє СЂР°Р·РјРµС‰РµРЅРёСЋ")}`;
       }
 
       if (metricsEl) {
         if (!mm) {
-          metricsEl.textContent = "gain=- | util=- | статус=-";
+          metricsEl.textContent = "gain=- | util=- | СЃС‚Р°С‚СѓСЃ=-";
         } else {
           const reason = String(mm.statusReason || "").trim();
-          metricsEl.textContent = `gain=${Number(mm.gainAreaMm2 || 0).toFixed(0)} мм² | util=${(Number(mm.utilizationLocal || 0) * 100).toFixed(1)}% | статус=${String(mm.status || "ok")}${reason ? ` (${reason})` : ""}`;
+          metricsEl.textContent = `gain=${Number(mm.gainAreaMm2 || 0).toFixed(0)} РјРјВІ | util=${(Number(mm.utilizationLocal || 0) * 100).toFixed(1)}% | СЃС‚Р°С‚СѓСЃ=${String(mm.status || "ok")}${reason ? ` (${reason})` : ""}`;
         }
       }
 
@@ -5365,7 +4849,7 @@ function renderSplitEvents(events) {
         const usefulArea = placements.reduce((a, p) => a + Number(p && p.gainAreaMm2 || 0), 0);
         const coverage = zoneArea > 0 ? (usefulArea / zoneArea) * 100 : 0;
         if (placements.length <= 0) {
-          summaryEl.textContent = t("manual_summary_loaded", { loaded: loadedCount }, `Лоток: ${loadedCount}`);
+          summaryEl.textContent = t("manual_summary_loaded", { loaded: loadedCount }, `Р›РѕС‚РѕРє: ${loadedCount}`);
         } else {
           const napPart = t("manual_summary_nap", { nap: selectedNapText }, `nap: ${selectedNapText}`);
           summaryEl.textContent = t(
@@ -5377,7 +4861,7 @@ function renderSplitEvents(events) {
               selected: selectedTag,
               nap: napPart
             },
-            `Лоток: ${loadedCount} | На поле: ${placements.length} | Покрытие: ${coverage.toFixed(1)}% | Выбран: ${selectedTag} | ${napPart}`
+            `Р›РѕС‚РѕРє: ${loadedCount} | РќР° РїРѕР»Рµ: ${placements.length} | РџРѕРєСЂС‹С‚РёРµ: ${coverage.toFixed(1)}% | Р’С‹Р±СЂР°РЅ: ${selectedTag} | ${napPart}`
           );
         }
       }
@@ -5933,7 +5417,7 @@ function renderSplitEvents(events) {
           status: "error",
           statusReason: String(res && (res.error || res.errorCode) || "manual_recompute_failed")
         };
-        state.layoutRun.manual.statusNote = "оценка не получена";
+        state.layoutRun.manual.statusNote = "РѕС†РµРЅРєР° РЅРµ РїРѕР»СѓС‡РµРЅР°";
         renderInventoryManualPanel();
         renderManualTrayIntoRoot();
         renderScene();
@@ -6009,7 +5493,7 @@ function renderSplitEvents(events) {
           });
           if (!res || !res.ok || !res.contours) continue;
           const ctr = res.contours;
-          // Only update core contour if erosion actually produced a result — don't overwrite good data with empty
+          // Only update core contour if erosion actually produced a result вЂ” don't overwrite good data with empty
           if (Array.isArray(ctr.coreWorld) && ctr.coreWorld.length > 0) {
             p.alignedCoreContours = ctr.coreWorld;
             p.alignedCoreContour = multiLargestOuterPoints(p.alignedCoreContours);
@@ -6057,7 +5541,7 @@ function renderSplitEvents(events) {
         center: centroid(moved),
         rotationDeg: 0
       };
-      state.layoutRun.manual.statusNote = "не зафиксирован";
+      state.layoutRun.manual.statusNote = "РЅРµ Р·Р°С„РёРєСЃРёСЂРѕРІР°РЅ";
       state.layoutRun.manual.lastMetrics = null;
       state.layoutRun.manual.lastEvalContours = null;
       renderInventoryManualPanel();
@@ -6106,14 +5590,14 @@ function renderSplitEvents(events) {
       state.layoutRun.manual.activePiece = null;
       state.layoutRun.manual.lastMetrics = null;
       state.layoutRun.manual.lastEvalContours = null;
-      state.layoutRun.manual.statusNote = "кусок добавлен (ручной режим)";
+      state.layoutRun.manual.statusNote = "РєСѓСЃРѕРє РґРѕР±Р°РІР»РµРЅ (СЂСѓС‡РЅРѕР№ СЂРµР¶РёРј)";
       byId("invTotalFragments").textContent = String(state.layoutRun.placements.length);
       renderPlacementRows(state.layoutRun.placements || []);
       renderInventoryManualPanel();
       renderScene();
       void requestManualRecomputeFromUi();
       // Important: when adding directly from tray, compute Pfull/Pcore metrics immediately,
-      // otherwise "Припуск куска" has no geometry to render for this placement.
+      // otherwise "РџСЂРёРїСѓСЃРє РєСѓСЃРєР°" has no geometry to render for this placement.
       const coveredBefore = getManualCoveredContours();
       void (async () => {
         try {
@@ -6202,7 +5686,7 @@ function renderSplitEvents(events) {
       state.layoutRun.manual.lastMetrics = null;
       state.layoutRun.manual.lastEvalContours = null;
       state.layoutRun.manual.activePiece = null;
-      state.layoutRun.manual.statusNote = gainArea > 0 ? "зафиксирован" : "зафиксирован (без прироста)";
+      state.layoutRun.manual.statusNote = gainArea > 0 ? "Р·Р°С„РёРєСЃРёСЂРѕРІР°РЅ" : "Р·Р°С„РёРєСЃРёСЂРѕРІР°РЅ (Р±РµР· РїСЂРёСЂРѕСЃС‚Р°)";
       updateManualStatsFromPlacements();
       renderPlacementRows(state.layoutRun.placements || []);
       await recomputeInventoryManualVisibility();
@@ -6348,7 +5832,7 @@ function renderSplitEvents(events) {
                 selectedLayout.boundZoneId = placementZoneId;
                 selectedLayout.boundDetailId = Number(zoneByPlacements && zoneByPlacements.detailId || selectedLayout.boundDetailId || 0) || null;
               }
-              state.layoutRun.manual.statusNote = `ручная выкладка перепривязана к зоне ${placementZoneId}`;
+              state.layoutRun.manual.statusNote = `СЂСѓС‡РЅР°СЏ РІС‹РєР»Р°РґРєР° РїРµСЂРµРїСЂРёРІСЏР·Р°РЅР° Рє Р·РѕРЅРµ ${placementZoneId}`;
               usedZoneFallback = true;
             }
           } catch (_) {}
@@ -6399,7 +5883,7 @@ function renderSplitEvents(events) {
           statusReason: String(res && (res.error || res.errorCode) || "manual_recompute_failed"),
           recomputeSeq
         };
-        state.layoutRun.manual.statusNote = "оценка не получена";
+        state.layoutRun.manual.statusNote = "РѕС†РµРЅРєР° РЅРµ РїРѕР»СѓС‡РµРЅР°";
         renderInventoryManualPanel();
         renderManualTrayIntoRoot();
         renderScene();
@@ -6431,7 +5915,7 @@ function renderSplitEvents(events) {
         }
         seamSourceResolved = `applied_fragments:${seamGeometrySource}`;
       } else if (!isDirectInventory && Array.isArray(res.fragments) && res.fragments.length >= 2) {
-        // Regular layout — compute shared seam segments between adjacent fragments.
+        // Regular layout вЂ” compute shared seam segments between adjacent fragments.
         seamSegments = computeSeamSegmentsFromAppliedFragments(res.fragments, {
           minLenMm: 3,
           tolDistMm: 2.5,
@@ -6439,7 +5923,7 @@ function renderSplitEvents(events) {
         }, seamDiag);
         seamSourceResolved = `regular:${seamGeometrySource}`;
       } else if (isDirectInventory) {
-        // Seams from core geometry: adjacent core contours are ~2×seam_allowance apart,
+        // Seams from core geometry: adjacent core contours are ~2Г—seam_allowance apart,
         // so tolDistMm must span that gap (typically 24mm for 12mm allowance).
         const coreSeamContours = Array.isArray(res.seamVisibleContours) ? res.seamVisibleContours : seamVisibleContours;
         console.log("[seam-debug] directInventory seamVisibleContours:", coreSeamContours && coreSeamContours.length, "hasBackend:", Array.isArray(res.seamVisibleContours));
@@ -6558,7 +6042,7 @@ function renderSplitEvents(events) {
         };
       }
       console.info("[manual/seams][debug]", state.layoutRun.manual.lastSeamDebug);
-      state.layoutRun.manual.statusNote = "оценка обновлена";
+      state.layoutRun.manual.statusNote = "РѕС†РµРЅРєР° РѕР±РЅРѕРІР»РµРЅР°";
       byId("invUsefulArea").textContent = Number(vm.usefulAreaMm2 || 0).toFixed(1);
       byId("invUsedScrapArea").textContent = Number(vm.selectedInZoneAreaMm2 || 0).toFixed(1);
       byId("invScrapUtilization").textContent = Number(vm.utilizationPct || 0).toFixed(2);
@@ -6601,8 +6085,8 @@ function renderSplitEvents(events) {
       state.layoutRun.manual.selectedCandidateTag = "";
       const placements = Array.isArray(state.layoutRun && state.layoutRun.placements) ? state.layoutRun.placements : [];
       state.layoutRun.manual.statusNote = placements.length
-        ? `применено: ${placements.length} кусков`
-        : "применено";
+        ? `РїСЂРёРјРµРЅРµРЅРѕ: ${placements.length} РєСѓСЃРєРѕРІ`
+        : "РїСЂРёРјРµРЅРµРЅРѕ";
       const selectedManualLayout = Array.isArray(state.layouts)
         ? state.layouts.find((x) => Number(x && x.id || 0) === Number(state.selectedLayoutId || 0) && String(x && x.mode || "") === "inventory_manual")
         : null;
@@ -6638,7 +6122,7 @@ function renderSplitEvents(events) {
           };
           await api("/api/ac-proxy/layout-runs/commit", "POST", commitPayload, 10000);
         } catch (_) {
-          // non-critical — traceability commit failure should not block apply
+          // non-critical вЂ” traceability commit failure should not block apply
         }
       }
       renderInventoryManualPanel();
@@ -6646,8 +6130,8 @@ function renderSplitEvents(events) {
       const workspaceInfo = byId("workspaceInfo");
       if (workspaceInfo) {
         workspaceInfo.textContent = autosaveOk
-          ? `Ручная выкладка применена и сохранена: ${placements.length} кусков`
-          : `Ручная выкладка применена: ${placements.length} кусков`;
+          ? `Р СѓС‡РЅР°СЏ РІС‹РєР»Р°РґРєР° РїСЂРёРјРµРЅРµРЅР° Рё СЃРѕС…СЂР°РЅРµРЅР°: ${placements.length} РєСѓСЃРєРѕРІ`
+          : `Р СѓС‡РЅР°СЏ РІС‹РєР»Р°РґРєР° РїСЂРёРјРµРЅРµРЅР°: ${placements.length} РєСѓСЃРєРѕРІ`;
       }
       const step2Backdrop = byId("inventoryStep2Backdrop");
       if (step2Backdrop && step2Backdrop.style.display === "flex") closeInventoryStep2();
@@ -6734,7 +6218,7 @@ function renderSplitEvents(events) {
       state.layoutRun.manual = state.layoutRun.manual || { suggestions: [], lastMetrics: null, selectedCandidateTag: "", activePiece: null, lastEvalContours: null, statusNote: "", selectedPlacementIndex: -1 };
       const nextSel = Math.min(idx, Math.max(0, (state.layoutRun.placements || []).length - 1));
       state.layoutRun.manual.selectedPlacementIndex = (state.layoutRun.placements || []).length ? nextSel : -1;
-      state.layoutRun.manual.statusNote = noteText || "кусок удален";
+      state.layoutRun.manual.statusNote = noteText || "РєСѓСЃРѕРє СѓРґР°Р»РµРЅ";
       state.layoutRun.manual.lastMetrics = null;
       updateManualStatsFromPlacements();
       renderPlacementRows(state.layoutRun.placements || []);
@@ -6759,7 +6243,7 @@ function renderSplitEvents(events) {
       state.layoutRun.placements = placements;
       state.layoutRun.manual = state.layoutRun.manual || { suggestions: [], lastMetrics: null, selectedCandidateTag: "", activePiece: null, lastEvalContours: null, statusNote: "", selectedPlacementIndex: -1 };
       state.layoutRun.manual.selectedPlacementIndex = targetIdx;
-      state.layoutRun.manual.statusNote = dir > 0 ? "кусок поднят по слою" : "кусок опущен по слою";
+      state.layoutRun.manual.statusNote = dir > 0 ? "РєСѓСЃРѕРє РїРѕРґРЅСЏС‚ РїРѕ СЃР»РѕСЋ" : "РєСѓСЃРѕРє РѕРїСѓС‰РµРЅ РїРѕ СЃР»РѕСЋ";
       state.layoutRun.manual.lastMetrics = null;
       renderPlacementRows(state.layoutRun.placements || []);
       renderInventoryManualPanel();
@@ -6787,8 +6271,8 @@ function renderSplitEvents(events) {
       state.layoutRun.manual = state.layoutRun.manual || { suggestions: [], lastMetrics: null, selectedCandidateTag: "", activePiece: null, lastEvalContours: null, statusNote: "", selectedPlacementIndex: -1 };
       state.layoutRun.manual.selectedPlacementIndex = targetIdx;
       state.layoutRun.manual.statusNote = String(where || "") === "back"
-        ? "кусок отправлен назад по слою"
-        : "кусок поднят на передний план";
+        ? "РєСѓСЃРѕРє РѕС‚РїСЂР°РІР»РµРЅ РЅР°Р·Р°Рґ РїРѕ СЃР»РѕСЋ"
+        : "РєСѓСЃРѕРє РїРѕРґРЅСЏС‚ РЅР° РїРµСЂРµРґРЅРёР№ РїР»Р°РЅ";
       state.layoutRun.manual.lastMetrics = null;
       renderPlacementRows(state.layoutRun.placements || []);
       renderInventoryManualPanel();
@@ -6851,7 +6335,7 @@ function renderSplitEvents(events) {
       pl.napEffectiveDeg = baseNap + Number(pl.alignRotationDeg || 0);
       state.layoutRun.manual = state.layoutRun.manual || { suggestions: [], lastMetrics: null, selectedCandidateTag: "", activePiece: null, lastEvalContours: null, statusNote: "", selectedPlacementIndex: -1 };
       state.layoutRun.manual.selectedPlacementIndex = idx;
-      state.layoutRun.manual.statusNote = "кусок повернут";
+      state.layoutRun.manual.statusNote = "РєСѓСЃРѕРє РїРѕРІРµСЂРЅСѓС‚";
       state.layoutRun.manual.lastMetrics = null;
       renderPlacementRows(state.layoutRun.placements || []);
       renderInventoryManualPanel();
@@ -6898,7 +6382,7 @@ function renderSplitEvents(events) {
       // fallback: remove last placement
       const placements = Array.isArray(state.layoutRun.placements) ? state.layoutRun.placements.slice() : [];
       if (!placements.length) return;
-      removeInventoryManualPlacementByIndex(placements.length - 1, "последний кусок удален (Undo)");
+      removeInventoryManualPlacementByIndex(placements.length - 1, "РїРѕСЃР»РµРґРЅРёР№ РєСѓСЃРѕРє СѓРґР°Р»РµРЅ (Undo)");
     }
 
     function redoInventoryManualPlacement() {
@@ -7102,19 +6586,19 @@ function renderSplitEvents(events) {
               status: String(mm.status || "ok"),
               reason: mm.statusReason ? ` (${String(mm.statusReason)})` : ""
             },
-            `Оценка: кусков=${placedCount} | покрытие=${Number(mm.coveragePct || 0).toFixed(2)}% | полезно=${Number(mm.gainAreaMm2 || 0).toFixed(1)} мм² | зона=${zoneAreaForMetrics.toFixed(1)} мм² | перекрытие=${Number(mm.overlapAreaMm2 || 0).toFixed(1)} мм² | outside=${Number(mm.outsideAreaMm2 || 0).toFixed(1)} мм² | util=${(Number(mm.utilizationLocal || 0) * 100).toFixed(2)}%`
+            `РћС†РµРЅРєР°: РєСѓСЃРєРѕРІ=${placedCount} | РїРѕРєСЂС‹С‚РёРµ=${Number(mm.coveragePct || 0).toFixed(2)}% | РїРѕР»РµР·РЅРѕ=${Number(mm.gainAreaMm2 || 0).toFixed(1)} РјРјВІ | Р·РѕРЅР°=${zoneAreaForMetrics.toFixed(1)} РјРјВІ | РїРµСЂРµРєСЂС‹С‚РёРµ=${Number(mm.overlapAreaMm2 || 0).toFixed(1)} РјРјВІ | outside=${Number(mm.outsideAreaMm2 || 0).toFixed(1)} РјРјВІ | util=${(Number(mm.utilizationLocal || 0) * 100).toFixed(2)}%`
           )
           + ((String(mm.status || "ok") !== "ok")
             ? ` | status=${String(mm.status || "")}${mm.statusReason ? ` (${String(mm.statusReason)})` : ""}`
             : "")
         )
-        : t("manual_metrics_prompt", { pieces: placedCount }, `Оценка: кусков=${placedCount} | нажмите "Оценить"`);
+        : t("manual_metrics_prompt", { pieces: placedCount }, `РћС†РµРЅРєР°: РєСѓСЃРєРѕРІ=${placedCount} | РЅР°Р¶РјРёС‚Рµ "РћС†РµРЅРёС‚СЊ"`);
       const selectedPlacement = Number.isFinite(selectedPlacementIndex) && selectedPlacementIndex >= 0 && selectedPlacementIndex < placements.length
         ? placements[selectedPlacementIndex]
         : null;
       const selectedInfoLine = selectedPlacement
-        ? `Выбран: ${String(selectedPlacement.inventoryTag || selectedPlacement.scrapPieceId || `#${selectedPlacementIndex + 1}`)} | угол=${Number(selectedPlacement.alignRotationDeg || 0).toFixed(1)}° | слой=${selectedPlacementIndex + 1}/${placements.length}`
-        : "Выбран: нет";
+        ? `Р’С‹Р±СЂР°РЅ: ${String(selectedPlacement.inventoryTag || selectedPlacement.scrapPieceId || `#${selectedPlacementIndex + 1}`)} | СѓРіРѕР»=${Number(selectedPlacement.alignRotationDeg || 0).toFixed(1)}В° | СЃР»РѕР№=${selectedPlacementIndex + 1}/${placements.length}`
+        : "Р’С‹Р±СЂР°РЅ: РЅРµС‚";
       const seamDbg = state.layoutRun && state.layoutRun.manual && state.layoutRun.manual.lastSeamDebug
         ? state.layoutRun.manual.lastSeamDebug
         : null;
@@ -7132,7 +6616,7 @@ function renderSplitEvents(events) {
         return parts.length ? ` | reject=${parts.join(",")}` : "";
       })();
       const seamDebugLine = seamDbg
-        ? `Швы: built=${Number(seamDbg.seamsCount || 0)} | rendered=${Number(seamDbg.renderedSeams || 0)} | seamContours=${Number(seamDbg.seamContoursCount || 0)} | frags=${Number(seamDbg.fragmentsCount || 0)} | pairs=${Number(seamDbg.candidatePairs || 0)} | source=${String(seamDbg.source || "unknown")} | layer=${(state.layers && state.layers.visibleCore) ? "on" : "off"} | selectedZone=${Number(seamDbg.selectedZoneId || 0)} | recomputeZone=${Number(seamDbg.recomputeZoneId || 0)} | zoneByPlacements=${Number(seamDbg.zoneByPlacementsId || 0)}${seamDbg.usedZoneFallback ? " | rebind=1" : ""}${seamRejectSummary}${(Number(seamDbg.fragmentsCount||0)<2 || Number(seamDbg.candidatePairs||0)<1) ? " | no_seams_reason=not_enough_fragments_or_pairs" : ""}`
+        ? `РЁРІС‹: built=${Number(seamDbg.seamsCount || 0)} | rendered=${Number(seamDbg.renderedSeams || 0)} | seamContours=${Number(seamDbg.seamContoursCount || 0)} | frags=${Number(seamDbg.fragmentsCount || 0)} | pairs=${Number(seamDbg.candidatePairs || 0)} | source=${String(seamDbg.source || "unknown")} | layer=${(state.layers && state.layers.visibleCore) ? "on" : "off"} | selectedZone=${Number(seamDbg.selectedZoneId || 0)} | recomputeZone=${Number(seamDbg.recomputeZoneId || 0)} | zoneByPlacements=${Number(seamDbg.zoneByPlacementsId || 0)}${seamDbg.usedZoneFallback ? " | rebind=1" : ""}${seamRejectSummary}${(Number(seamDbg.fragmentsCount||0)<2 || Number(seamDbg.candidatePairs||0)<1) ? " | no_seams_reason=not_enough_fragments_or_pairs" : ""}`
         : "";
       const seamFlowSummary = (() => {
         const s = seamDbg && seamDbg.fragmentFlowSummary && typeof seamDbg.fragmentFlowSummary === "object"
@@ -7481,7 +6965,7 @@ function renderSplitEvents(events) {
             : null;
           return String((selectedLayout && selectedLayout.mode) || state.layoutMode || "");
         },
-        getAddButtonLabel: (libraryMode) => String(libraryMode || "layouts") === "materials" ? "Выбрать мех" : "Выбрать"
+        getAddButtonLabel: (libraryMode) => String(libraryMode || "layouts") === "materials" ? "Р’С‹Р±СЂР°С‚СЊ РјРµС…" : "Р’С‹Р±СЂР°С‚СЊ"
       })
       : null;
     function openLayoutTypePicker() {
@@ -7519,16 +7003,16 @@ function renderSplitEvents(events) {
       const selectedZoneId = Number(selectedZone && selectedZone.id || 0) || null;
       const selectedDetailId = Number(selectedZone && selectedZone.detailId || state.selectedDetailId || 0) || null;
       if (selectedZoneId) {
-        // Intarsia layouts coexist with regular layouts on the same zone — only block if a non-intarsia layout already occupies it
+        // Intarsia layouts coexist with regular layouts on the same zone вЂ” only block if a non-intarsia layout already occupies it
         const occupiedBy = (Array.isArray(state.layouts) ? state.layouts : []).find((x) =>
           x && Number(x.boundZoneId || 0) === selectedZoneId
           && String(x.mode || "") !== "intarsia"
           && normalizedMode !== "intarsia"
         );
         if (occupiedBy) {
-          const zoneName = String(selectedZone && selectedZone.name || `Зона ${selectedZoneId}`);
+          const zoneName = String(selectedZone && selectedZone.name || `Р—РѕРЅР° ${selectedZoneId}`);
           const msg = byId("zoneOccupiedMessage");
-          if (msg) msg.textContent = `Зона "${zoneName}" уже занята выкладкой "${String(occupiedBy.name || "-")}". Удалите её или выберите другую зону.`;
+          if (msg) msg.textContent = `Р—РѕРЅР° "${zoneName}" СѓР¶Рµ Р·Р°РЅСЏС‚Р° РІС‹РєР»Р°РґРєРѕР№ "${String(occupiedBy.name || "-")}". РЈРґР°Р»РёС‚Рµ РµС‘ РёР»Рё РІС‹Р±РµСЂРёС‚Рµ РґСЂСѓРіСѓСЋ Р·РѕРЅСѓ.`;
           const bd = byId("zoneOccupiedBackdrop");
           if (bd) bd.style.display = "flex";
           closeLayoutTypePicker();
@@ -7545,7 +7029,7 @@ function renderSplitEvents(events) {
       );
       if (existingDraft) {
         void openLayoutEntry(existingDraft);
-        byId("workspaceInfo").textContent = "Используем существующий черновик выкладки для выбранной зоны.";
+        byId("workspaceInfo").textContent = "РСЃРїРѕР»СЊР·СѓРµРј СЃСѓС‰РµСЃС‚РІСѓСЋС‰РёР№ С‡РµСЂРЅРѕРІРёРє РІС‹РєР»Р°РґРєРё РґР»СЏ РІС‹Р±СЂР°РЅРЅРѕР№ Р·РѕРЅС‹.";
         return existingDraft;
       }
       const entry = {
@@ -7670,7 +7154,7 @@ function renderSplitEvents(events) {
             selectedCandidateTag: "",
             activePiece: null,
             lastEvalContours: null,
-            statusNote: "нет активного",
+            statusNote: "РЅРµС‚ Р°РєС‚РёРІРЅРѕРіРѕ",
             selectedPlacementIndex: -1
           }
         }
@@ -7886,7 +7370,7 @@ function renderSplitEvents(events) {
       if (fillCenterMode && String(fillCenterMode.value || "auto") !== "manual") return;
       syncRadialCenterFieldValues(Number(p.x), Number(p.y));
       const info = byId("workspaceInfo");
-      if (info) info.textContent = `Радиальная: центр (${Math.round(Number(p.x) * 10) / 10}; ${Math.round(Number(p.y) * 10) / 10}) мм`;
+      if (info) info.textContent = `Р Р°РґРёР°Р»СЊРЅР°СЏ: С†РµРЅС‚СЂ (${Math.round(Number(p.x) * 10) / 10}; ${Math.round(Number(p.y) * 10) / 10}) РјРј`;
       renderPropertyEditor();
       renderScene();
       if (options && options.preview === false) return;
@@ -8027,7 +7511,7 @@ function renderSplitEvents(events) {
       }
       if (!Array.isArray(state.layoutRun.previewLayers.seams)) state.layoutRun.previewLayers.seams = [];
       if (!Array.isArray(state.layoutRun.candidatePool)) state.layoutRun.candidatePool = [];
-      // Ensure contour layers are on — same as the layout worker does at line ~9018
+      // Ensure contour layers are on вЂ” same as the layout worker does at line ~9018
       state.layers.pfullZ = true;
       state.layers.pcoreZ = true;
       const _pfullChk = byId("layerPfullZ"); if (_pfullChk) _pfullChk.checked = true;
@@ -8082,7 +7566,7 @@ function renderSplitEvents(events) {
         candidatePool: [],
         manual: {}
       };
-      // Интарсия — отдельный режим: не переносим её active=true в другие раскладки
+      // РРЅС‚Р°СЂСЃРёСЏ вЂ” РѕС‚РґРµР»СЊРЅС‹Р№ СЂРµР¶РёРј: РЅРµ РїРµСЂРµРЅРѕСЃРёРј РµС‘ active=true РІ РґСЂСѓРіРёРµ СЂР°СЃРєР»Р°РґРєРё
       if (normalizedMode !== "intarsia" && !nextLayoutRunRaw.active) {
         state.layoutRun.active = false;
       }
@@ -8113,7 +7597,7 @@ function renderSplitEvents(events) {
           if (frags.length > 0) {
             state.intarsiaSvgFragments = frags.map((f) => ({ id: f.id, points: Array.isArray(f.points) ? f.points.slice() : [] }));
             state.layoutRun.fillType = "import_svg";
-            if (!state.intarsiaSvgFileName) state.intarsiaSvgFileName = "импортировано";
+            if (!state.intarsiaSvgFileName) state.intarsiaSvgFileName = "РёРјРїРѕСЂС‚РёСЂРѕРІР°РЅРѕ";
           }
         }
         // Force fillType if fragments exist
@@ -8141,7 +7625,7 @@ function renderSplitEvents(events) {
       if (isIntarsiaLayoutMode(e.mode)) {
         const payload = {
           id: e.persistedRunId || null,
-          name: String(e.name || "Интарсия"),
+          name: String(e.name || "РРЅС‚Р°СЂСЃРёСЏ"),
           mode: "intarsia",
           selectedZoneId: Number(e.boundZoneId || state.layoutRun && state.layoutRun.selectedZoneId || state.selectedZoneId || 0) || null,
           snapshot: buildFragmentOnlyLayoutSnapshot("intarsia")
@@ -8152,11 +7636,11 @@ function renderSplitEvents(events) {
           e.persistedAt = Number(res.item.updatedAt || Date.now());
           e.runtimeSnapshot = JSON.parse(JSON.stringify(payload.snapshot));
           e.isDirty = false;
-          byId("workspaceInfo").textContent = `Выкладка сохранена (${e.name || "-"})`;
+          byId("workspaceInfo").textContent = `Р’С‹РєР»Р°РґРєР° СЃРѕС…СЂР°РЅРµРЅР° (${e.name || "-"})`;
           renderDetailZoneTree();
           renderPropertyEditor();
         } else {
-          byId("workspaceInfo").textContent = `Ошибка сохранения: ${String(res && res.error || "unknown")}`;
+          byId("workspaceInfo").textContent = `РћС€РёР±РєР° СЃРѕС…СЂР°РЅРµРЅРёСЏ: ${String(res && res.error || "unknown")}`;
         }
         return res;
       }
@@ -8175,11 +7659,11 @@ function renderSplitEvents(events) {
           e.persistedAt = Number(res.item.updatedAt || Date.now());
           e.runtimeSnapshot = JSON.parse(JSON.stringify(payload.snapshot));
           e.isDirty = false;
-          byId("workspaceInfo").textContent = `Выкладка сохранена (${e.name || "-"})`;
+          byId("workspaceInfo").textContent = `Р’С‹РєР»Р°РґРєР° СЃРѕС…СЂР°РЅРµРЅР° (${e.name || "-"})`;
           renderDetailZoneTree();
           renderPropertyEditor();
         } else {
-          byId("workspaceInfo").textContent = `Ошибка сохранения: ${String(res && res.error || "unknown")}`;
+          byId("workspaceInfo").textContent = `РћС€РёР±РєР° СЃРѕС…СЂР°РЅРµРЅРёСЏ: ${String(res && res.error || "unknown")}`;
         }
         return res;
       }
@@ -8187,7 +7671,7 @@ function renderSplitEvents(events) {
       const boundZone = ensureManualLayoutBinding(e);
       const payload = {
         id: e.persistedRunId || null,
-        name: String(e.name || "Ручная выкладка"),
+        name: String(e.name || "Р СѓС‡РЅР°СЏ РІС‹РєР»Р°РґРєР°"),
         mode: "inventory_manual",
         selectedZoneId: Number(boundZone && boundZone.id || state.layoutRun && state.layoutRun.selectedZoneId || state.selectedZoneId || 0) || null,
         snapshot: buildManualLayoutSnapshot()
@@ -8197,11 +7681,11 @@ function renderSplitEvents(events) {
         e.persistedRunId = String(res.item.id || "");
         e.persistedAt = Number(res.item.updatedAt || Date.now());
         e.isDirty = false;
-        byId("workspaceInfo").textContent = `Выкладка сохранена (${e.name || "-"})`;
+        byId("workspaceInfo").textContent = `Р’С‹РєР»Р°РґРєР° СЃРѕС…СЂР°РЅРµРЅР° (${e.name || "-"})`;
         renderDetailZoneTree();
         renderPropertyEditor();
       } else {
-        byId("workspaceInfo").textContent = `Ошибка сохранения: ${String(res && res.error || "unknown")}`;
+        byId("workspaceInfo").textContent = `РћС€РёР±РєР° СЃРѕС…СЂР°РЅРµРЅРёСЏ: ${String(res && res.error || "unknown")}`;
       }
       return res;
     }
@@ -8211,7 +7695,7 @@ function renderSplitEvents(events) {
       saveCurrentLayoutRuntimeSnapshot();
       state.selectedLayoutId = e.id;
       applyLayoutMode(e.mode);
-      // Apply stored snapshot if available — but don't build/apply empty snapshot (avoids reset)
+      // Apply stored snapshot if available вЂ” but don't build/apply empty snapshot (avoids reset)
       const snap = e.runtimeSnapshot && typeof e.runtimeSnapshot === "object" ? e.runtimeSnapshot : null;
       if (snap) {
         if (isFragmentOnlyLayoutMode(e.mode) || isIntarsiaLayoutMode(e.mode)) {
@@ -8264,9 +7748,9 @@ function renderSplitEvents(events) {
           e.isDirty = false;
           if (String(e.mode || "") === "inventory_manual") applyManualLayoutSnapshot(e.runtimeSnapshot);
           else applyFragmentOnlyLayoutSnapshot(String(e.mode || ""), e.runtimeSnapshot, e);
-          byId("workspaceInfo").textContent = `Выкладка открыта (${e.name || "-"})`;
+          byId("workspaceInfo").textContent = `Р’С‹РєР»Р°РґРєР° РѕС‚РєСЂС‹С‚Р° (${e.name || "-"})`;
         } else {
-          byId("workspaceInfo").textContent = `Ошибка открытия: ${String(res && res.error || "unknown")}`;
+          byId("workspaceInfo").textContent = `РћС€РёР±РєР° РѕС‚РєСЂС‹С‚РёСЏ: ${String(res && res.error || "unknown")}`;
         }
       } else if (isIntarsiaLayoutMode(e.mode)) {
         const snapshot = (e.runtimeSnapshot && typeof e.runtimeSnapshot === "object")
@@ -8327,11 +7811,11 @@ function renderSplitEvents(events) {
         const res = await api("/api/layout/manual/runs/delete", "POST", { id: e.persistedRunId });
         const notFound = String(res && res.error || "") === "not_found";
         if ((!res || !res.ok) && !notFound) {
-          byId("workspaceInfo").textContent = `Ошибка удаления: ${String(res && res.error || "unknown")}`;
+          byId("workspaceInfo").textContent = `РћС€РёР±РєР° СѓРґР°Р»РµРЅРёСЏ: ${String(res && res.error || "unknown")}`;
           return;
         }
         if (notFound) {
-          byId("workspaceInfo").textContent = "Сохранённая выкладка уже отсутствовала в хранилище. Удаляем локальную карточку.";
+          byId("workspaceInfo").textContent = "РЎРѕС…СЂР°РЅС‘РЅРЅР°СЏ РІС‹РєР»Р°РґРєР° СѓР¶Рµ РѕС‚СЃСѓС‚СЃС‚РІРѕРІР°Р»Р° РІ С…СЂР°РЅРёР»РёС‰Рµ. РЈРґР°Р»СЏРµРј Р»РѕРєР°Р»СЊРЅСѓСЋ РєР°СЂС‚РѕС‡РєСѓ.";
         }
       }
       state.layouts = state.layouts.filter((x) => Number(x.id) !== Number(e.id));
@@ -8380,7 +7864,7 @@ function renderSplitEvents(events) {
         state.layouts.push({
           id,
           mode: String(item && item.mode || "inventory_manual"),
-          name: String(item && item.name || `Ручная выкладка ${id}`),
+          name: String(item && item.name || `Р СѓС‡РЅР°СЏ РІС‹РєР»Р°РґРєР° ${id}`),
           persistedRunId: String(item && item.id || ""),
           persistedAt: Number(item && item.updatedAt || 0) || null,
           boundZoneId: snapZoneId,
@@ -8416,7 +7900,7 @@ function renderSplitEvents(events) {
       if (title) {
         title.textContent = state.uiPanel === "layouts"
           ? ""
-          : (state.uiPanel === "materials" ? "Меховые материалы" : "Детали / Зоны");
+          : (state.uiPanel === "materials" ? "РњРµС…РѕРІС‹Рµ РјР°С‚РµСЂРёР°Р»С‹" : "Р”РµС‚Р°Р»Рё / Р—РѕРЅС‹");
       }
     }
 
@@ -8516,7 +8000,7 @@ function renderSplitEvents(events) {
       }
       const zone = getSelectedZoneForLayoutMode(normalizedMode);
       if (!zone || !Array.isArray(zone.points) || zone.points.length < 3) {
-        byId("workspaceInfo").textContent = "Сначала выберите зону.";
+        byId("workspaceInfo").textContent = "РЎРЅР°С‡Р°Р»Р° РІС‹Р±РµСЂРёС‚Рµ Р·РѕРЅСѓ.";
         return { ok: false, error: "zone_not_selected" };
       }
       const selectedLayout = getSelectedLayoutEntry();
@@ -8589,10 +8073,10 @@ function renderSplitEvents(events) {
         },
         seed: Date.now()
       };
-      byId("workspaceInfo").textContent = "Генерируем выкладку...";
+      byId("workspaceInfo").textContent = "Р“РµРЅРµСЂРёСЂСѓРµРј РІС‹РєР»Р°РґРєСѓ...";
       const res = await api("/api/layout/modes/preview", "POST", payload, 45000);
       if (!res || res.ok !== true) {
-        byId("workspaceInfo").textContent = `Ошибка генерации: ${String(res && (res.message || res.error) || "unknown")}`;
+        byId("workspaceInfo").textContent = `РћС€РёР±РєР° РіРµРЅРµСЂР°С†РёРё: ${String(res && (res.message || res.error) || "unknown")}`;
         return res || { ok: false, error: "preview_failed" };
       }
       previewToken = "";
@@ -8638,12 +8122,12 @@ function renderSplitEvents(events) {
       renderPropertyEditor();
       renderScene();
       byId("workspaceInfo").textContent = normalizedMode === "transverse"
-        ? `${getLayoutModeTitle(normalizedMode)}: ${state.layoutRun.fragments.length} фрагментов (оси ${axisCount}, шаг ${bandStepMm} мм, угол ${angleDeg}°)`
+        ? `${getLayoutModeTitle(normalizedMode)}: ${state.layoutRun.fragments.length} С„СЂР°РіРјРµРЅС‚РѕРІ (РѕСЃРё ${axisCount}, С€Р°Рі ${bandStepMm} РјРј, СѓРіРѕР» ${angleDeg}В°)`
         : (normalizedMode === "radial"
-          ? `${getLayoutModeTitle(normalizedMode)}: ${state.layoutRun.fragments.length} фрагментов (кольца ${ringCount}, секторы ${sectorCount}, поворот ${rotationDeg}°)`
+          ? `${getLayoutModeTitle(normalizedMode)}: ${state.layoutRun.fragments.length} С„СЂР°РіРјРµРЅС‚РѕРІ (РєРѕР»СЊС†Р° ${ringCount}, СЃРµРєС‚РѕСЂС‹ ${sectorCount}, РїРѕРІРѕСЂРѕС‚ ${rotationDeg}В°)`
         : (normalizedMode === "shifted"
-          ? `${getLayoutModeTitle(normalizedMode)}: ${state.layoutRun.fragments.length} фрагментов (сетка ${rows}x${cols}, смещение ${shiftPercent}%)`
-          : `${getLayoutModeTitle(normalizedMode)}: ${state.layoutRun.fragments.length} фрагментов (сетка ${rows}x${cols})`));
+          ? `${getLayoutModeTitle(normalizedMode)}: ${state.layoutRun.fragments.length} С„СЂР°РіРјРµРЅС‚РѕРІ (СЃРµС‚РєР° ${rows}x${cols}, СЃРјРµС‰РµРЅРёРµ ${shiftPercent}%)`
+          : `${getLayoutModeTitle(normalizedMode)}: ${state.layoutRun.fragments.length} С„СЂР°РіРјРµРЅС‚РѕРІ (СЃРµС‚РєР° ${rows}x${cols})`));
       return res;
     }
 
@@ -8666,7 +8150,7 @@ function renderSplitEvents(events) {
         if (firstZone && Number.isFinite(Number(firstZone.id))) {
           state.selectedZoneId = Number(firstZone.id);
         } else {
-          byId("workspaceInfo").textContent = "Сначала выберите зону.";
+          byId("workspaceInfo").textContent = "РЎРЅР°С‡Р°Р»Р° РІС‹Р±РµСЂРёС‚Рµ Р·РѕРЅСѓ.";
           return;
         }
       }
@@ -8714,18 +8198,18 @@ function renderSplitEvents(events) {
             const manualScale = scaleEl ? Number(scaleEl.value) : 1;
             const result = parseSvgContours(ev.target.result, manualScale);
             if (result.error) {
-              if (statusEl) statusEl.textContent = `Ошибка: ${result.error}`;
+              if (statusEl) statusEl.textContent = `РћС€РёР±РєР°: ${result.error}`;
               return;
             }
             if (!result.contours.length) {
-              if (statusEl) statusEl.textContent = "Контуры не найдены в SVG";
+              if (statusEl) statusEl.textContent = "РљРѕРЅС‚СѓСЂС‹ РЅРµ РЅР°Р№РґРµРЅС‹ РІ SVG";
               return;
             }
             const existingFrags = Array.isArray(state.intarsiaSvgFragments) ? state.intarsiaSvgFragments : [];
             const maxFragId = existingFrags.reduce((m, f) => Math.max(m, Number(f && f.id || 0)), 0);
             const addedFrags = result.contours.map((pts, i) => ({ id: maxFragId + i + 1, points: pts }));
             state.intarsiaSvgFragments = existingFrags.concat(addedFrags);
-            if (statusEl) statusEl.textContent = `Добавлено ${result.contours.length} контуров, всего ${state.intarsiaSvgFragments.length} (масштаб ${result.autoScale.toFixed(4)} мм/ед.)`;
+            if (statusEl) statusEl.textContent = `Р”РѕР±Р°РІР»РµРЅРѕ ${result.contours.length} РєРѕРЅС‚СѓСЂРѕРІ, РІСЃРµРіРѕ ${state.intarsiaSvgFragments.length} (РјР°СЃС€С‚Р°Р± ${result.autoScale.toFixed(4)} РјРј/РµРґ.)`;
             if (svgClearBtn) svgClearBtn.style.display = "";
             if (state.layoutMode === "intarsia") previewIntarsiaFragmentsDraft();
           };
@@ -8737,7 +8221,7 @@ function renderSplitEvents(events) {
         svgClearBtn.onclick = () => {
           state.intarsiaSvgFragments = null;
           const statusEl = byId("intarsiaSvgStatus");
-          if (statusEl) statusEl.textContent = "Файл не выбран";
+          if (statusEl) statusEl.textContent = "Р¤Р°Р№Р» РЅРµ РІС‹Р±СЂР°РЅ";
           svgClearBtn.style.display = "none";
           if (state.layoutMode === "intarsia") previewIntarsiaFragmentsDraft();
         };
@@ -8765,7 +8249,7 @@ function renderSplitEvents(events) {
         inventoryProgressController.setHadEvent(false);
       }
       updateInventoryProgressKpis({});
-      setInventoryProgressStatus("Ожидание телеметрии...");
+      setInventoryProgressStatus("РћР¶РёРґР°РЅРёРµ С‚РµР»РµРјРµС‚СЂРёРё...");
       inventoryProgressStartedAt = Date.now();
       updateInventoryProgressTimer();
       if (inventoryProgressTimerId) clearInterval(inventoryProgressTimerId);
@@ -8781,7 +8265,7 @@ function renderSplitEvents(events) {
       }
       if (inventoryProgressView && typeof inventoryProgressView.resetSteps === "function") inventoryProgressView.resetSteps();
       inventoryProgressStartedAt = 0;
-      setInventoryProgressStatus("Ожидание телеметрии...");
+      setInventoryProgressStatus("РћР¶РёРґР°РЅРёРµ С‚РµР»РµРјРµС‚СЂРёРё...");
     }
     function openInventoryStep2() {
       byId("inventoryStep2Backdrop").style.display = "flex";
@@ -8821,7 +8305,7 @@ function renderSplitEvents(events) {
       const intarsiaStart = state.layoutMode === "intarsia" && !intarsiaAssignOnly;
       if (!intarsiaStart) closeInventoryStep1();
       resetInventoryProgressMonotonic();
-      setInventoryProgress(0, t("progress_prepare", null, "Подготовка расчета"), { allowDecrease: true });
+      setInventoryProgress(0, t("progress_prepare", null, "РџРѕРґРіРѕС‚РѕРІРєР° СЂР°СЃС‡РµС‚Р°"), { allowDecrease: true });
       showInventoryProgress();
       try {
         const zone = state.zones.find((z) => Number(z && z.id) === Number(state.selectedZoneId));
@@ -8872,7 +8356,7 @@ function renderSplitEvents(events) {
             [],
             (msg) => {
               const pct = Math.min(35, Number(msg.progressPercent || 0) * 0.35);
-              const title = String(msg.phase || "Подготовка");
+              const title = String(msg.phase || "РџРѕРґРіРѕС‚РѕРІРєР°");
               setInventoryProgress(pct, `Worker: ${title}`);
             }
           );
@@ -9036,7 +8520,7 @@ function renderSplitEvents(events) {
             selectedCandidateTag: "",
             activePiece: null,
             lastEvalContours: null,
-            statusNote: "нет активного",
+            statusNote: "РЅРµС‚ Р°РєС‚РёРІРЅРѕРіРѕ",
             selectedPlacementIndex: -1
           };
           byId("invTotalFragments").textContent = "0";
@@ -9074,7 +8558,7 @@ function renderSplitEvents(events) {
           renderInventoryManualPanel();
           openInventoryStep2();
           if (isStaleRun()) return;
-          setInventoryProgress(100, "Ручной режим / готово");
+          setInventoryProgress(100, "Р СѓС‡РЅРѕР№ СЂРµР¶РёРј / РіРѕС‚РѕРІРѕ");
             addInventoryProgressNote(t("note_worker_raster_init", null, "Worker: raster initialization."));
           hideInventoryProgress();
           renderScene();
@@ -9123,11 +8607,11 @@ function renderSplitEvents(events) {
           ? Math.max(45000, Math.min(180000, Number(opt.hardMaxSolveMs || 90000) + 15000))
           : ((intarsiaMode && intarsiaAssignOnly) ? 300000 : (isAssignOnlyScenario ? 120000 : 30000));
         byId("invDbCandidates").textContent = String(Array.isArray(prerankedCandidates) ? prerankedCandidates.length : 0);
-        byId("invCompatibleCandidates").textContent = "…";
+        byId("invCompatibleCandidates").textContent = "вЂ¦";
         setInventoryProgressStatus(
           intarsiaMode && intarsiaAssignOnly
-            ? "Серверный подбор по фрагментам запущен. На сложном кейсе расчёт может занять до 1 минуты."
-            : "Серверный расчёт запущен. Ожидаем телеметрию."
+            ? "РЎРµСЂРІРµСЂРЅС‹Р№ РїРѕРґР±РѕСЂ РїРѕ С„СЂР°РіРјРµРЅС‚Р°Рј Р·Р°РїСѓС‰РµРЅ. РќР° СЃР»РѕР¶РЅРѕРј РєРµР№СЃРµ СЂР°СЃС‡С‘С‚ РјРѕР¶РµС‚ Р·Р°РЅСЏС‚СЊ РґРѕ 1 РјРёРЅСѓС‚С‹."
+            : "РЎРµСЂРІРµСЂРЅС‹Р№ СЂР°СЃС‡С‘С‚ Р·Р°РїСѓС‰РµРЅ. РћР¶РёРґР°РµРј С‚РµР»РµРјРµС‚СЂРёСЋ."
         );
         const basePreviewPayload = {
           ...common,
@@ -9541,7 +9025,7 @@ function renderSplitEvents(events) {
         }
         renderPlacementRows(state.layoutRun.placements);
         renderSplitEvents(state.layoutRun.splitEvents);
-        byId("workspaceInfo").textContent = `Кандидаты: ${Number(candidatesRes.matchedCandidates || 0)}, фрагменты: ${state.layoutRun.fragments.length}, seed=${state.layoutRun.lastSeed}`;
+        byId("workspaceInfo").textContent = `РљР°РЅРґРёРґР°С‚С‹: ${Number(candidatesRes.matchedCandidates || 0)}, С„СЂР°РіРјРµРЅС‚С‹: ${state.layoutRun.fragments.length}, seed=${state.layoutRun.lastSeed}`;
         const canApply = !(
           (state.layoutMode === "inventory" || state.layoutMode === "inventory_split_return") &&
           inventoryScenario === "A" &&
@@ -9569,7 +9053,7 @@ function renderSplitEvents(events) {
         stopServerPreviewProgressTicker();
         closeInventoryProgressStream();
         const msg = err && err.message ? err.message : String(err);
-        byId("workspaceInfo").textContent = `Ошибка подбора: ${msg}`;
+        byId("workspaceInfo").textContent = `РћС€РёР±РєР° РїРѕРґР±РѕСЂР°: ${msg}`;
         byId("invTotalFragments").textContent = "0";
         byId("invViolations").textContent = "0";
         byId("invIntersections").textContent = "0";
@@ -9595,13 +9079,13 @@ function renderSplitEvents(events) {
         byId("invRejectedOutside").textContent = "0";
         if (inventoryProgressView && typeof inventoryProgressView.resetKpis === "function") inventoryProgressView.resetKpis();
         updateInventoryProgressKpis({});
-        setInventoryProgressStatus(`Ошибка: ${msg}`);
+        setInventoryProgressStatus(`РћС€РёР±РєР°: ${msg}`);
           byId("invUsedTags").textContent = `(${t("no_data", null, "none")})`;
-        byId("invDebugInfo").textContent = `Ошибка: ${msg}`;
+        byId("invDebugInfo").textContent = `РћС€РёР±РєР°: ${msg}`;
         const applyBtn = byId("inventoryStep2ApplyBtn");
         if (applyBtn) {
           applyBtn.disabled = true;
-          applyBtn.title = "Нельзя применить из-за ошибки подбора";
+          applyBtn.title = "РќРµР»СЊР·СЏ РїСЂРёРјРµРЅРёС‚СЊ РёР·-Р·Р° РѕС€РёР±РєРё РїРѕРґР±РѕСЂР°";
         }
         state.layoutRun.placements = [];
         state.layoutRun.topChoicesByFragment = {};
@@ -9641,13 +9125,13 @@ function renderSplitEvents(events) {
       const pieceToggle = byId("layerAssignedPieces");
       if (fragLabel) {
         const manualBeforeApply = isManualInventoryMode() && String(state.layoutRun && state.layoutRun.status || "") !== "applied";
-        fragLabel.textContent = t("layer_fragments_label", null, "Фрагменты");
+        fragLabel.textContent = t("layer_fragments_label", null, "Р¤СЂР°РіРјРµРЅС‚С‹");
       }
-      if (pieceLabel) pieceLabel.textContent = `${t("layer_pieces_label", null, "Подобранные куски")} (${matchedPiecesCount})`;
+      if (pieceLabel) pieceLabel.textContent = `${t("layer_pieces_label", null, "РџРѕРґРѕР±СЂР°РЅРЅС‹Рµ РєСѓСЃРєРё")} (${matchedPiecesCount})`;
       if (pieceToggle) {
         pieceToggle.title = matchedPiecesCount > 0
           ? ""
-          : t("layer_no_matched_pieces", null, "В текущем результате нет подобранных кусков");
+          : t("layer_no_matched_pieces", null, "Р’ С‚РµРєСѓС‰РµРј СЂРµР·СѓР»СЊС‚Р°С‚Рµ РЅРµС‚ РїРѕРґРѕР±СЂР°РЅРЅС‹С… РєСѓСЃРєРѕРІ");
       }
     }
 
@@ -9741,7 +9225,7 @@ function renderSplitEvents(events) {
       const renderEntities = getRenderablePatternEntities();
       state.renderEntities = renderEntities;
       // Recompute detail list only when we truly have renderable geometry.
-      // This prevents accidental tree reset to "Нет деталей" on transient renders.
+      // This prevents accidental tree reset to "РќРµС‚ РґРµС‚Р°Р»РµР№" on transient renders.
       if (Array.isArray(renderEntities) && renderEntities.length > 0) {
         const candNames = state.patternGeometry && state.patternGeometry.meta && Array.isArray(state.patternGeometry.meta.patternNames)
           ? state.patternGeometry.meta.patternNames
@@ -9756,7 +9240,7 @@ function renderSplitEvents(events) {
         for (const z of state.zones) {
           const did = Number(z && z.detailId || 0);
           if (!did || byId.has(did)) continue;
-          byId.set(did, { id: did, name: `Деталь ${did}`, bbox: null, area: 0, points: 0, entity: null });
+          byId.set(did, { id: did, name: `Р”РµС‚Р°Р»СЊ ${did}`, bbox: null, area: 0, points: 0, entity: null });
         }
         state.details = Array.from(byId.values()).sort((a, b) => a.id - b.id);
         if (!state.details.some((d) => d.id === state.selectedDetailId)) {
@@ -10138,7 +9622,7 @@ function renderSplitEvents(events) {
             layerPreview.add(new Konva.Text({
               x: cs.x + 6,
               y: cs.y + 6,
-              text: String(ap.inventoryTag || "ручной кусок"),
+              text: String(ap.inventoryTag || "СЂСѓС‡РЅРѕР№ РєСѓСЃРѕРє"),
               fontSize: 12,
               fill: "#0b63ce",
               listening: false
@@ -10182,7 +9666,7 @@ function renderSplitEvents(events) {
               name: `frag-${fragId}`
             });
             layerFragments.add(shape);
-            // Cut boundary (outer cut line with seam allowance) — only for manual/inventory modes.
+            // Cut boundary (outer cut line with seam allowance) вЂ” only for manual/inventory modes.
             // In regular layout the shared seam segments are computed separately and drawn below.
             if (state.layers.visibleCore && isManualInventoryMode() && Array.isArray(frag.cutPoints) && frag.cutPoints.length >= 3) {
               const cutPoints = fragIsDragged
@@ -10224,7 +9708,7 @@ function renderSplitEvents(events) {
             layerSelection.add(new Konva.Circle({ x: sc.x, y: sc.y, radius: handleR, fill: "#fff", stroke: "#0076D6", strokeWidth: 1.5, listening: false }));
           });
 
-          // Rotation handle — circle above top-center, connected by a line
+          // Rotation handle вЂ” circle above top-center, connected by a line
           const rotHandleWorld = { x: bCx, y: bMaxY + (bMaxY - bMinY) * 0.25 + 8 };
           const rotHandleScreen = worldToScreen(rotHandleWorld);
           const topCenterScreen = worldToScreen({ x: bCx, y: bMaxY });
@@ -10477,7 +9961,7 @@ function renderSplitEvents(events) {
           const world = screenToWorld(marker.x(), marker.y());
           syncRadialCenterFieldValues(world.x, world.y);
           const info = byId("workspaceInfo");
-          if (info) info.textContent = `Радиальная: центр (${Math.round(world.x * 10) / 10}; ${Math.round(world.y * 10) / 10}) мм`;
+          if (info) info.textContent = `Р Р°РґРёР°Р»СЊРЅР°СЏ: С†РµРЅС‚СЂ (${Math.round(world.x * 10) / 10}; ${Math.round(world.y * 10) / 10}) РјРј`;
         });
         marker.on("dragend", () => {
           const world = screenToWorld(marker.x(), marker.y());
@@ -10697,7 +10181,7 @@ function renderSplitEvents(events) {
               const nextStrength = Math.max(0.08, Math.min(0.48, projection / Math.max(1e-6, curveCtx.minLen)));
               if (applyCurveEditPreview(nextStrength)) {
                 const info = byId("workspaceInfo");
-                if (info) info.textContent = `Кривизна: ${nextStrength.toFixed(2)}`;
+                if (info) info.textContent = `РљСЂРёРІРёР·РЅР°: ${nextStrength.toFixed(2)}`;
                 renderScene();
               }
             });
@@ -10859,7 +10343,7 @@ function refreshSelectionInfo() {
         }
         state.patternGeometry = json.geometry;
         state.loadedProjectWorkspaceKey = null;
-        // Fresh DXF import — clean slate, no zones or layouts from previous sessions
+        // Fresh DXF import вЂ” clean slate, no zones or layouts from previous sessions
         state.zones = [];
         state.layouts = [];
         state.selectedLayoutId = null;
@@ -11266,7 +10750,7 @@ function refreshSelectionInfo() {
           : { id: null, name: null };
         const json = await assignMaterialToZone(zone, material);
         if (!json || !json.ok) {
-          byId("workspaceInfo").textContent = `Ошибка назначения материала: ${String(json && json.error || "unknown")}`;
+          byId("workspaceInfo").textContent = `РћС€РёР±РєР° РЅР°Р·РЅР°С‡РµРЅРёСЏ РјР°С‚РµСЂРёР°Р»Р°: ${String(json && json.error || "unknown")}`;
           return;
         }
         closeZoneMaterialModal();
@@ -11453,7 +10937,7 @@ function refreshSelectionInfo() {
           const selIdx = Number(manual && manual.selectedPlacementIndex);
           if (Number.isFinite(selIdx) && selIdx >= 0) {
             e.preventDefault();
-            removeInventoryManualPlacementByIndex(selIdx, "кусок удален");
+            removeInventoryManualPlacementByIndex(selIdx, "РєСѓСЃРѕРє СѓРґР°Р»РµРЅ");
             return;
           }
         }
@@ -11572,11 +11056,11 @@ function refreshSelectionInfo() {
           if (detailZoneTreeView && typeof detailZoneTreeView.scrollSelectedZoneIntoView === "function") {
             detailZoneTreeView.scrollSelectedZoneIntoView();
           }
-          // Don't auto-switch layout while in manual mode or active layout editing —
+          // Don't auto-switch layout while in manual mode or active layout editing вЂ”
           // openLayoutEntry reloads snapshot and would discard unsaved placements.
           if (isManualInventoryMode()) return;
           const activeEntry = getSelectedLayoutEntry();
-          // Only block auto-switch for manual mode — fragment-only modes have no unsaved placements
+          // Only block auto-switch for manual mode вЂ” fragment-only modes have no unsaved placements
           if (activeEntry && String(activeEntry.mode || "") === "inventory_manual") return;
           const layoutForZone = (Array.isArray(state.layouts) ? state.layouts : [])
             .find((e) => Number(e && e.boundZoneId || 0) === zoneId);
@@ -11648,7 +11132,7 @@ function refreshSelectionInfo() {
     updateModeUi();
     window.FurLabResetCurrentZones = () => resetZonesForCurrentWorkspace();
 
-    // ── Project management ──────────────────────────────────────────────────
+    // в”Ђв”Ђ Project management в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
     function modeToLayoutType(mode) {
       const m = String(mode || "");
@@ -11732,7 +11216,7 @@ function refreshSelectionInfo() {
       const workspaceKey = buildZonesWorkspaceKey();
       const parts = (Array.isArray(state.details) ? state.details : []).map((d) => ({
         id: Number(d && d.id || 0),
-        name: String(d && d.name || `Деталь ${d && d.id}`),
+        name: String(d && d.name || `Р”РµС‚Р°Р»СЊ ${d && d.id}`),
         points: Array.isArray(d && d.entity && d.entity.points) ? d.entity.points.map((p) => ({ x: Number(p.x), y: Number(p.y) })) : []
       }));
       const zones = (Array.isArray(state.zones) ? state.zones : []).map((z) => ({ ...z }));
@@ -11776,7 +11260,7 @@ function refreshSelectionInfo() {
           .filter((p) => Number(p.id) > 0 && Array.isArray(p.points) && p.points.length >= 3)
           .map((p) => ({
             id: Number(p.id),
-            name: String(p.name || `Деталь ${p.id}`),
+            name: String(p.name || `Р”РµС‚Р°Р»СЊ ${p.id}`),
             entity: { points: p.points, closed: true },
             bbox: (() => {
               const pts = p.points;
@@ -11788,7 +11272,7 @@ function refreshSelectionInfo() {
           }));
       }
 
-      // Restore pattern geometry (лекала) if saved with the project
+      // Restore pattern geometry (Р»РµРєР°Р»Р°) if saved with the project
       if (project.patternGeometry && Array.isArray(project.patternGeometry.entities)) {
         state.patternGeometry = project.patternGeometry;
       }
@@ -11890,7 +11374,7 @@ function refreshSelectionInfo() {
         state.layouts.push({
           id,
           mode: String(lay.mode || "longitudinal"),
-          name: String(lay.name || `Выкладка ${id}`),
+          name: String(lay.name || `Р’С‹РєР»Р°РґРєР° ${id}`),
           persistedRunId: String(lay.persistedRunId || ""),
           boundZoneId: Number(lay.zoneId || 0) || null,
           boundDetailId: null,
@@ -11959,7 +11443,7 @@ function refreshSelectionInfo() {
       const nameEl = byId("activeProjectName");
       const saveBtn = byId("saveProjectBtn");
       const exportBtn = byId("exportCloBtn");
-      if (nameEl) nameEl.textContent = state.activeProjectName ? `— ${state.activeProjectName}` : "";
+      if (nameEl) nameEl.textContent = state.activeProjectName ? `вЂ” ${state.activeProjectName}` : "";
       const hasData = (state.zones && state.zones.length > 0) || (state.details && state.details.length > 0);
       const hasZones = state.zones && state.zones.length > 0;
       if (saveBtn) saveBtn.style.display = hasData ? "inline-block" : "none";
@@ -11979,16 +11463,16 @@ function refreshSelectionInfo() {
       listEl.innerHTML = items.map((p) => {
         const date = p.updatedAt ? new Date(p.updatedAt).toLocaleDateString("ru-RU") : "";
         const meta = [
-          p.zonesCount ? `${p.zonesCount} зон` : "",
-          p.layoutsCount ? `${p.layoutsCount} выкладок` : "",
+          p.zonesCount ? `${p.zonesCount} Р·РѕРЅ` : "",
+          p.layoutsCount ? `${p.layoutsCount} РІС‹РєР»Р°РґРѕРє` : "",
           date
-        ].filter(Boolean).join(" · ");
+        ].filter(Boolean).join(" В· ");
         return `<div class="project-list-item" data-id="${p.id}">
-          <div class="project-list-item-name">${String(p.name || "Без названия").replace(/</g, "&lt;")}</div>
+          <div class="project-list-item-name">${String(p.name || "Р‘РµР· РЅР°Р·РІР°РЅРёСЏ").replace(/</g, "&lt;")}</div>
           <div class="project-list-item-meta">${meta}</div>
           <div class="project-list-item-actions">
-            <button class="project-list-item-open" data-id="${p.id}">Открыть</button>
-            <button class="project-list-item-delete" data-id="${p.id}">✕</button>
+            <button class="project-list-item-open" data-id="${p.id}">РћС‚РєСЂС‹С‚СЊ</button>
+            <button class="project-list-item-delete" data-id="${p.id}">вњ•</button>
           </div>
         </div>`;
       }).join("");
@@ -12000,14 +11484,14 @@ function refreshSelectionInfo() {
           try {
             await loadProject(id);
           } catch (err) {
-            alert("Ошибка загрузки проекта: " + String(err && err.message || err));
+            alert("РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё РїСЂРѕРµРєС‚Р°: " + String(err && err.message || err));
           }
         };
       });
       listEl.querySelectorAll(".project-list-item-delete").forEach((btn) => {
         btn.onclick = async (e) => {
           e.stopPropagation();
-          if (!confirm("Удалить проект?")) return;
+          if (!confirm("РЈРґР°Р»РёС‚СЊ РїСЂРѕРµРєС‚?")) return;
           const id = btn.dataset.id;
           await api("/api/projects/delete", "POST", { id }, 10000);
           const res = await api("/api/projects", "GET", null, 10000);
@@ -12018,7 +11502,7 @@ function refreshSelectionInfo() {
 
     async function openProjectPicker() {
       byId("projectPickerBackdrop").style.display = "flex";
-      byId("projectPickerList").innerHTML = "<div style='padding:16px;color:#888;'>Загрузка...</div>";
+      byId("projectPickerList").innerHTML = "<div style='padding:16px;color:#888;'>Р—Р°РіСЂСѓР·РєР°...</div>";
       if (byId("projectPickerEmpty")) byId("projectPickerEmpty").style.display = "none";
       try {
         const res = await api("/api/projects", "GET", null, 10000);
@@ -12048,12 +11532,12 @@ function refreshSelectionInfo() {
         const pickRes = await uploadResp.json();
         if (!pickRes || !pickRes.ok || !Array.isArray(pickRes.files) || !pickRes.files.length) return;
 
-        // ZPRJ — один файл, идёт через zprj preview
+        // ZPRJ вЂ” РѕРґРёРЅ С„Р°Р№Р», РёРґС‘С‚ С‡РµСЂРµР· zprj preview
         const isZprj = pickRes.files.length === 1 && pickRes.files[0].toLowerCase().endsWith(".zprj");
         if (isZprj) {
           const previewRes = await api("/api/import/zprj/preview", "POST", { filePath: pickRes.files[0] });
           if (!previewRes || !previewRes.ok) {
-            const wi = byId("workspaceInfo"); if (wi) wi.textContent = `Ошибка preview: ${previewRes && previewRes.error || "unknown"}`;
+            const wi = byId("workspaceInfo"); if (wi) wi.textContent = `РћС€РёР±РєР° preview: ${previewRes && previewRes.error || "unknown"}`;
             return;
           }
           previewSourceType = "zprj";
@@ -12071,7 +11555,7 @@ function refreshSelectionInfo() {
         // DXF / PAC / POS
         const previewRes = await api("/api/import/dxf/preview", "POST", { files: pickRes.files });
         if (!previewRes || !previewRes.ok) {
-          const wi = byId("workspaceInfo"); if (wi) wi.textContent = `Ошибка preview: ${previewRes && previewRes.error || "unknown"}`;
+          const wi = byId("workspaceInfo"); if (wi) wi.textContent = `РћС€РёР±РєР° preview: ${previewRes && previewRes.error || "unknown"}`;
           return;
         }
         previewToken = previewRes.token || "";
@@ -12085,7 +11569,7 @@ function refreshSelectionInfo() {
         if (firstReady.length) await autoLoadFirstGeometry(firstReady);
         else { state.patternGeometry = null; renderScene(); }
       } catch (e) {
-        const wi = byId("workspaceInfo"); if (wi) wi.textContent = `Ошибка импорта: ${e && e.message ? e.message : "unknown"}`;
+        const wi = byId("workspaceInfo"); if (wi) wi.textContent = `РћС€РёР±РєР° РёРјРїРѕСЂС‚Р°: ${e && e.message ? e.message : "unknown"}`;
       }
     };
 
@@ -12102,24 +11586,24 @@ function refreshSelectionInfo() {
     byId("saveProjectCancelBtn").onclick = () => { byId("saveProjectBackdrop").style.display = "none"; };
     byId("saveProjectConfirmBtn").onclick = async () => {
       const nameInput = byId("saveProjectNameInput");
-      const name = String(nameInput && nameInput.value || "").trim() || "Без названия";
+      const name = String(nameInput && nameInput.value || "").trim() || "Р‘РµР· РЅР°Р·РІР°РЅРёСЏ";
       byId("saveProjectConfirmBtn").disabled = true;
       try {
         const isSameName = name === (state.activeProjectName || "").trim();
         await saveProject(name, isSameName ? state.activeProjectId : null);
         byId("saveProjectBackdrop").style.display = "none";
       } catch (err) {
-        alert("Ошибка сохранения: " + String(err && err.message || err));
+        alert("РћС€РёР±РєР° СЃРѕС…СЂР°РЅРµРЅРёСЏ: " + String(err && err.message || err));
       } finally {
         byId("saveProjectConfirmBtn").disabled = false;
       }
     };
 
-    // Show "Сохранить проект" when zones are available
+    // Show "РЎРѕС…СЂР°РЅРёС‚СЊ РїСЂРѕРµРєС‚" when zones are available
     updateProjectUi();
 
     // -----------------------------------------------------------------------
-    // Export to CLO: "Преобразовать в лекала"
+    // Export to CLO: "РџСЂРµРѕР±СЂР°Р·РѕРІР°С‚СЊ РІ Р»РµРєР°Р»Р°"
     // -----------------------------------------------------------------------
 
     function buildExportBody(scopeOverride, seamModeOverride) {
@@ -12163,7 +11647,7 @@ function refreshSelectionInfo() {
       byId("exportCloNextBtn").style.display = "";
       byId("exportCloRunBtn").style.display = "none";
       byId("exportCloBackBtn").style.display = "none";
-      byId("exportCloModalTitle").textContent = "Преобразовать в лекала — Шаг 1";
+      byId("exportCloModalTitle").textContent = "РџСЂРµРѕР±СЂР°Р·РѕРІР°С‚СЊ РІ Р»РµРєР°Р»Р° вЂ” РЁР°Рі 1";
       backdrop.style.display = "flex";
     }
 
@@ -12171,12 +11655,12 @@ function refreshSelectionInfo() {
       byId("exportCloNextBtn").disabled = true;
       byId("exportCloProgress").style.display = "";
       byId("exportCloProgressBar").style.width = "30%";
-      byId("exportCloProgressLabel").textContent = "Анализ зон...";
+      byId("exportCloProgressLabel").textContent = "РђРЅР°Р»РёР· Р·РѕРЅ...";
       try {
         const body = buildExportBody();
         const res = await api("/api/export/patterns/preview", "POST", body, 30000);
         if (!res || !res.ok) {
-          alert("Ошибка предпросмотра: " + String(res && res.error || "unknown"));
+          alert("РћС€РёР±РєР° РїСЂРµРґРїСЂРѕСЃРјРѕС‚СЂР°: " + String(res && res.error || "unknown"));
           return;
         }
         byId("exportCloProgressBar").style.width = "100%";
@@ -12189,7 +11673,7 @@ function refreshSelectionInfo() {
         byId("exportCloFragCount").textContent = String(res.fragmentsCount || 0);
         byId("exportCloSeamCount").textContent = String(res.seamsCount || 0);
         byId("exportCloMaterialCount").textContent = String(res.materialsCount || 0);
-        byId("exportCloModalTitle").textContent = "Преобразовать в лекала — Шаг 2";
+        byId("exportCloModalTitle").textContent = "РџСЂРµРѕР±СЂР°Р·РѕРІР°С‚СЊ РІ Р»РµРєР°Р»Р° вЂ” РЁР°Рі 2";
         byId("exportCloNextBtn").style.display = "none";
         byId("exportCloRunBtn").style.display = "";
         byId("exportCloBackBtn").style.display = "";
@@ -12198,7 +11682,7 @@ function refreshSelectionInfo() {
         const statusEl = byId("exportCloZoneStatuses");
         if (statusEl && Array.isArray(res.zoneStatuses)) {
           statusEl.innerHTML = res.zoneStatuses.map((z) => {
-            const icon = z.status === "exported" ? "[L]" : "[–]";
+            const icon = z.status === "exported" ? "[L]" : "[вЂ“]";
             const color = z.status === "exported" ? "#333" : "#999";
             return `<span style="color:${color}; margin-right:10px;">${icon} ${String(z.name || z.id).replace(/</g, "&lt;")}</span>`;
           }).join("");
@@ -12207,14 +11691,14 @@ function refreshSelectionInfo() {
         const warnEl = byId("exportCloWarning");
         if (warnEl) {
           if (res.fragmentsCount === 0) {
-            warnEl.textContent = "Нет фрагментов для экспорта. Выполните выкладку хотя бы одной зоны.";
+            warnEl.textContent = "РќРµС‚ С„СЂР°РіРјРµРЅС‚РѕРІ РґР»СЏ СЌРєСЃРїРѕСЂС‚Р°. Р’С‹РїРѕР»РЅРёС‚Рµ РІС‹РєР»Р°РґРєСѓ С…РѕС‚СЏ Р±С‹ РѕРґРЅРѕР№ Р·РѕРЅС‹.";
             warnEl.style.display = "";
           } else {
             warnEl.style.display = "none";
           }
         }
       } catch (err) {
-        alert("Ошибка: " + String(err && err.message || err));
+        alert("РћС€РёР±РєР°: " + String(err && err.message || err));
       } finally {
         const btn = byId("exportCloNextBtn");
         if (btn) btn.disabled = false;
@@ -12226,12 +11710,12 @@ function refreshSelectionInfo() {
       if (runBtn) runBtn.disabled = true;
       byId("exportCloProgress").style.display = "";
       byId("exportCloProgressBar").style.width = "20%";
-      byId("exportCloProgressLabel").textContent = "Создание лекал...";
+      byId("exportCloProgressLabel").textContent = "РЎРѕР·РґР°РЅРёРµ Р»РµРєР°Р»...";
       try {
         const body = buildExportBody();
         body._saveDialog = true;
         byId("exportCloProgressBar").style.width = "60%";
-        byId("exportCloProgressLabel").textContent = "Формирование ZIP...";
+        byId("exportCloProgressLabel").textContent = "Р¤РѕСЂРјРёСЂРѕРІР°РЅРёРµ ZIP...";
         const res = await fetch("/api/export/patterns/run", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -12240,14 +11724,14 @@ function refreshSelectionInfo() {
         const json = await res.json().catch(() => ({}));
         if (!res.ok || !json.ok) {
           if (json.cancelled) return;
-          alert("Ошибка экспорта: " + String(json && json.error || res.status));
+          alert("РћС€РёР±РєР° СЌРєСЃРїРѕСЂС‚Р°: " + String(json && json.error || res.status));
           return;
         }
         byId("exportCloProgressBar").style.width = "100%";
-        byId("exportCloProgressLabel").textContent = `Сохранено: ${json.savedTo}`;
+        byId("exportCloProgressLabel").textContent = `РЎРѕС…СЂР°РЅРµРЅРѕ: ${json.savedTo}`;
         setTimeout(() => { byId("exportCloBackdrop").style.display = "none"; }, 1500);
       } catch (err) {
-        alert("Ошибка: " + String(err && err.message || err));
+        alert("РћС€РёР±РєР°: " + String(err && err.message || err));
       } finally {
         if (runBtn) runBtn.disabled = false;
       }
@@ -12277,12 +11761,12 @@ function refreshSelectionInfo() {
       byId("exportCloNextBtn").style.display = "";
       byId("exportCloRunBtn").style.display = "none";
       byId("exportCloBackBtn").style.display = "none";
-      byId("exportCloModalTitle").textContent = "Преобразовать в лекала — Шаг 1";
+      byId("exportCloModalTitle").textContent = "РџСЂРµРѕР±СЂР°Р·РѕРІР°С‚СЊ РІ Р»РµРєР°Р»Р° вЂ” РЁР°Рі 1";
     };
 
     // Keyboard shortcut Ctrl+Shift+L
     document.addEventListener("keydown", (e) => {
-      if (e.ctrlKey && e.shiftKey && (e.key === "L" || e.key === "л" || e.key === "Л")) {
+      if (e.ctrlKey && e.shiftKey && (e.key === "L" || e.key === "Р»" || e.key === "Р›")) {
         e.preventDefault();
         openExportCloModal();
       }
@@ -12296,7 +11780,7 @@ function refreshSelectionInfo() {
         if (items.length > 0) {
           openProjectPicker();
         } else {
-          // No projects yet — fall back to loading saved manual runs
+          // No projects yet вЂ” fall back to loading saved manual runs
           const count = await loadSavedManualRuns();
           if (count > 0) {
             renderLayoutModeSwitch();
