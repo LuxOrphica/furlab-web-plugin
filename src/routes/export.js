@@ -3,7 +3,6 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { execFileSync } = require("child_process");
 const { generateGltfString, generateJfabString } = require("../services/clo_gltf_generator");
 
 // ---------------------------------------------------------------------------
@@ -137,6 +136,55 @@ function computeSharedSeams(fragmentsInZone, tolMm) {
 // ZIP builder (pure Node.js, no native deps — uses deflate via zlib)
 // ---------------------------------------------------------------------------
 
+function normalizePoint(p) {
+  if (Array.isArray(p) && p.length >= 2) {
+    const x = Number(p[0]);
+    const y = Number(p[1]);
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+  }
+  if (p && typeof p === "object") {
+    const x = Number(p.x);
+    const y = Number(p.y);
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+  }
+  return null;
+}
+
+function normalizeContourPoints(value) {
+  if (!Array.isArray(value)) return [];
+  const direct = value.map(normalizePoint).filter(Boolean);
+  if (direct.length >= 3) return direct;
+
+  const firstRing = Array.isArray(value[0]) && Array.isArray(value[0][0])
+    ? (Array.isArray(value[0][0][0]) ? value[0][0] : value[0])
+    : [];
+  const ring = Array.isArray(firstRing) ? firstRing.map(normalizePoint).filter(Boolean) : [];
+  if (ring.length >= 4) {
+    const first = ring[0];
+    const last = ring[ring.length - 1];
+    if (first && last && first.x === last.x && first.y === last.y) return ring.slice(0, -1);
+  }
+  return ring.length >= 3 ? ring : [];
+}
+
+function getFragmentExportPoints(fragment) {
+  if (!fragment || typeof fragment !== "object") return [];
+  const candidates = [
+    fragment.points,
+    fragment.cutPoints,
+    fragment.seamPoints,
+    fragment.cleanPoints,
+    fragment.fragmentContour,
+    fragment.resultContourSnapshot,
+    fragment.contour,
+  ];
+  for (const candidate of candidates) {
+    const points = normalizeContourPoints(candidate);
+    if (points.length >= 3) return points;
+  }
+  return [];
+}
+
 const zlib = require("zlib");
 
 function uint16LE(n) { const b = Buffer.allocUnsafe(2); b.writeUInt16LE(n, 0); return b; }
@@ -231,7 +279,7 @@ function buildZip(files) {
 // ---------------------------------------------------------------------------
 
 function buildExportPayload(body) {
-  const { zones = [], layouts = [], details = [], materials = {}, zoneScope, seamMode } = body;
+  const { zones = [], layouts = [], materials = {}, zoneScope, seamMode } = body;
 
   // Scope: "current" uses only the zoneId provided, "all" uses all zones
   const targetZoneIds = zoneScope === "current" && body.currentZoneId
@@ -252,8 +300,31 @@ function buildExportPayload(body) {
     const frags = Array.isArray(lastRun.resultSnapshot && lastRun.resultSnapshot.fragments)
       ? lastRun.resultSnapshot.fragments
       : [];
-    for (const f of frags) {
-      if (!Array.isArray(f.points) || f.points.length < 3) continue;
+
+    // Build lookup: fragmentId → placed contour from scrapPlacements
+    const placementGeom = {};
+    for (const sp of (Array.isArray(lastRun.scrapPlacements) ? lastRun.scrapPlacements : [])) {
+      if (!sp) continue;
+      const fid = String(sp.fragmentId || sp.id || "");
+      if (fid && !placementGeom[fid]) {
+        const contour = normalizeContourPoints(sp.resultContourSnapshot || sp.alignedContour || []);
+        if (contour.length >= 3) placementGeom[fid] = contour;
+      }
+    }
+
+    // If resultSnapshot has no fragments but scrapPlacements do, synthesize fragment list
+    const fragSource = frags.length > 0
+      ? frags
+      : Object.keys(placementGeom).map(id => ({ id, areaMm2: 0 }));
+
+    for (const f of fragSource) {
+      // Enrich fragment with placed geometry if available
+      const fid = String(f && (f.id || f.fragmentId) || "");
+      const enriched = placementGeom[fid]
+        ? { ...f, resultContourSnapshot: placementGeom[fid] }
+        : f;
+      const points = getFragmentExportPoints(enriched);
+      if (points.length < 3) continue;
       resultFragments.push({
         id: String(f.id || `frag_${resultFragments.length}`),
         layoutId: String(layout.id || ""),
@@ -261,7 +332,7 @@ function buildExportPayload(body) {
         detailId: Number(zone && zone.detailId || 0),
         materialId: String(zone && zone.materialId || ""),
         napDirectionDeg: Number(zone && zone.napDirectionDeg || 0),
-        points: f.points,
+        points,
         areaMm2: Number(f.areaMm2 || 0)
       });
     }
@@ -308,6 +379,17 @@ function buildExportPayload(body) {
   };
 }
 
+function getLastExportZipPath(deps) {
+  return path.join(deps.TMP_DIR || path.join(deps.ROOT_DIR, "tmp"), "last_export.zip");
+}
+
+function writeLastExportZip(deps, zip) {
+  const lastZipPath = getLastExportZipPath(deps);
+  fs.mkdirSync(path.dirname(lastZipPath), { recursive: true });
+  fs.writeFileSync(lastZipPath, zip);
+  return lastZipPath;
+}
+
 // ---------------------------------------------------------------------------
 // Route handler
 // ---------------------------------------------------------------------------
@@ -318,7 +400,7 @@ async function handleExportRoutes(req, res, reqUrl, deps) {
   if (req.method === "POST" && reqUrl.pathname === "/api/export/patterns/preview") {
     const body = await readBodyJson(req);
     const payload = buildExportPayload(body);
-    const { stats, fragments, seams } = payload;
+    const { stats, fragments } = payload;
 
     // Zone status: exported / needs-regen (simplified: all zones with fragments = exported)
     const exportedZoneIds = new Set(fragments.map((f) => f.zoneId));
@@ -357,7 +439,7 @@ async function handleExportRoutes(req, res, reqUrl, deps) {
       const zone = zoneMap.get(frag.zoneId);
       const zoneSeams = seamsByZone.get(frag.zoneId) || [];
       const dxf = buildFragmentDxf(frag, zone, zoneSeams);
-      const zoneName = String(zone && zone.name || `zone_${frag.zoneId}`).replace(/[^a-zA-Z0-9а-яА-Я_\-]/g, "_");
+      const zoneName = String(zone && zone.name || `zone_${frag.zoneId}`).replace(/[^a-zA-Z0-9а-яА-Я_-]/g, "_");
       files.push({ name: `fragments/${zoneName}/${frag.id}.dxf`, data: dxf });
     }
 
@@ -373,7 +455,7 @@ async function handleExportRoutes(req, res, reqUrl, deps) {
         materialId: f.materialId,
         napDirectionDeg: f.napDirectionDeg,
         areaMm2: f.areaMm2,
-        dxfPath: `fragments/${String((zoneMap.get(f.zoneId) && zoneMap.get(f.zoneId).name || `zone_${f.zoneId}`)).replace(/[^a-zA-Z0-9а-яА-Я_\-]/g, "_")}/${f.id}.dxf`,
+        dxfPath: `fragments/${String((zoneMap.get(f.zoneId) && zoneMap.get(f.zoneId).name || `zone_${f.zoneId}`)).replace(/[^a-zA-Z0-9а-яА-Я_-]/g, "_")}/${f.id}.dxf`,
         points: f.points
       })),
       seams: seams.map((s) => ({
@@ -391,7 +473,7 @@ async function handleExportRoutes(req, res, reqUrl, deps) {
     const gltfPaths = {};
     for (const mat of materials) {
       if (!mat || !mat.materialId) continue;
-      const safeName = String(mat.name || mat.materialId).replace(/[^a-zA-Z0-9а-яА-Я_\-]/g, "_");
+      const safeName = String(mat.name || mat.materialId).replace(/[^a-zA-Z0-9а-яА-Я_-]/g, "_");
       const gltfName = `materials/${safeName}.gltf`;
       const jfabName = `materials/${safeName}.jfab`;
       files.push({ name: gltfName, data: generateGltfString(mat) });
@@ -408,6 +490,33 @@ async function handleExportRoutes(req, res, reqUrl, deps) {
     // Refresh manifest.json in files array
     const manifestIdx = files.findIndex((f) => f.name === "manifest.json");
     if (manifestIdx >= 0) files[manifestIdx].data = JSON.stringify(manifest, null, 2);
+
+    // Bundle CLO import script so the constructor has everything in one ZIP
+    const scriptSrc = path.join(deps.ROOT_DIR || path.join(__dirname, "../.."), "public/scripts/clo_import_furlab.py");
+    try {
+      files.push({ name: "clo_import_furlab.py", data: fs.readFileSync(scriptSrc, "utf8") });
+    } catch (_) {}
+
+    const readmeLines = [
+      "ИМПОРТ В CLO 3D",
+      "===============",
+      "",
+      "1. Убедитесь что этот ZIP лежит в папке Загрузки (Downloads) или на Рабочем столе.",
+      "   Скрипт найдёт его автоматически по имени furlab_export_*.zip",
+      "",
+      "2. Откройте CLO 3D.",
+      "",
+      "3. В меню: Edit > Python Script  (или нажмите Alt+Shift+P)",
+      "",
+      "4. Откройте файл clo_import_furlab.py из этого архива.",
+      "   Нажмите Run (кнопка ▶ или F5).",
+      "",
+      "5. Лекала появятся в сцене CLO с правильным направлением ворса и материалами.",
+      "",
+      "Если что-то пошло не так — смотрите вывод в консоли Python Script.",
+      "Там будут строки [FURLAB] с подробностями.",
+    ];
+    files.push({ name: "КАК_ИМПОРТИРОВАТЬ_В_CLO.txt", data: readmeLines.join("\r\n") });
 
     const zip = buildZip(files);
 
@@ -448,7 +557,7 @@ async function handleExportRoutes(req, res, reqUrl, deps) {
         return true;
       }
       let parsed;
-      try { parsed = JSON.parse(exec.stdout.trim()); } catch (e) {
+      try { parsed = JSON.parse(exec.stdout.trim()); } catch {
         jsonReply(res, 500, { ok: false, error: "save_dialog_parse_failed" });
         return true;
       }
@@ -457,15 +566,13 @@ async function handleExportRoutes(req, res, reqUrl, deps) {
         return true;
       }
       fs.writeFileSync(parsed.path, zip);
+      try { writeLastExportZip(deps, zip); } catch {}
       jsonReply(res, 200, { ok: true, savedTo: parsed.path });
       return true;
     }
 
     // Save a copy as last_export.zip so CLO import script can fetch it
-    try {
-      const lastZipPath = path.join(deps.TMP_DIR || path.join(deps.ROOT_DIR, "tmp"), "last_export.zip");
-      fs.writeFileSync(lastZipPath, zip);
-    } catch (_) {}
+    try { writeLastExportZip(deps, zip); } catch {}
 
     res.writeHead(200, {
       "Content-Type": "application/zip",
@@ -478,7 +585,7 @@ async function handleExportRoutes(req, res, reqUrl, deps) {
 
   // Serve last export ZIP for CLO import script
   if (req.method === "GET" && reqUrl.pathname === "/api/export/latest-zip") {
-    const lastZipPath = path.join(deps.TMP_DIR || path.join(deps.ROOT_DIR, "tmp"), "last_export.zip");
+    const lastZipPath = getLastExportZipPath(deps);
     if (!fs.existsSync(lastZipPath)) {
       jsonReply(res, 404, { ok: false, error: "no_export_yet" });
       return true;
@@ -496,4 +603,9 @@ async function handleExportRoutes(req, res, reqUrl, deps) {
   return false;
 }
 
-module.exports = { handleExportRoutes };
+module.exports = {
+  handleExportRoutes,
+  buildExportPayload,
+  getFragmentExportPoints,
+  normalizeContourPoints
+};

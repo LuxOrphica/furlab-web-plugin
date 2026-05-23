@@ -2098,7 +2098,17 @@
       return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${Math.max(0, Math.min(1, Number(alpha) || 0))})`;
     }
 
-    const MATERIAL_PATTERN_STROKE = "#8a8a8a";
+    function computeMaterialHatchColor(densityNorm, thicknessNorm, curlEffNorm, bendNorm, lengthNorm, fluffNorm) {
+      // Hue: warm brown range 20-48°. Curly/fluffy fur shifts warmer (more auburn).
+      const hue = Math.round(44 - curlEffNorm * 16 - fluffNorm * 8 + bendNorm * 6);
+      // Saturation: longer + denser fur reads richer.
+      const sat = Math.round(28 + lengthNorm * 26 + densityNorm * 16);
+      // Lightness: thick dense fur is darker; fluffy/fine fur is lighter.
+      const lit = Math.round(52 - densityNorm * 22 - thicknessNorm * 12 + fluffNorm * 6);
+      // Opacity: always clearly visible.
+      const alpha = (0.78 + densityNorm * 0.16).toFixed(2);
+      return `hsla(${hue},${sat}%,${Math.max(18, Math.min(68, lit))}%,${alpha})`;
+    }
 
     function normalizeRange(value, min, max, fallback = 0) {
       const n = Number(value);
@@ -2143,9 +2153,10 @@
       const dashSegment = Math.max(1.8, dashLength * segmentationRatio * softnessRatio);
       const dashGap = Math.max(1.5, baseGapLength * (1 + segNorm * 0.9));
 
+      const hatchStroke = computeMaterialHatchColor(densityNorm, thicknessNorm, curlEffNorm, bendNorm, lengthNorm, fluffNorm);
       return {
         family: 'direct-geometry',
-        stroke: MATERIAL_PATTERN_STROKE,
+        stroke: hatchStroke,
         strokeWidth,
         spacing,
         dash: [dashSegment, dashGap],
@@ -2263,7 +2274,8 @@
       };
 
       for (const layer of spec.layers) addPatternSet(layer);
-      return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">${lines.join('')}</svg>`;
+      const bgRect = `<rect width="${width}" height="${height}" fill="#f8f3ec"/>`;
+      return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">${bgRect}${lines.join('')}</svg>`;
     }
 
     function buildMaterialPreviewSvg(material) {
@@ -2347,6 +2359,7 @@
 
     function buildHatchTile(visual, layerSpec) {
       // Tile is always horizontal (lines along X axis). Rotation applied per-zone via fillPatternRotation.
+      // Two-row brick-stagger tile: rows are offset by W/2 so adjacent rows never start at the same X.
       const spacing = Math.max(5, Number(layerSpec.spacing || visual.spacing));
       const stroke = visual.hatchStroke;
       const strokeWidth = Math.max(0.45, Number(layerSpec.strokeWidth || visual.strokeWidth));
@@ -2360,33 +2373,60 @@
       const key = `${stroke}|${spacing.toFixed(1)}|${strokeWidth.toFixed(2)}|${dashLen.toFixed(1)}|${gapLen.toFixed(1)}|${useWave}|${amplitude.toFixed(1)}`;
       if (_hatchTileCache.has(key)) return _hatchTileCache.get(key);
 
-      // H = spacing between lines (perpendicular). W = one dash period (seamless horizontal repeat).
       const H = Math.ceil(useWave ? Math.max(spacing, amplitude * 2 + strokeWidth * 2 + 4) : spacing);
       const W = useWave ? Math.ceil(Math.max(wavelength * 2, period * 3)) : Math.ceil(period);
-      const lineY = H / 2;
+      // Tile height = 2*H for two staggered rows; rows sit at H/2 and 3H/2.
       const canvas = document.createElement('canvas');
-      canvas.width = W; canvas.height = H;
+      canvas.width = W; canvas.height = H * 2;
       const ctx = canvas.getContext('2d');
       ctx.strokeStyle = stroke; ctx.lineWidth = strokeWidth; ctx.lineCap = 'round';
+
       if (useWave) {
+        // Row 1 at H/2 — full weight
+        ctx.globalAlpha = 1.0;
         ctx.beginPath();
         for (let t = 0; t <= W; t += period) {
           const tEnd = Math.min(W, t + dashLen);
           if (tEnd <= t) continue;
           const wpts = buildWavyDashSegmentPoints(0, 0, 1, 0, 0, 1, t, tEnd, amplitude, wavelength);
           if (wpts.length < 4) continue;
-          ctx.moveTo(wpts[0], lineY + wpts[1]);
-          for (let wi = 2; wi < wpts.length; wi += 2) ctx.lineTo(wpts[wi], lineY + wpts[wi + 1]);
+          ctx.moveTo(wpts[0], H * 0.5 + wpts[1]);
+          for (let wi = 2; wi < wpts.length; wi += 2) ctx.lineTo(wpts[wi], H * 0.5 + wpts[wi + 1]);
+        }
+        ctx.stroke();
+        // Row 2 at 3H/2 — brick-offset by W/2, slightly lighter for organic variation
+        ctx.globalAlpha = 0.88;
+        ctx.beginPath();
+        const off2 = W / 2;
+        for (let t = -off2; t <= W; t += period) {
+          const tStart = Math.max(0, t);
+          const tEnd = Math.min(W, t + dashLen);
+          if (tEnd <= tStart) continue;
+          const wpts = buildWavyDashSegmentPoints(0, 0, 1, 0, 0, 1, tStart - t, tEnd - t, amplitude, wavelength);
+          if (wpts.length < 4) continue;
+          ctx.moveTo(tStart + wpts[0], H * 1.5 + wpts[1]);
+          for (let wi = 2; wi < wpts.length; wi += 2) ctx.lineTo(tStart + wpts[wi], H * 1.5 + wpts[wi + 1]);
         }
         ctx.stroke();
       } else {
+        // Row 1 — full weight
+        ctx.globalAlpha = 1.0;
         ctx.setLineDash([dashLen, gapLen]);
         ctx.beginPath();
-        ctx.moveTo(0, lineY);
-        ctx.lineTo(W, lineY);
+        ctx.moveTo(0, H * 0.5);
+        ctx.lineTo(W, H * 0.5);
+        ctx.stroke();
+        // Row 2 — brick-offset by half period, slightly lighter
+        ctx.globalAlpha = 0.88;
+        ctx.lineDashOffset = -(period / 2);
+        ctx.beginPath();
+        ctx.moveTo(0, H * 1.5);
+        ctx.lineTo(W, H * 1.5);
         ctx.stroke();
         ctx.setLineDash([]);
+        ctx.lineDashOffset = 0;
       }
+      ctx.globalAlpha = 1.0;
       _hatchTileCache.set(key, canvas);
       return canvas;
     }
@@ -4475,9 +4515,7 @@
           }
           if (!(x1 > x0 && y1 > y0)) continue;
           if (canBooleanClip && Array.isArray(zoneMulti) && zoneMulti.length) {
-            const base = (cornerRadius > 0)
-              ? buildRoundedRectPolygon(x0, y0, x1, y1, cornerRadius)
-              : [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }];
+            const base = [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }];
             const baseMulti = toBooleanMulti(base);
             if (Array.isArray(baseMulti) && baseMulti.length) {
               let mp = [];
@@ -4537,9 +4575,7 @@
             if (cx < cellCount - 1) x1 -= dx;
           }
           if (!(x1 > x0)) continue;
-          const base = (cornerRadius > 0)
-            ? buildRoundedRectPolygon(x0, y0, x1, y1, cornerRadius)
-            : [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }];
+          const base = [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }];
           if (!Array.isArray(base) || base.length < 3) continue;
           if (canBooleanClip && Array.isArray(zoneMulti) && zoneMulti.length) {
             const baseMulti = toBooleanMulti(base);
@@ -4784,8 +4820,9 @@
       const uncovered = Math.max(0, zoneArea - totalFragmentsArea);
       const uncoveredRatio = zoneArea > 0 ? uncovered / zoneArea : 0;
       const violations = uncoveredRatio > 0.015 ? 1 : 0;
+      const _cornerRadius = Math.max(0, Number(options.cornerRadius || options.cornerRadiusMm || 0));
       return {
-        fragments: polys.map((p, i) => ({ id: i + 1, points: p })),
+        fragments: polys.map((p, i) => ({ id: i + 1, points: p, ...(_cornerRadius > 0 ? { cornerRadius: _cornerRadius } : {}) })),
         stats: { violations, intersections: 0, uncovered: uncoveredRatio > 0.0001 ? 1 : 0 }
       };
     }
@@ -5972,8 +6009,11 @@ function renderSplitEvents(events) {
           });
           if (!res || !res.ok || !res.contours) continue;
           const ctr = res.contours;
-          p.alignedCoreContours = Array.isArray(ctr.coreWorld) ? ctr.coreWorld : [];
-          p.alignedCoreContour = multiLargestOuterPoints(p.alignedCoreContours);
+          // Only update core contour if erosion actually produced a result — don't overwrite good data with empty
+          if (Array.isArray(ctr.coreWorld) && ctr.coreWorld.length > 0) {
+            p.alignedCoreContours = ctr.coreWorld;
+            p.alignedCoreContour = multiLargestOuterPoints(p.alignedCoreContours);
+          }
           p.inZoneCoreContours = Array.isArray(ctr.inZoneCore) ? ctr.inZoneCore : [];
           p.inZoneCoreContour = multiLargestOuterPoints(p.inZoneCoreContours);
           p.inZoneCoreAreaMm2 = Number(res && res.metrics && res.metrics.inZoneCoreAreaMm2 || 0);
@@ -6390,6 +6430,14 @@ function renderSplitEvents(events) {
           }, seamDiag);
         }
         seamSourceResolved = `applied_fragments:${seamGeometrySource}`;
+      } else if (!isDirectInventory && Array.isArray(res.fragments) && res.fragments.length >= 2) {
+        // Regular layout — compute shared seam segments between adjacent fragments.
+        seamSegments = computeSeamSegmentsFromAppliedFragments(res.fragments, {
+          minLenMm: 3,
+          tolDistMm: 2.5,
+          tolParallel: 0.35
+        }, seamDiag);
+        seamSourceResolved = `regular:${seamGeometrySource}`;
       } else if (isDirectInventory) {
         // Seams from core geometry: adjacent core contours are ~2×seam_allowance apart,
         // so tolDistMm must span that gap (typically 24mm for 12mm allowance).
@@ -6403,7 +6451,7 @@ function renderSplitEvents(events) {
         console.log("[seam-debug] result segments:", seamSegments && seamSegments.length, "diag:", JSON.stringify(seamDiag).slice(0, 200));
         seamSourceResolved = `direct_core:${seamGeometrySource}`;
       }
-      if (manualApplied || isDirectInventory) {
+      if (seamSegments.length > 0) {
         const beforeBoundaryDrop = Array.isArray(seamSegments) ? seamSegments.length : 0;
         seamSegments = (Array.isArray(seamSegments) ? seamSegments : []).filter((seg) => !seamOnZoneBoundary(seg, zone && zone.points, 1.6));
         seamDiag.boundaryDropped = Math.max(0, beforeBoundaryDrop - seamSegments.length);
@@ -7979,6 +8027,16 @@ function renderSplitEvents(events) {
       }
       if (!Array.isArray(state.layoutRun.previewLayers.seams)) state.layoutRun.previewLayers.seams = [];
       if (!Array.isArray(state.layoutRun.candidatePool)) state.layoutRun.candidatePool = [];
+      // Ensure contour layers are on — same as the layout worker does at line ~9018
+      state.layers.pfullZ = true;
+      state.layers.pcoreZ = true;
+      const _pfullChk = byId("layerPfullZ"); if (_pfullChk) _pfullChk.checked = true;
+      const _pcoreChk = byId("layerPcoreZ"); if (_pcoreChk) _pcoreChk.checked = true;
+      // Recompute eroded core contours with current seamMm (snapshot may have been saved with seamMm=0)
+      void (async () => {
+        try { await ensureManualPlacementsCoreContours(); } catch (_) {}
+        renderAll();
+      })();
       renderPlacementRows(state.layoutRun.placements || []);
       renderSplitEvents(state.layoutRun.splitEvents || []);
       renderInventoryManualPanel();
@@ -9776,8 +9834,14 @@ function renderSplitEvents(events) {
         const fill = String(options.fill || "rgba(11,99,206,0.06)");
         for (const frag of fragments) {
           if (!Array.isArray(frag && frag.points) || frag.points.length < 3) continue;
+          const _snapCr = Number(frag.cornerRadius || 0);
+          let _snapPts = frag.points;
+          if (_snapCr > 0) {
+            const _sxs = _snapPts.map((q) => q.x), _sys = _snapPts.map((q) => q.y);
+            _snapPts = buildRoundedRectPolygon(Math.min(..._sxs), Math.min(..._sys), Math.max(..._sxs), Math.max(..._sys), _snapCr);
+          }
           layerFragments.add(new Konva.Line({
-            points: linePoints(frag.points),
+            points: linePoints(_snapPts),
             stroke,
             strokeWidth,
             fill,
@@ -9825,6 +9889,10 @@ function renderSplitEvents(events) {
         const manual = state.layoutRun && state.layoutRun.manual ? state.layoutRun.manual : null;
         const manualBeforeApply = isManualInventoryMode() && String(state.layoutRun && state.layoutRun.status || "") !== "applied";
         const selectedPlacementIndex = Number(manual && manual.selectedPlacementIndex);
+        const isDraggingManualPlacement = !!(state.drag && state.drag.isDown && state.drag.mode === "manual-placement-move");
+        const dragScrapPieceId = isDraggingManualPlacement ? String(state.drag.manualDragScrapPieceId || "") : "";
+        const dragDx = isDraggingManualPlacement ? Number(state.drag.manualDragDx || 0) : 0;
+        const dragDy = isDraggingManualPlacement ? Number(state.drag.manualDragDy || 0) : 0;
         const fragmentsList = manualBeforeApply ? [] : (Array.isArray(state.layoutRun.fragments) ? state.layoutRun.fragments : []);
         const matchedPlacements = Array.isArray(state.layoutRun.placements)
           ? state.layoutRun.placements
@@ -9952,9 +10020,10 @@ function renderSplitEvents(events) {
             for (const coreContour of coreContours) {
               layerPreview.add(new Konva.Line({
                 points: linePoints(coreContour),
-                stroke: _al.stroke || "rgba(189,87,39,0.85)",
-                strokeWidth: _al.strokeWidth || 1,
-                fill: _al.fill || "rgba(189,87,39,0.06)",
+                stroke: _al.stroke || "rgba(189,87,39,0.9)",
+                strokeWidth: _al.strokeWidth || 1.2,
+                fill: "rgba(0,0,0,0)",
+                dash: Array.isArray(_al.dash) ? _al.dash : [6, 3],
                 closed: true
               }));
             }
@@ -10012,13 +10081,10 @@ function renderSplitEvents(events) {
           }
         }
         if (state.layers.visibleCore) {
-          const manualMode = isManualInventoryMode();
-          if (manualMode) {
-            const seamSegments = state.layoutRun && state.layoutRun.previewLayers && Array.isArray(state.layoutRun.previewLayers.seams)
-              ? state.layoutRun.previewLayers.seams
-              : [];
-            deferredManualSeamSegments = Array.isArray(seamSegments) ? seamSegments : [];
-          }
+          const seamSegments = state.layoutRun && state.layoutRun.previewLayers && Array.isArray(state.layoutRun.previewLayers.seams)
+            ? state.layoutRun.previewLayers.seams
+            : [];
+          deferredManualSeamSegments = seamSegments;
         }
         if (isManualInventoryMode()) {
           const manual = state.layoutRun && state.layoutRun.manual ? state.layoutRun.manual : null;
@@ -10085,25 +10151,45 @@ function renderSplitEvents(events) {
         }
         const isIntarsiaSvgMode = state.layoutMode === "intarsia" && state.layoutRun.fillType === "import_svg";
         if (state.layers.pieceBorders) {
+          const _hasMaterialZones = state.layers.zoneMaterials && state.zones.some((z) => z && z.materialId);
           for (const frag of fragmentsList) {
             if (!Array.isArray(frag.points) || frag.points.length < 3) continue;
             const fragId = Number(frag.id || 0);
             const isSelectedFrag = selectedFragmentIdNum !== null && fragId === selectedFragmentIdNum;
             const _fst = ENGINEERING_STYLES.fragments || {};
+            const fragIsDragged = isDraggingManualPlacement && dragScrapPieceId !== "" && String(frag.scrapPieceId || "") === dragScrapPieceId;
+            const fragPoints = fragIsDragged
+              ? frag.points.map((q) => ({ x: q.x + dragDx, y: q.y + dragDy }))
+              : frag.points;
+            const fragCornerRadius = Number(frag.cornerRadius || 0);
+            let renderPoints = fragPoints;
+            if (fragCornerRadius > 0) {
+              const _xs = fragPoints.map((q) => q.x), _ys = fragPoints.map((q) => q.y);
+              renderPoints = buildRoundedRectPolygon(Math.min(..._xs), Math.min(..._ys), Math.max(..._xs), Math.max(..._ys), fragCornerRadius);
+            }
+            const fragStroke = isSelectedFrag
+              ? "#0050C8"
+              : (_hasMaterialZones ? "rgba(0,60,180,0.80)" : (_fst.stroke || "#0076D6"));
             const shape = new Konva.Line({
-              points: linePoints(frag.points),
-              stroke: (_fst.stroke || "#0076D6"),
-              strokeWidth: isSelectedFrag ? (_fst.selectedStrokeWidth || 1.5) : (_fst.strokeWidth || 1.25),
-              fill: isSelectedFrag ? (_fst.selectedFill || "rgba(0,118,214,0.18)") : (_fst.fill || "rgba(0,118,214,0.08)"),
+              points: linePoints(renderPoints),
+              stroke: fragStroke,
+              strokeWidth: isSelectedFrag ? 2.5 : (_hasMaterialZones ? 1.4 : (_fst.strokeWidth || 1.25)),
+              fill: isSelectedFrag
+                ? "rgba(0,100,220,0.22)"
+                : (_hasMaterialZones ? "rgba(0,0,0,0)" : (_fst.fill || "rgba(0,118,214,0.08)")),
               closed: true,
               listening: false,
               name: `frag-${fragId}`
             });
             layerFragments.add(shape);
-            // Cut boundary — inZoneContour (seam allowance included), shown when seam layer is on
-            if (state.layers.visibleCore && Array.isArray(frag.cutPoints) && frag.cutPoints.length >= 3) {
+            // Cut boundary (outer cut line with seam allowance) — only for manual/inventory modes.
+            // In regular layout the shared seam segments are computed separately and drawn below.
+            if (state.layers.visibleCore && isManualInventoryMode() && Array.isArray(frag.cutPoints) && frag.cutPoints.length >= 3) {
+              const cutPoints = fragIsDragged
+                ? frag.cutPoints.map((q) => ({ x: q.x + dragDx, y: q.y + dragDy }))
+                : frag.cutPoints;
               layerFragments.add(new Konva.Line({
-                points: linePoints(frag.cutPoints),
+                points: linePoints(cutPoints),
                 stroke: ENGINEERING_STYLES.seams.stroke,
                 strokeWidth: ENGINEERING_STYLES.seams.strokeWidth,
                 dash: ENGINEERING_STYLES.seams.dash,
@@ -10320,10 +10406,12 @@ function renderSplitEvents(events) {
               ? (ENGINEERING_STYLES.zones.selectedStroke || ENGINEERING_STYLES.zones.stroke)
               : ENGINEERING_STYLES.zones.stroke;
           const zoneFill = editingZone
-            ? (ENGINEERING_STYLES.zones.activeEditFill || ENGINEERING_STYLES.zones.selectedFill || ENGINEERING_STYLES.zones.fill || "rgba(0,0,0,0)")
+            ? (zoneMaterial ? "rgba(250,235,200,0.82)" : (ENGINEERING_STYLES.zones.activeEditFill || ENGINEERING_STYLES.zones.selectedFill || ENGINEERING_STYLES.zones.fill || "rgba(0,0,0,0)"))
             : selected
-              ? (ENGINEERING_STYLES.zones.selectedFill || ENGINEERING_STYLES.zones.fill || "rgba(0,0,0,0)")
-              : (ENGINEERING_STYLES.zones.fill || "rgba(0,0,0,0)");
+              ? (zoneMaterial ? "rgba(250,238,210,0.78)" : (ENGINEERING_STYLES.zones.selectedFill || ENGINEERING_STYLES.zones.fill || "rgba(0,0,0,0)"))
+              : zoneMaterial
+                ? "rgba(250,244,235,0.72)"
+                : (ENGINEERING_STYLES.zones.fill || "rgba(0,0,0,0)");
           const zoneStrokeWidth = editingZone
             ? Number(ENGINEERING_STYLES.zones.activeEditStrokeWidth || ENGINEERING_STYLES.zones.selectedStrokeWidth || ENGINEERING_STYLES.zones.strokeWidth || 1.2)
             : selected
@@ -10401,7 +10489,7 @@ function renderSplitEvents(events) {
       }
 
       let renderedManualSeams = 0;
-      if (state.layers.visibleCore && isManualInventoryMode() && Array.isArray(deferredManualSeamSegments) && deferredManualSeamSegments.length) {
+      if (state.layers.visibleCore && Array.isArray(deferredManualSeamSegments) && deferredManualSeamSegments.length) {
         for (const seam of deferredManualSeamSegments) {
           const pts = Array.isArray(seam && seam.points) ? seam.points : [];
           if (pts.length < 2) continue;
@@ -11944,13 +12032,43 @@ function refreshSelectionInfo() {
     byId("openProjectBtn").onclick = () => openProjectPicker();
     byId("projectPickerCloseBtn").onclick = () => { byId("projectPickerBackdrop").style.display = "none"; };
     byId("projectPickerCancelBtn").onclick = () => { byId("projectPickerBackdrop").style.display = "none"; };
-    byId("projectPickerNewBtn").onclick = async () => {
+    byId("projectPickerNewBtn").onclick = () => {
       byId("projectPickerBackdrop").style.display = "none";
+      const fileInput = byId("projectImportFileInput");
+      if (fileInput) { fileInput.value = ""; fileInput.click(); }
+    };
+
+    byId("projectImportFileInput").onchange = async (e) => {
+      const files = e.target.files;
+      if (!files || !files.length) return;
       try {
-        // Open native Windows file dialog via server (always appears on top)
-        const pickRes = await api("/api/import/dxf/pick-files", "POST", {}, 5 * 60 * 1000);
+        const formData = new FormData();
+        for (let i = 0; i < files.length; i++) formData.append("files", files[i]);
+        const uploadResp = await fetch("/api/import/upload", { method: "POST", body: formData });
+        const pickRes = await uploadResp.json();
         if (!pickRes || !pickRes.ok || !Array.isArray(pickRes.files) || !pickRes.files.length) return;
-        // Run preview with server-side file paths directly
+
+        // ZPRJ — один файл, идёт через zprj preview
+        const isZprj = pickRes.files.length === 1 && pickRes.files[0].toLowerCase().endsWith(".zprj");
+        if (isZprj) {
+          const previewRes = await api("/api/import/zprj/preview", "POST", { filePath: pickRes.files[0] });
+          if (!previewRes || !previewRes.ok) {
+            const wi = byId("workspaceInfo"); if (wi) wi.textContent = `Ошибка preview: ${previewRes && previewRes.error || "unknown"}`;
+            return;
+          }
+          previewSourceType = "zprj";
+          previewToken = previewRes.token || "";
+          previewItems = Array.isArray(previewRes.items) ? previewRes.items : [];
+          selectedIndexes = new Set(); activePreviewIndex = null;
+          updateModeUi();
+          renderPreviewTable();
+          const geometryItems = previewItems.filter((x) => x && x.geometryAvailable === true);
+          if (geometryItems.length) await autoLoadFirstGeometry(geometryItems);
+          else { state.patternGeometry = null; renderScene(); }
+          return;
+        }
+
+        // DXF / PAC / POS
         const previewRes = await api("/api/import/dxf/preview", "POST", { files: pickRes.files });
         if (!previewRes || !previewRes.ok) {
           const wi = byId("workspaceInfo"); if (wi) wi.textContent = `Ошибка preview: ${previewRes && previewRes.error || "unknown"}`;
@@ -12009,6 +12127,8 @@ function refreshSelectionInfo() {
       const seamSel = byId("exportCloSeamMode");
       const scope = scopeOverride || (scopeSel && scopeSel.value) || "all";
       const seamMode = seamModeOverride || (seamSel && seamSel.value) || "auto";
+
+      saveCurrentLayoutRuntimeSnapshot();
 
       // Collect layouts with their serialized runs from current state
       const layouts = (Array.isArray(state.layouts) ? state.layouts : []).map(serializeLayoutForProject);

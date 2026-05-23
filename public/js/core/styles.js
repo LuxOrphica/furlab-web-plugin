@@ -36,7 +36,7 @@
       selectedFill: "rgba(0,118,214,0.18)"
     },
     seams: { stroke: "#005EA2", strokeWidth: 1.5, dash: [10, 4, 2, 4] },
-    allowances: { stroke: "rgba(189,87,39,0.85)", strokeWidth: 1, fill: "rgba(189,87,39,0.06)" },
+    allowances: { stroke: "rgba(189,87,39,0.9)", strokeWidth: 1.2, fill: "rgba(0,0,0,0)", dash: [6, 3] },
     inventoryContours: {
       stroke: "rgba(189,87,39,0.85)",
       strokeWidth: 1.0,

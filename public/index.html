@@ -568,7 +568,6 @@
       <label>Mode
         <select id="importMode">
           <option value="dxf">DXF folder</option>
-          <option value="zprj">ZPRJ file</option>
         </select>
       </label>
       <input id="importPath" type="text" value="F:\\FURLAB\\Examples" />
@@ -604,6 +603,7 @@
   </div>
 
   <input id="importFileInput" type="file" accept=".dxf" multiple style="display:none" />
+  <input id="importZprjFileInput" type="file" accept=".zprj" style="display:none" />
 
   <!-- Project picker modal -->
   <div id="projectPickerBackdrop" class="modal-backdrop" style="display:none;">
@@ -618,6 +618,7 @@
       </div>
       <div class="modal-actions">
         <button id="projectPickerNewBtn">Новый проект (импорт)</button>
+        <input id="projectImportFileInput" type="file" accept=".dxf,.pac,.pos" multiple style="display:none">
         <button id="projectPickerCancelBtn">Отмена</button>
       </div>
     </div>
