@@ -98,14 +98,7 @@
         tagNode.textContent = "build: unavailable";
       }
     }
-    function parseLocaleNumber(v, fallback = null) {
-      if (v === null || v === undefined) return fallback;
-      if (typeof v === "number") return Number.isFinite(v) ? v : fallback;
-      const s = String(v).trim().replace(",", ".");
-      if (!s) return fallback;
-      const n = Number(s);
-      return Number.isFinite(n) ? n : fallback;
-    }
+    const parseLocaleNumber = (...a) => window.FurLabUtils.parseLocaleNumber(...a);
     function getCurrentManualAllowanceMm() {
       const fromLayoutEditor = parseLocaleNumber(byId("layoutAllowanceInput") && byId("layoutAllowanceInput").value, null);
       if (Number.isFinite(Number(fromLayoutEditor))) return Math.max(0, Number(fromLayoutEditor));
@@ -117,11 +110,7 @@
       if (Number.isFinite(Number(fromState))) return Math.max(0, Number(fromState));
       return 12;
     }
-    function normalizeDeg(v, fallback = DEFAULT_NAP_DIRECTION_DEG) {
-      const n = parseLocaleNumber(v, fallback);
-      if (!Number.isFinite(n)) return Number(fallback);
-      return ((n % 360) + 360) % 360;
-    }
+    const normalizeDeg = (...a) => window.FurLabUtils.normalizeDeg(...a);
     function getZoneNapDirectionDeg(zone) {
       return normalizeDeg(zone && zone.napDirectionDeg, DEFAULT_NAP_DIRECTION_DEG);
     }
@@ -131,15 +120,8 @@
       el.textContent = text;
       el.style.display = text ? "block" : "none";
     }
-    function safeText(v) { return v === null || v === undefined ? "" : String(v); }
-    function escapeHtml(v) {
-      return String(v === null || v === undefined ? "" : v)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/\"/g, "&quot;")
-        .replace(/'/g, "&#39;");
-    }
+    const safeText = (v) => window.FurLabUtils.safeText(v);
+    const escapeHtml = (v) => window.FurLabUtils.escapeHtml(v);
     // reportsState is declared above (before FurLabReports.init)
     const REPORT_MIN_FRAGMENT_AREA_MM2 = 50;
     function getLayoutSnapshotForReports(entry) {
@@ -182,54 +164,10 @@
       const m = String(mode || "").trim().toLowerCase();
       return m === "inventory_manual" || m === "inventory_direct" || m === "inventory_split_return";
     }
-    function escapeCsv(value) {
-      const s = String(value === null || value === undefined ? "" : value);
-      if (/[",;\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-      return s;
-    }
-    function napSymbolByDeg(deg) {
-      const d = (((Number(deg) || 0) % 360) + 360) % 360;
-      if (d >= 337.5 || d < 22.5) return "в†’";
-      if (d < 67.5) return "в†";
-      if (d < 112.5) return "в†“";
-      if (d < 157.5) return "в†™";
-      if (d < 202.5) return "в†ђ";
-      if (d < 247.5) return "в†–";
-      if (d < 292.5) return "в†‘";
-      return "в†—";
-    }
-    function finiteNumOrNaN(value) {
-      const n = Number(value);
-      return Number.isFinite(n) ? n : NaN;
-    }
-    // delegated to FurLabReports
-    function normalizeContourArrayForReports(raw) {
-      if (typeof normalizeContourArray === "function") return normalizeContourArray(raw);
-      if (!raw) return null;
-      const pts = [];
-      const push = (x, y) => {
-        const xn = Number(x);
-        const yn = Number(y);
-        if (!Number.isFinite(xn) || !Number.isFinite(yn)) return;
-        pts.push({ x: xn, y: yn });
-      };
-      const walk = (node) => {
-        if (!node) return;
-        if (Array.isArray(node)) {
-          if (node.length >= 2 && Number.isFinite(Number(node[0])) && Number.isFinite(Number(node[1]))) {
-            push(node[0], node[1]);
-            return;
-          }
-          for (const child of node) walk(child);
-          return;
-        }
-        if (typeof node === "object" && node.x !== undefined && node.y !== undefined) {
-          push(node.x, node.y);
-        }
-      };
-      walk(raw);
-      return pts.length >= 3 ? pts : null;
-    }
+    const escapeCsv = (v) => window.FurLabUtils.escapeCsv(v);
+    const napSymbolByDeg = (d) => window.FurLabUtils.napSymbolByDeg(d);
+    const finiteNumOrNaN = (v) => window.FurLabUtils.finiteNumOrNaN(v);
+    const normalizeContourArrayForReports = (raw) => window.FurLabUtils.normalizeContourArray(raw);
     const buildReportsModel = () => window.FurLabReports ? window.FurLabReports.buildReportsModel() : null;
     const renderReportsPrintAll = (model) => window.FurLabReports && window.FurLabReports.renderReportsPrintAll(model);
     const renderReportsView = (detailId) => window.FurLabReports && window.FurLabReports.renderReportsView(detailId);
@@ -905,16 +843,8 @@
       return { x: (x - state.viewport.offsetX) / state.viewport.scale, y: ((H - y) - state.viewport.offsetY) / state.viewport.scale };
     }
 
-    function distance2(a, b) { const dx = a.x - b.x; const dy = a.y - b.y; return dx * dx + dy * dy; }
-    function pointInPolygon(point, polygon) {
-      let inside = false;
-      for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-        const xi = polygon[i].x, yi = polygon[i].y, xj = polygon[j].x, yj = polygon[j].y;
-        const intersect = ((yi > point.y) !== (yj > point.y)) && (point.x < (xj - xi) * (point.y - yi) / ((yj - yi) || 1e-9) + xi);
-        if (intersect) inside = !inside;
-      }
-      return inside;
-    }
+    const distance2 = (a, b) => window.FurLabUtils.distance2(a, b);
+    const pointInPolygon = (point, polygon) => window.FurLabUtils.pointInPolygon(point, polygon);
     function findZoneAt(worldPoint) {
       for (let i = state.zones.length - 1; i >= 0; i--) {
         const z = state.zones[i];
@@ -1016,19 +946,7 @@
       }
       return null;
     }
-    function dist2PointToSegment(p, a, b) {
-      const vx = b.x - a.x;
-      const vy = b.y - a.y;
-      const wx = p.x - a.x;
-      const wy = p.y - a.y;
-      const c1 = vx * wx + vy * wy;
-      if (c1 <= 0) return distance2(p, a);
-      const c2 = vx * vx + vy * vy;
-      if (c2 <= c1) return distance2(p, b);
-      const t = c1 / c2;
-      const proj = { x: a.x + t * vx, y: a.y + t * vy };
-      return distance2(p, proj);
-    }
+    const dist2PointToSegment = (p, a, b) => window.FurLabUtils.dist2PointToSegment(p, a, b);
     function findDetailAt(worldPoint, thresholdPx = 8) {
       if (!Array.isArray(state.details) || state.details.length === 0) return null;
       const thr = thresholdPx / state.viewport.scale;
@@ -1183,37 +1101,8 @@
     function isVertexEditingTool(tool) {
       return ["edit-vertex", "add-vertex", "smooth-vertex", "curve-vertex"].includes(String(tool || ""));
     }
-    function buildRectZonePoints(a, b) {
-      const minX = Math.min(Number(a && a.x || 0), Number(b && b.x || 0));
-      const maxX = Math.max(Number(a && a.x || 0), Number(b && b.x || 0));
-      const minY = Math.min(Number(a && a.y || 0), Number(b && b.y || 0));
-      const maxY = Math.max(Number(a && a.y || 0), Number(b && b.y || 0));
-      if (!(maxX - minX > 1e-6 && maxY - minY > 1e-6)) return [];
-      return [
-        { x: minX, y: minY },
-        { x: maxX, y: minY },
-        { x: maxX, y: maxY },
-        { x: minX, y: maxY }
-      ];
-    }
-    function buildEllipseZonePoints(a, b, segments = 32) {
-      const minX = Math.min(Number(a && a.x || 0), Number(b && b.x || 0));
-      const maxX = Math.max(Number(a && a.x || 0), Number(b && b.x || 0));
-      const minY = Math.min(Number(a && a.y || 0), Number(b && b.y || 0));
-      const maxY = Math.max(Number(a && a.y || 0), Number(b && b.y || 0));
-      const rx = (maxX - minX) * 0.5;
-      const ry = (maxY - minY) * 0.5;
-      if (!(rx > 1e-6 && ry > 1e-6)) return [];
-      const cx = minX + rx;
-      const cy = minY + ry;
-      const count = Math.max(12, Number(segments) || 32);
-      const out = [];
-      for (let i = 0; i < count; i++) {
-        const t = (i / count) * Math.PI * 2;
-        out.push({ x: cx + rx * Math.cos(t), y: cy + ry * Math.sin(t) });
-      }
-      return out;
-    }
+    const buildRectZonePoints = (a, b) => window.FurLabUtils.buildRectZonePoints(a, b);
+    const buildEllipseZonePoints = (...a) => window.FurLabUtils.buildEllipseZonePoints(...a);
     function createZoneFromPoints(points, options = {}) {
       const pts = Array.isArray(points)
         ? points
@@ -1296,44 +1185,7 @@
       if (!z) return null;
       return z;
     }
-    function smoothZoneVertexPoints(points, vertexIndex, strength = 0.22) {
-      const pts = Array.isArray(points) ? points.map((p) => ({ x: Number(p.x), y: Number(p.y) })) : [];
-      if (pts.length < 3) return null;
-      const n = pts.length;
-      const idx = ((Number(vertexIndex) % n) + n) % n;
-      const prev = pts[(idx - 1 + n) % n];
-      const curr = pts[idx];
-      const next = pts[(idx + 1) % n];
-      const lenPrev = Math.hypot(curr.x - prev.x, curr.y - prev.y);
-      const lenNext = Math.hypot(next.x - curr.x, next.y - curr.y);
-      const usable = Math.min(lenPrev, lenNext);
-      if (!Number.isFinite(usable) || usable <= 2) return null;
-      const offset = Math.max(1.5, Math.min(usable * Math.max(0.08, Math.min(0.45, Number(strength) || 0.22)), usable * 0.45));
-      if (offset <= 0.5) return null;
-      const uxPrev = (prev.x - curr.x) / (lenPrev || 1);
-      const uyPrev = (prev.y - curr.y) / (lenPrev || 1);
-      const uxNext = (next.x - curr.x) / (lenNext || 1);
-      const uyNext = (next.y - curr.y) / (lenNext || 1);
-      const pIn = { x: curr.x + uxPrev * offset, y: curr.y + uyPrev * offset };
-      const pOut = { x: curr.x + uxNext * offset, y: curr.y + uyNext * offset };
-      const quad = (t) => {
-        const mt = 1 - t;
-        return {
-          x: mt * mt * pIn.x + 2 * mt * t * curr.x + t * t * pOut.x,
-          y: mt * mt * pIn.y + 2 * mt * t * curr.y + t * t * pOut.y
-        };
-      };
-      const replacement = [pIn, quad(0.25), quad(0.5), quad(0.75), pOut];
-      const out = [];
-      for (let i = 0; i < n; i++) {
-        if (i === idx) {
-          replacement.forEach((p) => out.push({ x: p.x, y: p.y }));
-        } else {
-          out.push({ x: pts[i].x, y: pts[i].y });
-        }
-      }
-      return out;
-    }
+    const smoothZoneVertexPoints = (...a) => window.FurLabUtils.smoothZoneVertexPoints(...a);
 
     function clearCurveEdit(options = {}) {
       const restore = options && options.restore === true;
@@ -1921,25 +1773,7 @@
       fitBBoxToView(bb);
     }
 
-    function segmentIntersectionGlobal(a, b, c, d) {
-      function orient(p, q, r) {
-        return (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
-      }
-      function onSeg(p, q, r) {
-        return Math.min(p.x, r.x) <= q.x && q.x <= Math.max(p.x, r.x) &&
-          Math.min(p.y, r.y) <= q.y && q.y <= Math.max(p.y, r.y);
-      }
-      const o1 = orient(a, b, c);
-      const o2 = orient(a, b, d);
-      const o3 = orient(c, d, a);
-      const o4 = orient(c, d, b);
-      if ((o1 > 0 && o2 < 0 || o1 < 0 && o2 > 0) && (o3 > 0 && o4 < 0 || o3 < 0 && o4 > 0)) return true;
-      if (o1 === 0 && onSeg(a, c, b)) return true;
-      if (o2 === 0 && onSeg(a, d, b)) return true;
-      if (o3 === 0 && onSeg(c, a, d)) return true;
-      if (o4 === 0 && onSeg(c, b, d)) return true;
-      return false;
-    }
+    const segmentIntersectionGlobal = (...a) => window.FurLabUtils.segmentIntersectionGlobal(...a);
 
     function closeSelectedGapConservative() {
       const selected = state.details.find((d) => d.id === state.selectedDetailId);
@@ -3078,32 +2912,7 @@
       return len;
     }
 
-    function normalizeContourArray(raw) {
-      if (!raw) return null;
-      const pts = [];
-      const push = (x, y) => {
-        const xn = Number(x);
-        const yn = Number(y);
-        if (!Number.isFinite(xn) || !Number.isFinite(yn)) return;
-        pts.push({ x: xn, y: yn });
-      };
-      const walk = (node) => {
-        if (!node) return;
-        if (Array.isArray(node)) {
-          if (node.length >= 2 && Number.isFinite(Number(node[0])) && Number.isFinite(Number(node[1]))) {
-            push(node[0], node[1]);
-            return;
-          }
-          for (const child of node) walk(child);
-          return;
-        }
-        if (typeof node === "object" && node.x !== undefined && node.y !== undefined) {
-          push(node.x, node.y);
-        }
-      };
-      walk(raw);
-      return pts.length >= 3 ? pts : null;
-    }
+    const normalizeContourArray = (raw) => window.FurLabUtils.normalizeContourArray(raw);
 
     function clipPolygonByHalfPlane(poly, nx, ny, c) {
       const out = [];
@@ -6941,33 +6750,8 @@ function renderSplitEvents(events) {
       e.isDirty = !!dirty;
     }
     let radialCenterPreviewTimer = null;
-    function getZoneBounds(points) {
-      const pts = Array.isArray(points) ? points : [];
-      if (!pts.length) return null;
-      let minX = Number.POSITIVE_INFINITY;
-      let minY = Number.POSITIVE_INFINITY;
-      let maxX = Number.NEGATIVE_INFINITY;
-      let maxY = Number.NEGATIVE_INFINITY;
-      for (const p of pts) {
-        const x = Number(p && p.x);
-        const y = Number(p && p.y);
-        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-        minX = Math.min(minX, x);
-        minY = Math.min(minY, y);
-        maxX = Math.max(maxX, x);
-        maxY = Math.max(maxY, y);
-      }
-      if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) return null;
-      return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
-    }
-    function getZoneCenterPoint(zone) {
-      const bounds = getZoneBounds(zone && zone.points);
-      if (!bounds) return null;
-      return {
-        x: bounds.minX + bounds.width / 2,
-        y: bounds.minY + bounds.height / 2
-      };
-    }
+    const getZoneBounds = (pts) => window.FurLabUtils.getZoneBounds(pts);
+    const getZoneCenterPoint = (z) => window.FurLabUtils.getZoneCenterPoint(z);
     function isLayoutEditEnabledInScene(entry) {
       const layout = entry && typeof entry === "object" ? entry : getSelectedLayoutEntry();
       if (!layout) return true;
