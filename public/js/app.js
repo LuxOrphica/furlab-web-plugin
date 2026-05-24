@@ -1956,116 +1956,19 @@
     const loadZonesForCurrentWorkspace = (opts) => window.FurLabZonesPersistence ? window.FurLabZonesPersistence.loadZonesForCurrentWorkspace(opts) : Promise.resolve();
     const resetZonesForCurrentWorkspace = () => window.FurLabZonesPersistence ? window.FurLabZonesPersistence.resetZonesForCurrentWorkspace() : Promise.resolve();
 
-    let materialsDictCache = null;
-    let furMaterialsCatalogCache = null;
-    let furMaterialsCatalogLoadingPromise = null;
-
-    async function loadMaterialsDict(force = false) {
-      if (!force && Array.isArray(materialsDictCache)) return materialsDictCache;
-      const json = await api("/api/dicts/materials", "GET", null, 20000);
-      const items = json && json.ok && Array.isArray(json.items) ? json.items : [];
-      materialsDictCache = items
-        .map((item) => ({
-          id: item && item.id !== undefined && item.id !== null ? String(item.id).trim() : "",
-          name: item && item.name !== undefined && item.name !== null ? String(item.name).trim() : "",
-          piecesCount: Number(item && item.piecesCount || 0) || 0
-        }))
-        .filter((item) => item.id);
-      return materialsDictCache;
-    }
-
-    async function loadFurMaterialsCatalog(force = false) {
-      if (!force && furMaterialsCatalogLoadingPromise) return furMaterialsCatalogLoadingPromise;
-      if (!force && Array.isArray(furMaterialsCatalogCache)) {
-        state.furMaterialsCatalog = furMaterialsCatalogCache.slice();
-        return furMaterialsCatalogCache;
-      }
-      furMaterialsCatalogLoadingPromise = (async () => {
-        const json = await api("/api/fur-materials", "GET", null, 20000);
-        const items = json && json.ok && Array.isArray(json.items) ? json.items : [];
-        furMaterialsCatalogCache = items
-          .map((item) => ({
-            id: item && item.id !== undefined && item.id !== null ? String(item.id).trim() : "",
-            name: item && item.name !== undefined && item.name !== null ? String(item.name).trim() : "",
-            category: item && item.category !== undefined && item.category !== null ? String(item.category).trim() : "",
-            species: item && item.species !== undefined && item.species !== null ? String(item.species).trim() : "",
-            colorHex: item && item.colorHex !== undefined && item.colorHex !== null ? String(item.colorHex).trim() : "",
-            thumbnail: item && item.thumbnail !== undefined && item.thumbnail !== null ? String(item.thumbnail).trim() : "",
-            melanin: Number(item && item.melanin || 0) || 0,
-            pheomelanin: Number(item && item.pheomelanin || 0) || 0,
-            maxLengthMm: Number(item && item.maxLengthMm || 0) || 0,
-            maxWidthMm: Number(item && item.maxWidthMm || 0) || 0,
-            thicknessMm: Number(item && item.thicknessMm || 0) || 0,
-            gloss: Number(item && item.gloss || 0) || 0,
-            softness: Number(item && item.softness || 0) || 0,
-            fluffiness: Number(item && item.fluffiness || 0) || 0,
-            pileLengthMm: Number(item && item.pileLengthMm || 0) || 0,
-            hairThicknessMm: Number(item && item.hairThicknessMm || 0) || 0,
-            pileDensityPerIn2: Number(item && item.pileDensityPerIn2 || 0) || 0,
-            taper: Number(item && item.taper || 0) || 0,
-            segmentationCount: Number(item && item.segmentationCount || 0) || 0,
-            hairBend: Number(item && item.hairBend || 0) || 0,
-            bendSpread: Number(item && item.bendSpread || 0) || 0,
-            curlRadiusMm: Number(item && item.curlRadiusMm || 0) || 0,
-            curlEffect: Number(item && item.curlEffect || 0) || 0,
-            elasticity: Number(item && item.elasticity || 0) || 0,
-            stretch: Number(item && item.stretch || 0) || 0,
-            weightGm2: Number(item && item.weightGm2 || 0) || 0
-          }))
-          .filter((item) => item.id);
-        state.furMaterialsCatalog = furMaterialsCatalogCache.slice();
-        renderPropertyEditor();
-        return furMaterialsCatalogCache;
-      })();
-      try {
-        return await furMaterialsCatalogLoadingPromise;
-      } finally {
-        furMaterialsCatalogLoadingPromise = null;
-      }
-    }
-
-    async function loadFurMaterialDetails(materialId, force = false) {
-      const id = String(materialId || "").trim();
-      if (!id) return null;
-      if (!state.furMaterialDetailsById || typeof state.furMaterialDetailsById !== "object") {
-        state.furMaterialDetailsById = {};
-      }
-      if (!force && state.furMaterialDetailsById[id]) return state.furMaterialDetailsById[id];
-      const json = await api(`/api/fur-materials/${encodeURIComponent(id)}`, "GET", null, 20000);
-      const item = json && json.ok && json.item && typeof json.item === "object" ? json.item : null;
-      if (item) state.furMaterialDetailsById[id] = item;
-      return item;
-    }
-
-    function getFurMaterialById(materialId) {
-      const id = String(materialId || "").trim();
-      if (!id) return null;
-      const detailed = state.furMaterialDetailsById && state.furMaterialDetailsById[id];
-      if (detailed) return detailed;
-      return (Array.isArray(state.furMaterialsCatalog) ? state.furMaterialsCatalog : []).find((item) => String(item && item.id || "") === id) || null;
-    }
-
-    function ensureProjectMaterialEntry(material) {
-      const m = material && typeof material === "object" ? material : null;
-      const id = String(m && m.id || "").trim();
-      if (!id) return null;
-      if (!Array.isArray(state.projectMaterials)) state.projectMaterials = [];
-      const normalized = {
-        id,
-        name: String(m && (m.name || m.materialName) || id),
-        category: String(m && m.category || ""),
-        species: String(m && m.species || ""),
-        colorHex: String(m && m.colorHex || "")
-      };
-      const existing = state.projectMaterials.find((item) => String(item && item.id || "") === id);
-      if (existing) {
-        Object.assign(existing, normalized);
-        return existing;
-      }
-      state.projectMaterials.push(normalized);
-      state.projectMaterials.sort((a, b) => String(a && a.name || "").localeCompare(String(b && b.name || ""), "ru"));
-      return normalized;
-    }
+    // ---------------------------------------------------------------------------
+    // Materials catalog — delegated to window.FurLabMaterials (core/materials.js)
+    // ---------------------------------------------------------------------------
+    if (window.FurLabMaterials) window.FurLabMaterials.init({
+      state,
+      api,
+      renderPropertyEditor: () => renderPropertyEditor(),
+    });
+    const loadMaterialsDict = (f) => window.FurLabMaterials ? window.FurLabMaterials.loadMaterialsDict(f) : Promise.resolve([]);
+    const loadFurMaterialsCatalog = (f) => window.FurLabMaterials ? window.FurLabMaterials.loadFurMaterialsCatalog(f) : Promise.resolve([]);
+    const loadFurMaterialDetails = (id, f) => window.FurLabMaterials ? window.FurLabMaterials.loadFurMaterialDetails(id, f) : Promise.resolve(null);
+    const getFurMaterialById = (id) => window.FurLabMaterials ? window.FurLabMaterials.getFurMaterialById(id) : null;
+    const ensureProjectMaterialEntry = (m) => window.FurLabMaterials ? window.FurLabMaterials.ensureProjectMaterialEntry(m) : null;
 
     async function removeProjectMaterialById(materialId) {
       const id = String(materialId || "").trim();
