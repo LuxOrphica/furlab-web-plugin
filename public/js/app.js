@@ -11258,172 +11258,19 @@ function refreshSelectionInfo() {
     // -----------------------------------------------------------------------
     // Export to CLO: "РџСЂРµРѕР±СЂР°Р·РѕРІР°С‚СЊ РІ Р»РµРєР°Р»Р°"
     // -----------------------------------------------------------------------
-
-    function buildExportBody(scopeOverride, seamModeOverride) {
-      const scopeSel = byId("exportCloScope");
-      const seamSel = byId("exportCloSeamMode");
-      const scope = scopeOverride || (scopeSel && scopeSel.value) || "all";
-      const seamMode = seamModeOverride || (seamSel && seamSel.value) || "auto";
-
-      saveCurrentLayoutRuntimeSnapshot();
-
-      // Collect layouts with their serialized runs from current state
-      const layouts = (Array.isArray(state.layouts) ? state.layouts : []).map(serializeLayoutForProject);
-
-      // Collect materials index {materialId: materialObject}
-      const materialsIndex = {};
-      const _matSrc = Array.isArray(state.furMaterialsCatalog) ? state.furMaterialsCatalog : [];
-      for (const m of _matSrc) {
-        if (m && m.id) materialsIndex[String(m.id)] = m;
-      }
-
-      return {
-        zones: Array.isArray(state.zones) ? state.zones.map((z) => ({ ...z })) : [],
-        details: Array.isArray(state.details) ? state.details.map((d) => ({ id: d.id, name: d.name })) : [],
-        layouts,
-        materials: materialsIndex,
-        zoneScope: scope,
-        seamMode,
-        currentZoneId: Number(state.selectedZoneId || 0) || null
-      };
-    }
-
-    let exportCloStep = 1;
-
-    function openExportCloModal() {
-      exportCloStep = 1;
-      const backdrop = byId("exportCloBackdrop");
-      if (!backdrop) return;
-      byId("exportCloStep1").style.display = "";
-      byId("exportCloStep2").style.display = "none";
-      byId("exportCloProgress").style.display = "none";
-      byId("exportCloNextBtn").style.display = "";
-      byId("exportCloRunBtn").style.display = "none";
-      byId("exportCloBackBtn").style.display = "none";
-      byId("exportCloModalTitle").textContent = "РџСЂРµРѕР±СЂР°Р·РѕРІР°С‚СЊ РІ Р»РµРєР°Р»Р° вЂ” РЁР°Рі 1";
-      backdrop.style.display = "flex";
-    }
-
-    async function exportCloPreview() {
-      byId("exportCloNextBtn").disabled = true;
-      byId("exportCloProgress").style.display = "";
-      byId("exportCloProgressBar").style.width = "30%";
-      byId("exportCloProgressLabel").textContent = "РђРЅР°Р»РёР· Р·РѕРЅ...";
-      try {
-        const body = buildExportBody();
-        const res = await api("/api/export/patterns/preview", "POST", body, 30000);
-        if (!res || !res.ok) {
-          alert("РћС€РёР±РєР° РїСЂРµРґРїСЂРѕСЃРјРѕС‚СЂР°: " + String(res && res.error || "unknown"));
-          return;
-        }
-        byId("exportCloProgressBar").style.width = "100%";
-        byId("exportCloProgress").style.display = "none";
-
-        // Show step 2
-        exportCloStep = 2;
-        byId("exportCloStep1").style.display = "none";
-        byId("exportCloStep2").style.display = "";
-        byId("exportCloFragCount").textContent = String(res.fragmentsCount || 0);
-        byId("exportCloSeamCount").textContent = String(res.seamsCount || 0);
-        byId("exportCloMaterialCount").textContent = String(res.materialsCount || 0);
-        byId("exportCloModalTitle").textContent = "РџСЂРµРѕР±СЂР°Р·РѕРІР°С‚СЊ РІ Р»РµРєР°Р»Р° вЂ” РЁР°Рі 2";
-        byId("exportCloNextBtn").style.display = "none";
-        byId("exportCloRunBtn").style.display = "";
-        byId("exportCloBackBtn").style.display = "";
-
-        // Zone statuses
-        const statusEl = byId("exportCloZoneStatuses");
-        if (statusEl && Array.isArray(res.zoneStatuses)) {
-          statusEl.innerHTML = res.zoneStatuses.map((z) => {
-            const icon = z.status === "exported" ? "[L]" : "[вЂ“]";
-            const color = z.status === "exported" ? "#333" : "#999";
-            return `<span style="color:${color}; margin-right:10px;">${icon} ${String(z.name || z.id).replace(/</g, "&lt;")}</span>`;
-          }).join("");
-        }
-
-        const warnEl = byId("exportCloWarning");
-        if (warnEl) {
-          if (res.fragmentsCount === 0) {
-            warnEl.textContent = "РќРµС‚ С„СЂР°РіРјРµРЅС‚РѕРІ РґР»СЏ СЌРєСЃРїРѕСЂС‚Р°. Р’С‹РїРѕР»РЅРёС‚Рµ РІС‹РєР»Р°РґРєСѓ С…РѕС‚СЏ Р±С‹ РѕРґРЅРѕР№ Р·РѕРЅС‹.";
-            warnEl.style.display = "";
-          } else {
-            warnEl.style.display = "none";
-          }
-        }
-      } catch (err) {
-        alert("РћС€РёР±РєР°: " + String(err && err.message || err));
-      } finally {
-        const btn = byId("exportCloNextBtn");
-        if (btn) btn.disabled = false;
-      }
-    }
-
-    async function exportCloRun() {
-      const runBtn = byId("exportCloRunBtn");
-      if (runBtn) runBtn.disabled = true;
-      byId("exportCloProgress").style.display = "";
-      byId("exportCloProgressBar").style.width = "20%";
-      byId("exportCloProgressLabel").textContent = "РЎРѕР·РґР°РЅРёРµ Р»РµРєР°Р»...";
-      try {
-        const body = buildExportBody();
-        body._saveDialog = true;
-        byId("exportCloProgressBar").style.width = "60%";
-        byId("exportCloProgressLabel").textContent = "Р¤РѕСЂРјРёСЂРѕРІР°РЅРёРµ ZIP...";
-        const res = await fetch("/api/export/patterns/run", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body)
-        });
-        const json = await res.json().catch(() => ({}));
-        if (!res.ok || !json.ok) {
-          if (json.cancelled) return;
-          alert("РћС€РёР±РєР° СЌРєСЃРїРѕСЂС‚Р°: " + String(json && json.error || res.status));
-          return;
-        }
-        byId("exportCloProgressBar").style.width = "100%";
-        byId("exportCloProgressLabel").textContent = `РЎРѕС…СЂР°РЅРµРЅРѕ: ${json.savedTo}`;
-        setTimeout(() => { byId("exportCloBackdrop").style.display = "none"; }, 1500);
-      } catch (err) {
-        alert("РћС€РёР±РєР°: " + String(err && err.message || err));
-      } finally {
-        if (runBtn) runBtn.disabled = false;
-      }
-    }
-
-    const exportCloBtn = byId("exportCloBtn");
-    if (exportCloBtn) exportCloBtn.onclick = () => openExportCloModal();
-
-    const exportCloCloseBtn = byId("exportCloCloseBtn");
-    if (exportCloCloseBtn) exportCloCloseBtn.onclick = () => { byId("exportCloBackdrop").style.display = "none"; };
-
-    const exportCloCancelBtn = byId("exportCloCancelBtn");
-    if (exportCloCancelBtn) exportCloCancelBtn.onclick = () => { byId("exportCloBackdrop").style.display = "none"; };
-
-    const exportCloNextBtn = byId("exportCloNextBtn");
-    if (exportCloNextBtn) exportCloNextBtn.onclick = () => exportCloPreview();
-
-    const exportCloRunBtn = byId("exportCloRunBtn");
-    if (exportCloRunBtn) exportCloRunBtn.onclick = () => exportCloRun();
-
-    const exportCloBackBtn = byId("exportCloBackBtn");
-    if (exportCloBackBtn) exportCloBackBtn.onclick = () => {
-      exportCloStep = 1;
-      byId("exportCloStep1").style.display = "";
-      byId("exportCloStep2").style.display = "none";
-      byId("exportCloProgress").style.display = "none";
-      byId("exportCloNextBtn").style.display = "";
-      byId("exportCloRunBtn").style.display = "none";
-      byId("exportCloBackBtn").style.display = "none";
-      byId("exportCloModalTitle").textContent = "РџСЂРµРѕР±СЂР°Р·РѕРІР°С‚СЊ РІ Р»РµРєР°Р»Р° вЂ” РЁР°Рі 1";
-    };
-
-    // Keyboard shortcut Ctrl+Shift+L
-    document.addEventListener("keydown", (e) => {
-      if (e.ctrlKey && e.shiftKey && (e.key === "L" || e.key === "Р»" || e.key === "Р›")) {
-        e.preventDefault();
-        openExportCloModal();
-      }
+    // ---------------------------------------------------------------------------
+    // Export to CLO — delegated to window.FurLabCloExport (core/clo-export.js)
+    // ---------------------------------------------------------------------------
+    if (window.FurLabCloExport) window.FurLabCloExport.init({
+      state,
+      api,
+      saveCurrentLayoutRuntimeSnapshot,
+      serializeLayoutForProject,
     });
+    const buildExportBody = (s, m) => window.FurLabCloExport ? window.FurLabCloExport.buildExportBody(s, m) : {};
+    const openExportCloModal = () => window.FurLabCloExport && window.FurLabCloExport.openExportCloModal();
+    const exportCloPreview = () => window.FurLabCloExport && window.FurLabCloExport.exportCloPreview();
+    const exportCloRun = () => window.FurLabCloExport && window.FurLabCloExport.exportCloRun();
 
     // On startup: show project picker if projects exist, otherwise just load manual runs
     void (async () => {
