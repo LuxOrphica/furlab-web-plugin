@@ -1934,148 +1934,27 @@
       };
     }
 
-    function buildZonesWorkspaceKey() {
-      // If a project was loaded with a known workspaceKey, use it directly
-      // (pattern geometry may not be available in the current session)
-      if (state.loadedProjectWorkspaceKey) return state.loadedProjectWorkspaceKey;
-      const details = Array.isArray(state.details) ? state.details : [];
-      if (!details.length) return "";
-      let hash = 2166136261;
-      const feed = (text) => {
-        const s = String(text || "");
-        for (let i = 0; i < s.length; i++) {
-          hash ^= s.charCodeAt(i);
-          hash = Math.imul(hash, 16777619);
-        }
-      };
-      const sorted = details.slice().sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
-      for (const detail of sorted) {
-        const pts = Array.isArray(detail && detail.entity && detail.entity.points) ? detail.entity.points : [];
-        feed(detail && detail.id);
-        feed(pts.length);
-        for (const p of pts) {
-          feed(Number(p && p.x || 0).toFixed(3));
-          feed(Number(p && p.y || 0).toFixed(3));
-        }
-      }
-      return `details:${sorted.length}:${(hash >>> 0).toString(16)}`;
-    }
-
-    async function persistZonesForCurrentWorkspace() {
-      const workspaceKey = buildZonesWorkspaceKey();
-      if (!workspaceKey) return { ok: false, error: "zones_workspace_missing" };
-      const zones = (Array.isArray(state.zones) ? state.zones : []).map(normalizeZoneForPersistence).filter(Boolean);
-      const json = await api("/api/zones/save", "POST", {
-        workspaceKey,
-        selectedZoneId: Number(state.selectedZoneId || 0) || null,
-        zones
-      }, 20000);
-      if (json && json.ok) {
-        const savedZones = Array.isArray(json.zones) ? json.zones : [];
-        state.zones = savedZones;
-        state.nextZoneId = savedZones.reduce((maxId, zone) => Math.max(maxId, Number(zone && zone.id || 0)), 0) + 1;
-        await validateZonesForCurrentWorkspace();
-      }
-      return json;
-    }
-
-    function buildZoneValidationPayload() {
-      const details = (Array.isArray(state.details) ? state.details : [])
-        .map((detail) => {
-          const points = Array.isArray(detail && detail.entity && detail.entity.points) ? detail.entity.points : [];
-          return {
-            id: Number(detail && detail.id || 0) || null,
-            name: String(detail && detail.name || ""),
-            points: points.map((p) => ({ x: Number(p && p.x), y: Number(p && p.y) }))
-          };
-        })
-        .filter((detail) => Number(detail.id) > 0 && detail.points.length >= 3);
-      const zones = (Array.isArray(state.zones) ? state.zones : [])
-        .map(normalizeZoneForPersistence)
-        .filter(Boolean);
-      return { details, zones };
-    }
-
-    async function validateZonesForCurrentWorkspace() {
-      const payload = buildZoneValidationPayload();
-      const json = await api("/api/zones/validate", "POST", payload, 20000);
-      if (json && json.ok) {
-        state.zoneValidation = json;
-      } else {
-        state.zoneValidation = null;
-      }
-      return json;
-    }
-
-    async function loadZonesForCurrentWorkspace(options) {
-      const cfg = options && typeof options === "object" ? options : {};
-      const workspaceKey = buildZonesWorkspaceKey();
-      if (!workspaceKey) return { ok: false, error: "zones_workspace_missing" };
-      const json = await api(`/api/zones?workspaceKey=${encodeURIComponent(workspaceKey)}`, "GET", null, 20000);
-      const savedZones = json && json.ok && Array.isArray(json.zones) ? json.zones : [];
-      if (savedZones.length) {
-        const migrated = migrateLoadedZoneOriginTypes(savedZones);
-        const reconciledZones = reconcileZonesWithDetails(savedZones);
-        const needsReconcilePersist = reconciledZones.length !== savedZones.length;
-        state.zones = reconciledZones;
-        state.history.undo = [];
-        state.history.redo = [];
-        // Sync zone materialIds into projectMaterials so the РњРµС… tab shows names not GUIDs
-        for (const zone of reconciledZones) {
-          const mid = String(zone && zone.materialId || "").trim();
-          if (!mid) continue;
-          const already = (Array.isArray(state.projectMaterials) ? state.projectMaterials : []).find((m) => String(m && m.id || "") === mid);
-          if (!already) {
-            const name = String(zone.materialName || "").trim();
-            ensureProjectMaterialEntry({ id: mid, name: name || mid });
-            if (!name) {
-              // resolve name from server async, update when ready
-              void loadFurMaterialDetails(mid).then((mat) => { if (mat && mat.name) ensureProjectMaterialEntry(mat); });
-            }
-          }
-        }
-        state.nextZoneId = reconciledZones.reduce((maxId, zone) => Math.max(maxId, Number(zone && zone.id || 0)), 0) + 1;
-        if (!reconciledZones.some((zone) => Number(zone && zone.id || 0) === Number(state.selectedZoneId || 0))) {
-          state.selectedZoneId = Number(reconciledZones[0] && reconciledZones[0].id || 0) || null;
-        }
-        state.selectedFragmentId = null;
-        if (!state.details.some((detail) => Number(detail && detail.id || 0) === Number(state.selectedDetailId || 0))) {
-          state.selectedDetailId = Number(reconciledZones[0] && reconciledZones[0].detailId || 0) || null;
-        }
-        if (migrated || needsReconcilePersist) {
-          await persistZonesForCurrentWorkspace();
-        }
-        await validateZonesForCurrentWorkspace();
-        return json;
-      }
-      if (cfg.bootstrapIfEmpty !== false) {
-        initZonesFromDetails();
-        if (Array.isArray(state.zones) && state.zones.length) {
-          await persistZonesForCurrentWorkspace();
-          await validateZonesForCurrentWorkspace();
-        }
-      }
-      return json;
-    }
-
-    async function resetZonesForCurrentWorkspace() {
-      const workspaceKey = buildZonesWorkspaceKey();
-      if (!workspaceKey) return { ok: false, error: "zones_workspace_missing" };
-      const json = await api("/api/zones/reset", "POST", { workspaceKey }, 20000);
-      if (!json || !json.ok) return json || { ok: false, error: "zone_reset_failed" };
-      state.zoneValidation = null;
-      state.selectedFragmentId = null;
-      state.selectedZoneId = null;
-      state.zones = [];
-      clearActiveLayoutRuntime();
-      await loadZonesForCurrentWorkspace({ bootstrapIfEmpty: true });
-      renderLayoutModeSwitch();
-      renderDetailZoneTree();
-      renderPropertyEditor();
-      renderScene();
-      byId("workspaceInfo").textContent = "Р—РѕРЅС‹ СЃР±СЂРѕС€РµРЅС‹ Рє РёСЃС…РѕРґРЅРѕРјСѓ СЃРѕСЃС‚РѕСЏРЅРёСЋ: 1 РґРµС‚Р°Р»СЊ = 1 Р·РѕРЅР°.";
-      return { ok: true, workspaceKey };
-    }
+    // ---------------------------------------------------------------------------
+    // Zones persistence — delegated to window.FurLabZonesPersistence (core/zones-persistence.js)
+    // ---------------------------------------------------------------------------
+    if (window.FurLabZonesPersistence) window.FurLabZonesPersistence.init({
+      state,
+      api,
+      normalizeZoneForPersistence,
+      reconcileZonesWithDetails,
+      migrateLoadedZoneOriginTypes,
+      ensureProjectMaterialEntry,
+      loadFurMaterialDetails,
+      initZonesFromDetails,
+      clearActiveLayoutRuntime,
+      render: { renderScene: () => renderScene(), renderLayoutModeSwitch: () => renderLayoutModeSwitch(), renderDetailZoneTree: () => renderDetailZoneTree(), renderPropertyEditor: () => renderPropertyEditor() },
+    });
+    const buildZonesWorkspaceKey = () => window.FurLabZonesPersistence ? window.FurLabZonesPersistence.buildZonesWorkspaceKey() : "";
+    const buildZoneValidationPayload = () => window.FurLabZonesPersistence ? window.FurLabZonesPersistence.buildZoneValidationPayload() : {};
+    const validateZonesForCurrentWorkspace = () => window.FurLabZonesPersistence ? window.FurLabZonesPersistence.validateZonesForCurrentWorkspace() : Promise.resolve();
+    const persistZonesForCurrentWorkspace = () => window.FurLabZonesPersistence ? window.FurLabZonesPersistence.persistZonesForCurrentWorkspace() : Promise.resolve();
+    const loadZonesForCurrentWorkspace = (opts) => window.FurLabZonesPersistence ? window.FurLabZonesPersistence.loadZonesForCurrentWorkspace(opts) : Promise.resolve();
+    const resetZonesForCurrentWorkspace = () => window.FurLabZonesPersistence ? window.FurLabZonesPersistence.resetZonesForCurrentWorkspace() : Promise.resolve();
 
     let materialsDictCache = null;
     let furMaterialsCatalogCache = null;
