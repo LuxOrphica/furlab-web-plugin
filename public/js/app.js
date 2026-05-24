@@ -10787,118 +10787,6 @@ function refreshSelectionInfo() {
 
     // в”Ђв”Ђ Project management в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
-    function modeToLayoutType(mode) {
-      const m = String(mode || "");
-      if (m === "inventory" || m === "inventory_manual" || m === "inventory_split_return") return "InventoryLayout";
-      if (m === "intarsia") return "IrregularLayout";
-      return "RegularLayout";
-    }
-
-    function serializeLayoutForProject(entry) {
-      const snap = entry.runtimeSnapshot && typeof entry.runtimeSnapshot === "object" ? entry.runtimeSnapshot : null;
-      const lr = snap && snap.layoutRun && typeof snap.layoutRun === "object" ? snap.layoutRun : null;
-      const placements = Array.isArray(lr && lr.placements) ? lr.placements : [];
-      const fragments = Array.isArray(lr && lr.fragments) ? lr.fragments : [];
-      const scrapPlacements = placements
-        .filter((p) => {
-          if (!p) return false;
-          const status = String(p.status || "");
-          if (status === "matched") return true;
-          // Manual inventory placements may have no explicit status but have geometry
-          const hasGeom = Array.isArray(p.alignedContour) && p.alignedContour.length >= 3;
-          return hasGeom && status !== "removed";
-        })
-        .map((p) => ({
-          fragmentId: String(p.fragmentId || p.id || ""),
-          scrapPieceId: String(p.scrapPieceId || p.id || ""),
-          inventoryTag: String(p.inventoryTag || ""),
-          rotationDeg: Number(p.rotationDeg || 0),
-          offsetXmm: Number(p.offsetXmm || p.x || 0),
-          offsetYmm: Number(p.offsetYmm || p.y || 0),
-          resultContourSnapshot: Array.isArray(p.alignedContour) && p.alignedContour.length >= 3
-            ? p.alignedContour
-            : (Array.isArray(p.alignedContourPoints) ? p.alignedContourPoints : []),
-          coreContourSnapshot: Array.isArray(p.inZoneCoreContour) && p.inZoneCoreContour.length >= 3
-            ? p.inZoneCoreContour
-            : []
-        }));
-      const normalizeRules = {
-        seamAllowanceReserveMm: Number(lr && lr.allowanceMm || 12)
-      };
-      // For inventory modes: save inventory params. For fragment modes: save lr.paramsSnapshot directly
-      // so layoutModeVersion and options (cols/rows) survive the save/load cycle.
-      const params = String(entry.mode || "").startsWith("inventory") ? {
-        normalizeRules,
-        placementStrategy: "manualAssist",
-        maxCandidates: Number(lr && lr.lastConstraints && lr.lastConstraints.maxCandidates || 300),
-        filters: (lr && lr.lastFilters) || {},
-        constraints: (lr && lr.lastConstraints) || {}
-      } : {
-        normalizeRules,
-        ...(lr && lr.paramsSnapshot && typeof lr.paramsSnapshot === "object" ? lr.paramsSnapshot : {})
-      };
-      const runs = (snap || lr) ? [{
-        id: String(entry.persistedRunId || `run_${entry.id}`),
-        startedAt: Number(entry.persistedAt || Date.now()),
-        paramsSnapshot: params,
-        resultSnapshot: {
-          fragments: fragments.map((f) => ({
-            id: String(f && (f.id || f.fragmentId) || ""),
-            points: Array.isArray(f && f.points) ? f.points : [],
-            cutPoints: Array.isArray(f && f.cutPoints) ? f.cutPoints : [],
-            areaMm2: Number(f && f.areaMm2 || 0)
-          })),
-          stats: (lr && lr.stats) || {}
-        },
-        scrapPlacements
-      }] : [];
-      return {
-        id: `layout_${entry.id}`,
-        name: String(entry.name || ""),
-        zoneId: Number(entry.boundZoneId || 0) || null,
-        layoutType: modeToLayoutType(entry.mode),
-        mode: String(entry.mode || ""),
-        persistedRunId: String(entry.persistedRunId || ""),
-        params,
-        runs
-      };
-    }
-
-    function buildProjectPayload(name, existingId) {
-      saveCurrentLayoutRuntimeSnapshot();
-      const workspaceKey = buildZonesWorkspaceKey();
-      const parts = (Array.isArray(state.details) ? state.details : []).map((d) => ({
-        id: Number(d && d.id || 0),
-        name: String(d && d.name || `Р”РµС‚Р°Р»СЊ ${d && d.id}`),
-        points: Array.isArray(d && d.entity && d.entity.points) ? d.entity.points.map((p) => ({ x: Number(p.x), y: Number(p.y) })) : []
-      }));
-      const zones = (Array.isArray(state.zones) ? state.zones : []).map((z) => ({ ...z }));
-      const layouts = (Array.isArray(state.layouts) ? state.layouts : []).map(serializeLayoutForProject);
-      const patternGeometry = state.patternGeometry && Array.isArray(state.patternGeometry.entities)
-        ? state.patternGeometry
-        : null;
-      const projectMaterials = Array.isArray(state.projectMaterials) ? state.projectMaterials : [];
-      return {
-        id: existingId || undefined,
-        name,
-        workspaceKey,
-        parts,
-        zones,
-        layouts,
-        patternGeometry,
-        projectMaterials
-      };
-    }
-
-    async function saveProject(name, existingId) {
-      const payload = buildProjectPayload(name, existingId);
-      const res = await api("/api/projects/save", "POST", payload, 30000);
-      if (!res || !res.ok) throw new Error(res && res.error || "save_failed");
-      state.activeProjectId = res.id;
-      state.activeProjectName = name;
-      updateProjectUi();
-      return res.id;
-    }
 
     async function loadProject(id) {
       const res = await api("/api/projects/load", "POST", { id }, 30000);
@@ -11092,88 +10980,22 @@ function refreshSelectionInfo() {
       }
     }
 
-    function updateProjectUi() {
-      const nameEl = byId("activeProjectName");
-      const saveBtn = byId("saveProjectBtn");
-      const exportBtn = byId("exportCloBtn");
-      if (nameEl) nameEl.textContent = state.activeProjectName ? `вЂ” ${state.activeProjectName}` : "";
-      const hasData = (state.zones && state.zones.length > 0) || (state.details && state.details.length > 0);
-      const hasZones = state.zones && state.zones.length > 0;
-      if (saveBtn) saveBtn.style.display = hasData ? "inline-block" : "none";
-      if (exportBtn) exportBtn.style.display = hasZones ? "inline-block" : "none";
-    }
-
-    function renderProjectList(items) {
-      const listEl = byId("projectPickerList");
-      const emptyEl = byId("projectPickerEmpty");
-      if (!listEl) return;
-      if (!items.length) {
-        listEl.innerHTML = "";
-        if (emptyEl) emptyEl.style.display = "block";
-        return;
-      }
-      if (emptyEl) emptyEl.style.display = "none";
-      listEl.innerHTML = items.map((p) => {
-        const date = p.updatedAt ? new Date(p.updatedAt).toLocaleDateString("ru-RU") : "";
-        const meta = [
-          p.zonesCount ? `${p.zonesCount} Р·РѕРЅ` : "",
-          p.layoutsCount ? `${p.layoutsCount} РІС‹РєР»Р°РґРѕРє` : "",
-          date
-        ].filter(Boolean).join(" В· ");
-        return `<div class="project-list-item" data-id="${p.id}">
-          <div class="project-list-item-name">${String(p.name || "Р‘РµР· РЅР°Р·РІР°РЅРёСЏ").replace(/</g, "&lt;")}</div>
-          <div class="project-list-item-meta">${meta}</div>
-          <div class="project-list-item-actions">
-            <button class="project-list-item-open" data-id="${p.id}">РћС‚РєСЂС‹С‚СЊ</button>
-            <button class="project-list-item-delete" data-id="${p.id}">вњ•</button>
-          </div>
-        </div>`;
-      }).join("");
-      listEl.querySelectorAll(".project-list-item-open").forEach((btn) => {
-        btn.onclick = async (e) => {
-          e.stopPropagation();
-          const id = btn.dataset.id;
-          byId("projectPickerBackdrop").style.display = "none";
-          try {
-            await loadProject(id);
-          } catch (err) {
-            alert("РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё РїСЂРѕРµРєС‚Р°: " + String(err && err.message || err));
-          }
-        };
-      });
-      listEl.querySelectorAll(".project-list-item-delete").forEach((btn) => {
-        btn.onclick = async (e) => {
-          e.stopPropagation();
-          if (!confirm("РЈРґР°Р»РёС‚СЊ РїСЂРѕРµРєС‚?")) return;
-          const id = btn.dataset.id;
-          await api("/api/projects/delete", "POST", { id }, 10000);
-          const res = await api("/api/projects", "GET", null, 10000);
-          renderProjectList(res && res.ok && Array.isArray(res.items) ? res.items : []);
-        };
-      });
-    }
-
-    async function openProjectPicker() {
-      byId("projectPickerBackdrop").style.display = "flex";
-      byId("projectPickerList").innerHTML = "<div style='padding:16px;color:#888;'>Р—Р°РіСЂСѓР·РєР°...</div>";
-      if (byId("projectPickerEmpty")) byId("projectPickerEmpty").style.display = "none";
-      try {
-        const res = await api("/api/projects", "GET", null, 10000);
-        renderProjectList(res && res.ok && Array.isArray(res.items) ? res.items : []);
-      } catch (_) {
-        renderProjectList([]);
-      }
-    }
-
-    // Wire up project buttons
-    byId("openProjectBtn").onclick = () => openProjectPicker();
-    byId("projectPickerCloseBtn").onclick = () => { byId("projectPickerBackdrop").style.display = "none"; };
-    byId("projectPickerCancelBtn").onclick = () => { byId("projectPickerBackdrop").style.display = "none"; };
-    byId("projectPickerNewBtn").onclick = () => {
-      byId("projectPickerBackdrop").style.display = "none";
-      const fileInput = byId("projectImportFileInput");
-      if (fileInput) { fileInput.value = ""; fileInput.click(); }
-    };
+    // ---------------------------------------------------------------------------
+    // Project save/load/UI — delegated to window.FurLabProject (core/project.js)
+    // ---------------------------------------------------------------------------
+    if (window.FurLabProject) window.FurLabProject.init({
+      state,
+      api,
+      saveCurrentLayoutRuntimeSnapshot,
+      buildZonesWorkspaceKey,
+      loadProject,
+    });
+    const modeToLayoutType = (m) => window.FurLabProject ? window.FurLabProject.modeToLayoutType(m) : "RegularLayout";
+    const serializeLayoutForProject = (e) => window.FurLabProject ? window.FurLabProject.serializeLayoutForProject(e) : {};
+    const buildProjectPayload = (n, id) => window.FurLabProject ? window.FurLabProject.buildProjectPayload(n, id) : {};
+    const saveProject = (n, id) => window.FurLabProject ? window.FurLabProject.saveProject(n, id) : Promise.resolve();
+    const updateProjectUi = () => window.FurLabProject && window.FurLabProject.updateProjectUi();
+    const openProjectPicker = () => window.FurLabProject && window.FurLabProject.openProjectPicker();
 
     byId("projectImportFileInput").onchange = async (e) => {
       const files = e.target.files;
@@ -11226,33 +11048,7 @@ function refreshSelectionInfo() {
       }
     };
 
-    byId("saveProjectBtn").onclick = () => {
-      const nameInput = byId("saveProjectNameInput");
-      if (nameInput) nameInput.value = state.activeProjectName || "";
-      const _backdrop = byId("saveProjectBackdrop");
-      const _modal = _backdrop && _backdrop.querySelector(".modal");
-      if (_modal) { _modal.style.left = ""; _modal.style.top = ""; _modal.style.transform = ""; _modal.style.position = ""; }
-      _backdrop.style.display = "flex";
-      if (nameInput) setTimeout(() => nameInput.focus(), 50);
-    };
-    byId("saveProjectCloseBtn").onclick = () => { byId("saveProjectBackdrop").style.display = "none"; };
-    byId("saveProjectCancelBtn").onclick = () => { byId("saveProjectBackdrop").style.display = "none"; };
-    byId("saveProjectConfirmBtn").onclick = async () => {
-      const nameInput = byId("saveProjectNameInput");
-      const name = String(nameInput && nameInput.value || "").trim() || "Р‘РµР· РЅР°Р·РІР°РЅРёСЏ";
-      byId("saveProjectConfirmBtn").disabled = true;
-      try {
-        const isSameName = name === (state.activeProjectName || "").trim();
-        await saveProject(name, isSameName ? state.activeProjectId : null);
-        byId("saveProjectBackdrop").style.display = "none";
-      } catch (err) {
-        alert("РћС€РёР±РєР° СЃРѕС…СЂР°РЅРµРЅРёСЏ: " + String(err && err.message || err));
-      } finally {
-        byId("saveProjectConfirmBtn").disabled = false;
-      }
-    };
 
-    // Show "РЎРѕС…СЂР°РЅРёС‚СЊ РїСЂРѕРµРєС‚" when zones are available
     updateProjectUi();
 
     // -----------------------------------------------------------------------
