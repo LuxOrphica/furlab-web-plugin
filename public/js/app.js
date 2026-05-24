@@ -1942,7 +1942,7 @@
       api,
       normalizeZoneForPersistence,
       reconcileZonesWithDetails,
-      migrateLoadedZoneOriginTypes,
+      migrateLoadedZoneOriginTypes: (zones) => migrateLoadedZoneOriginTypes(zones),
       ensureProjectMaterialEntry,
       loadFurMaterialDetails,
       initZonesFromDetails,
@@ -2138,110 +2138,24 @@
       state.pendingZoneMaterialZoneId = null;
     }
 
-    function getDetailContourPoints(detailId) {
-      const detail = (Array.isArray(state.details) ? state.details : []).find((item) =>
-        Number(item && item.id || 0) === Number(detailId || 0)
-      ) || null;
-      const pts = Array.isArray(detail && detail.entity && detail.entity.points) ? detail.entity.points : [];
-      return pts.length >= 3 ? pts : [];
-    }
-
-    function pointsMatchExactly(pointsA, pointsB, toleranceMm = 0.01) {
-      const a = Array.isArray(pointsA) ? pointsA : [];
-      const b = Array.isArray(pointsB) ? pointsB : [];
-      if (a.length < 3 || b.length < 3 || a.length !== b.length) return false;
-      const tol2 = toleranceMm * toleranceMm;
-      for (let i = 0; i < a.length; i++) {
-        if (distance2(a[i], b[i]) > tol2) return false;
-      }
-      return true;
-    }
-
-    function isLikelyBaseZone(zone) {
-      const z = zone && typeof zone === "object" ? zone : null;
-      if (!z) return false;
-      return pointsMatchExactly(Array.isArray(z.points) ? z.points : [], getDetailContourPoints(Number(z.detailId || 0) || 0), 0.01);
-    }
-
-    function isLegacyManualZone(zone) {
-      const z = zone && typeof zone === "object" ? zone : null;
-      if (!z) return false;
-      const origin = String(z.originType || "").trim().toLowerCase();
-      if (origin === "manual") return true;
-      if (origin === "split") return false;
-      if (Number(z.parentZoneId || 0) > 0) return false;
-      return !isLikelyBaseZone(z);
-    }
-
-    function migrateLoadedZoneOriginTypes(zones) {
-      const list = Array.isArray(zones) ? zones : [];
-      let changed = false;
-      for (const zone of list) {
-        const origin = String(zone && zone.originType || "").trim().toLowerCase();
-        if (isLegacyManualZone(zone) && origin !== "manual") {
-          zone.originType = "manual";
-          changed = true;
-        } else if (isLikelyBaseZone(zone) && origin !== "base" && Number(zone && zone.parentZoneId || 0) <= 0) {
-          zone.originType = "base";
-          changed = true;
-        }
-      }
-      return changed;
-    }
+    // ---------------------------------------------------------------------------
+    // Zone classification — delegated to window.FurLabZoneClassify (core/zone-classify.js)
+    // ---------------------------------------------------------------------------
+    if (window.FurLabZoneClassify) window.FurLabZoneClassify.init({ state });
+    const getDetailContourPoints = (id) => window.FurLabZoneClassify ? window.FurLabZoneClassify.getDetailContourPoints(id) : [];
+    const pointsMatchExactly = (a, b, tol) => window.FurLabZoneClassify ? window.FurLabZoneClassify.pointsMatchExactly(a, b, tol) : false;
+    const isLikelyBaseZone = (z) => window.FurLabZoneClassify ? window.FurLabZoneClassify.isLikelyBaseZone(z) : false;
+    const isLegacyManualZone = (z) => window.FurLabZoneClassify ? window.FurLabZoneClassify.isLegacyManualZone(z) : false;
+    const migrateLoadedZoneOriginTypes = (zones) => window.FurLabZoneClassify ? window.FurLabZoneClassify.migrateLoadedZoneOriginTypes(zones) : false;
+    const isSplitDerivedZone = (z) => window.FurLabZoneClassify ? window.FurLabZoneClassify.isSplitDerivedZone(z) : false;
+    const isManualZone = (z) => window.FurLabZoneClassify ? window.FurLabZoneClassify.isManualZone(z) : false;
+    const getRelatedSplitZones = (z) => window.FurLabZoneClassify ? window.FurLabZoneClassify.getRelatedSplitZones(z) : [];
+    const hasSplitDescendants = (z) => window.FurLabZoneClassify ? window.FurLabZoneClassify.hasSplitDescendants(z) : false;
+    const canRestoreParentZone = (z) => window.FurLabZoneClassify ? window.FurLabZoneClassify.canRestoreParentZone(z) : false;
+    const isLastZoneInDetail = (z) => window.FurLabZoneClassify ? window.FurLabZoneClassify.isLastZoneInDetail(z) : false;
+    const canDeleteZone = (z) => window.FurLabZoneClassify ? window.FurLabZoneClassify.canDeleteZone(z) : false;
 
     let zoneContextMenuEl = null;
-
-    function isSplitDerivedZone(zone) {
-      return !!(zone && String(zone.originType || "base") === "split");
-    }
-    function isManualZone(zone) {
-      return !!(zone && (String(zone.originType || "base") === "manual" || isLegacyManualZone(zone)));
-    }
-
-    function getRelatedSplitZones(zone) {
-      const z = zone && typeof zone === "object" ? zone : null;
-      if (!z || !isSplitDerivedZone(z)) return [];
-      return (Array.isArray(state.zones) ? state.zones : []).filter((item) =>
-        String(item && item.originType || "base") === "split"
-        && Number(item && item.parentZoneId || 0) === Number(z.parentZoneId || 0)
-        && Number(item && item.detailId || 0) === Number(z.detailId || 0)
-      );
-    }
-
-    function hasSplitDescendants(zone) {
-      const z = zone && typeof zone === "object" ? zone : null;
-      if (!z || !isSplitDerivedZone(z)) return false;
-      const detailId = Number(z.detailId || 0) || 0;
-      const zoneIdText = String(Number(z.id || 0) || "");
-      if (!detailId || !zoneIdText) return false;
-      return (Array.isArray(state.zones) ? state.zones : []).some((item) => {
-        if (!item || String(item.originType || "base") !== "split") return false;
-        if (Number(item.detailId || 0) !== detailId) return false;
-        const itemIdText = String(Number(item.id || 0) || "");
-        return itemIdText.length > zoneIdText.length && itemIdText.startsWith(zoneIdText);
-      });
-    }
-
-    function canRestoreParentZone(zone) {
-      const z = zone && typeof zone === "object" ? zone : null;
-      return !!(z && isSplitDerivedZone(z) && !hasSplitDescendants(z));
-    }
-    function isLastZoneInDetail(zone) {
-      const z = zone && typeof zone === "object" ? zone : null;
-      if (!z) return false;
-      const detailId = Number(z.detailId || 0);
-      const zonesInDetail = (Array.isArray(state.zones) ? state.zones : [])
-        .filter((item) => Number(item && item.detailId || 0) === detailId);
-      return zonesInDetail.length <= 1;
-    }
-
-    function canDeleteZone(zone) {
-      const z = zone && typeof zone === "object" ? zone : null;
-      if (!z) return false;
-      if (isLastZoneInDetail(z)) return false;
-      if (isManualZone(z)) return true;
-      return canRestoreParentZone(z);
-    }
 
     function ensureZoneContextMenu() {
       if (zoneContextMenuEl && zoneContextMenuEl.isConnected) return zoneContextMenuEl;
